@@ -4,7 +4,7 @@ import pathlib
 import unittest
 
 HERE = pathlib.Path(__file__).resolve().parent
-MODULE_PATH = (HERE.parent / 'battery_strategy_dryrun.py') if (HERE.parent / 'battery_strategy_dryrun.py').exists() else (HERE.parent / 'scripts' / 'battery_strategy_dryrun.py')
+MODULE_PATH = HERE.parent / 'scripts' / 'battery_strategy_dryrun.py'
 spec = importlib.util.spec_from_file_location('battery_strategy_dryrun', MODULE_PATH)
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)

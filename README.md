@@ -8,7 +8,6 @@ Home Assistant package, dashboard, scripts and tests for the local battery/PV st
 - `lovelace.dashboard_speicherstrategie`: Home Assistant dashboard storage export.
 - `scripts/battery_strategy_dryrun.py`: optimizer, forecast, backtest and actual savings logic.
 - `tests/test_battery_strategy.py`: regression tests for optimizer behavior.
-- `scripts/ha-backup-webdav-sync.*`: HA backup export/sync helper units and script.
 
 ## Secrets
 
