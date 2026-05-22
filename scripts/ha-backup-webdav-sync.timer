@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily HA backup WebDAV sync (safety run)
+
+[Timer]
+OnCalendar=*-*-* 06:20:00
+Persistent=true
+Unit=ha-backup-webdav-sync.service
+
+[Install]
+WantedBy=timers.target

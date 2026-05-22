@@ -1,0 +1,29 @@
+# Runtime/local state
+snapshots/
+.pytest_cache/
+__pycache__/
+*.py[cod]
+.DS_Store
+
+# Secrets and local environment files
+.env
+*.env.local
+secrets.yaml
+*.secret
+
+# HA/runtime data that must not be versioned
+home-assistant_v2.db*
+*.sqlite
+*.sqlite3
+*.db
+.storage/
+backups/
+*.tar
+*.tar.gz
+*.zip
+
+# Temporary/editor files
+*.tmp
+*.bak
+*.swp
+*~

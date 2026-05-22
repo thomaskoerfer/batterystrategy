@@ -1,0 +1,10 @@
+[Unit]
+Description=Sync Home Assistant backups to WebDAV and prune to 3
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/ha-backup-webdav-sync
+User=root
+Group=root
