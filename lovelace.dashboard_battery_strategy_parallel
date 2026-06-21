@@ -1,0 +1,465 @@
+{
+  "version": 1,
+  "minor_version": 1,
+  "key": "lovelace.dashboard_battery_strategy_parallel",
+  "data": {
+    "config": {
+      "title": "Battery Strategy Parallel",
+      "views": [
+        {
+          "cards": [
+            {
+              "type": "entities",
+              "title": "Plan an Live",
+              "entities": [
+                {
+                  "type": "section",
+                  "label": "TS"
+                },
+                "sensor.battery_strategy_hacs_plan_live_slot_start",
+                "sensor.battery_strategy_hacs_plan_live_slot_end",
+                {
+                  "type": "section",
+                  "label": "Charge"
+                },
+                "sensor.battery_strategy_hacs_plan_live_pv_charge_allowed",
+                "sensor.battery_strategy_hacs_plan_live_must_charge",
+                "sensor.battery_strategy_hacs_plan_live_must_charge_remaining",
+                "sensor.battery_strategy_hacs_plan_live_grid_charge_allowed",
+                {
+                  "type": "section",
+                  "label": "Discharge"
+                },
+                "sensor.battery_strategy_hacs_plan_live_discharge_budget"
+              ]
+            },
+            {
+              "type": "entities",
+              "title": "Live macht",
+              "entities": [
+                "sensor.battery_strategy_hacs_mode",
+                "sensor.battery_strategy_hacs_command_power",
+                "sensor.battery_strategy_hacs_reason",
+                "sensor.battery_strategy_hacs_pv_surplus",
+                "sensor.battery_strategy_hacs_allowed_discharge_load",
+                "sensor.battery_strategy_hacs_residual_no_ev",
+                "sensor.battery_strategy_hacs_residual_with_ev"
+              ]
+            },
+            {
+              "type": "entities",
+              "title": "Live Messwerte",
+              "entities": [
+                "sensor.battery_strategy_hacs_grid_import",
+                "sensor.battery_strategy_hacs_grid_export",
+                "sensor.battery_strategy_hacs_house_load_no_ev",
+                "sensor.battery_strategy_hacs_house_load_total",
+                "sensor.battery_strategy_hacs_ev_power",
+                "sensor.battery_strategy_hacs_battery_power",
+                "sensor.battery_strategy_hacs_soc"
+              ]
+            }
+          ],
+          "icon": "mdi:battery-sync",
+          "path": "simulation",
+          "title": "Live Status"
+        },
+        {
+          "cards": [
+            {
+              "entities": [
+                "sensor.battery_strategy_hacs_tomorrow_strategy_passed",
+                "sensor.battery_strategy_hacs_plan_max_tomorrow_power_delta",
+                "sensor.battery_strategy_hacs_baseline_cost_tomorrow",
+                "sensor.battery_strategy_hacs_optimized_cost_tomorrow",
+                "sensor.battery_strategy_hacs_estimated_savings_tomorrow",
+                "sensor.battery_strategy_hacs_virtual_soc_end_tomorrow",
+                "sensor.battery_strategy_hacs_profile_tomorrow"
+              ],
+              "title": "Strategie Alt vs Neu",
+              "type": "entities"
+            },
+            {
+              "type": "entities",
+              "title": "Plan an Live aktuell",
+              "entities": [
+                {
+                  "type": "section",
+                  "label": "TS"
+                },
+                "sensor.battery_strategy_hacs_plan_live_slot_start",
+                "sensor.battery_strategy_hacs_plan_live_slot_end",
+                {
+                  "type": "section",
+                  "label": "Charge"
+                },
+                "sensor.battery_strategy_hacs_plan_live_pv_charge_allowed",
+                "sensor.battery_strategy_hacs_plan_live_must_charge",
+                "sensor.battery_strategy_hacs_plan_live_must_charge_remaining",
+                "sensor.battery_strategy_hacs_plan_live_grid_charge_allowed",
+                {
+                  "type": "section",
+                  "label": "Discharge"
+                },
+                "sensor.battery_strategy_hacs_plan_live_discharge_budget"
+              ]
+            },
+            {
+              "entities": [
+                "sensor.battery_strategy_hacs_planned_power",
+                "sensor.battery_strategy_live_command_power"
+              ],
+              "hours_to_show": 48,
+              "title": "Morgen Plan Leistung",
+              "type": "history-graph"
+            }
+          ],
+          "icon": "mdi:calendar-tomorrow",
+          "path": "tomorrow",
+          "title": "Morgenvergleich"
+        },
+        {
+          "icon": "mdi:chart-areaspline",
+          "path": "planprofile",
+          "title": "Planprofile",
+          "type": "sections",
+          "max_columns": 2,
+          "sections": [
+            {
+              "type": "grid",
+              "cards": [
+                {
+                  "type": "custom:apexcharts-card",
+                  "header": {
+                    "show": true,
+                    "title": "Neu: Batterieprofil Heute (Preis + SoC Ist/Plan)"
+                  },
+                  "graph_span": "24h",
+                  "span": {
+                    "start": "day"
+                  },
+                  "yaxis": [
+                    {
+                      "id": "soc",
+                      "min": 0,
+                      "max": 100,
+                      "decimals": 0,
+                      "apex_config": {
+                        "opposite": false
+                      }
+                    },
+                    {
+                      "id": "price",
+                      "min": 0,
+                      "decimals": 1,
+                      "apex_config": {
+                        "opposite": true
+                      }
+                    }
+                  ],
+                  "series": [
+                    {
+                      "entity": "sensor.battery_strategy_hacs_profile_today",
+                      "name": "Preis (ct/kWh)",
+                      "type": "line",
+                      "color": "#f39c12",
+                      "stroke_width": 2,
+                      "yaxis_id": "price",
+                      "data_generator": "return entity.attributes.price || [];"
+                    },
+                    {
+                      "entity": "sensor.battery_strategy_hacs_soc",
+                      "name": "SoC Ist (%)",
+                      "type": "line",
+                      "color": "#2e86de",
+                      "stroke_width": 3,
+                      "yaxis_id": "soc",
+                      "extend_to": false,
+                      "show": {
+                        "in_header": false
+                      }
+                    },
+                    {
+                      "entity": "sensor.battery_strategy_hacs_profile_today",
+                      "name": "SoC Plan Resttag (%)",
+                      "type": "line",
+                      "color": "#e74c3c",
+                      "stroke_width": 1,
+                      "opacity": 0.9,
+                      "curve": "straight",
+                      "yaxis_id": "soc",
+                      "data_generator": "const now=Date.now(); return (entity.attributes.soc || []).filter(p=>p[0]>=now);"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "grid",
+              "cards": [
+                {
+                  "type": "custom:apexcharts-card",
+                  "header": {
+                    "show": true,
+                    "title": "Neu: Batterieprofil Morgen (Preis + SoC Plan)"
+                  },
+                  "graph_span": "24h",
+                  "span": {
+                    "start": "day",
+                    "offset": "+1d"
+                  },
+                  "yaxis": [
+                    {
+                      "id": "soc",
+                      "min": 0,
+                      "max": 100,
+                      "decimals": 0,
+                      "apex_config": {
+                        "opposite": false
+                      }
+                    },
+                    {
+                      "id": "price",
+                      "min": 0,
+                      "decimals": 1,
+                      "apex_config": {
+                        "opposite": true
+                      }
+                    }
+                  ],
+                  "series": [
+                    {
+                      "entity": "sensor.battery_strategy_hacs_profile_tomorrow",
+                      "name": "Preis (ct/kWh)",
+                      "type": "line",
+                      "color": "#f39c12",
+                      "stroke_width": 2,
+                      "yaxis_id": "price",
+                      "data_generator": "return entity.attributes.price || [];"
+                    },
+                    {
+                      "entity": "sensor.battery_strategy_hacs_profile_tomorrow",
+                      "name": "SoC Plan (%)",
+                      "type": "line",
+                      "color": "#e74c3c",
+                      "stroke_width": 1,
+                      "opacity": 0.9,
+                      "curve": "straight",
+                      "yaxis_id": "soc",
+                      "data_generator": "return entity.attributes.soc || [];"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "grid",
+              "column_span": 2,
+              "cards": [
+                {
+                  "type": "custom:apexcharts-card",
+                  "header": {
+                    "show": true,
+                    "title": "Neu: PV, Hauslast und Plan-Residual (48h)"
+                  },
+                  "graph_span": "48h",
+                  "span": {
+                    "start": "day"
+                  },
+                  "yaxis": [
+                    {
+                      "min": 0,
+                      "decimals": 0,
+                      "apex_config": {
+                        "forceNiceScale": true
+                      }
+                    }
+                  ],
+                  "series": [
+                    {
+                      "entity": "sensor.battery_strategy_hacs_profile_48h",
+                      "name": "PV Forecast (W)",
+                      "type": "line",
+                      "color": "#f39c12",
+                      "stroke_width": 2,
+                      "extend_to": false,
+                      "data_generator": "return entity.attributes.pv_fc_power || [];"
+                    },
+                    {
+                      "entity": "sensor.battery_strategy_hacs_profile_48h",
+                      "name": "PV Ist (W)",
+                      "type": "line",
+                      "color": "#f39c12",
+                      "stroke_width": 1,
+                      "opacity": 0.55,
+                      "extend_to": false,
+                      "data_generator": "return entity.attributes.pv_actual_power || [];"
+                    },
+                    {
+                      "entity": "sensor.battery_strategy_hacs_profile_48h",
+                      "name": "Hauslast Forecast ohne EV (W)",
+                      "type": "line",
+                      "color": "#2e86de",
+                      "stroke_width": 2,
+                      "extend_to": false,
+                      "data_generator": "return entity.attributes.house_fc_power || [];"
+                    },
+                    {
+                      "entity": "sensor.battery_strategy_hacs_profile_48h",
+                      "name": "Hauslast Ist ohne EV (W)",
+                      "type": "line",
+                      "color": "#2e86de",
+                      "stroke_width": 1,
+                      "opacity": 0.55,
+                      "extend_to": false,
+                      "data_generator": "return entity.attributes.house_actual_power || [];"
+                    },
+                    {
+                      "entity": "sensor.battery_strategy_hacs_profile_48h",
+                      "name": "PV-Ueberschuss Plan (W)",
+                      "type": "column",
+                      "color": "#27ae60",
+                      "opacity": 0.35,
+                      "data_generator": "const pv=entity.attributes.pv_fc_power||[]; const load=new Map((entity.attributes.house_fc_power||[]).map(p=>[p[0],p[1]])); return pv.map(p=>[p[0], Math.max(0, p[1]-(load.get(p[0])||0))]);"
+                    },
+                    {
+                      "entity": "sensor.battery_strategy_hacs_profile_48h",
+                      "name": "Restlast Plan (W)",
+                      "type": "column",
+                      "color": "#c0392b",
+                      "opacity": 0.25,
+                      "data_generator": "const load=entity.attributes.house_fc_power||[]; const pv=new Map((entity.attributes.pv_fc_power||[]).map(p=>[p[0],p[1]])); return load.map(p=>[p[0], Math.max(0, p[1]-(pv.get(p[0])||0))]);"
+                    },
+                    {
+                      "entity": "sensor.battery_strategy_hacs_profile_48h",
+                      "name": "Netzsaldo Ist (W)",
+                      "type": "line",
+                      "color": "#7f8c8d",
+                      "stroke_width": 1,
+                      "opacity": 0.5,
+                      "extend_to": false,
+                      "data_generator": "return entity.attributes.grid_net_actual_power || [];"
+                    }
+                  ],
+                  "apex_config": {
+                    "plotOptions": {
+                      "bar": {
+                        "columnWidth": "80%"
+                      }
+                    },
+                    "chart": {
+                      "stacked": false
+                    }
+                  },
+                  "grid_options": {
+                    "columns": "full"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "cards": [
+            {
+              "entities": [
+                {
+                  "type": "section",
+                  "label": "Heute"
+                },
+                "sensor.battery_strategy_hacs_baseline_cost_today",
+                "sensor.battery_strategy_hacs_optimized_cost_today",
+                "sensor.battery_strategy_hacs_estimated_savings_today",
+                {
+                  "type": "section",
+                  "label": "Morgen"
+                },
+                "sensor.battery_strategy_hacs_baseline_cost_tomorrow",
+                "sensor.battery_strategy_hacs_optimized_cost_tomorrow",
+                "sensor.battery_strategy_hacs_estimated_savings_tomorrow"
+              ],
+              "title": "Kosten und Einsparungen",
+              "type": "entities"
+            },
+            {
+              "entities": [
+                "sensor.battery_strategy_actual_savings_cumulative",
+                "sensor.battery_strategy_actual_savings_today",
+                {
+                  "type": "section",
+                  "label": "Laden"
+                },
+                "sensor.battery_strategy_actual_charge_total_today",
+                "sensor.battery_strategy_actual_charge_grid_today",
+                "sensor.battery_strategy_actual_charge_pv_today",
+                "sensor.battery_strategy_actual_avg_charge_price_today",
+                {
+                  "type": "section",
+                  "label": "Entladen"
+                },
+                "sensor.battery_strategy_actual_discharge_credited_today",
+                "sensor.battery_strategy_actual_avg_discharge_price_today"
+              ],
+              "title": "Ist-Kosten",
+              "type": "entities"
+            }
+          ],
+          "icon": "mdi:cash-multiple",
+          "path": "costs",
+          "title": "Kosten"
+        },
+        {
+          "cards": [
+            {
+              "entities": [
+                "input_select.battery_strategy_control_source",
+                "switch.battery_strategy_hacs_strategie_aktiv",
+                "select.battery_strategy_hacs_pv_ueberschuss_laden",
+                "select.battery_strategy_hacs_netzladen",
+                "select.battery_strategy_hacs_entladen"
+              ],
+              "title": "Modus",
+              "type": "entities"
+            },
+            {
+              "entities": [
+                "switch.battery_strategy_hacs_pv_zuerst_ins_auto",
+                "switch.battery_strategy_hacs_batterie_darf_auto_versorgen",
+                "number.battery_strategy_hacs_auto_laedt_ab"
+              ],
+              "title": "EV Policy",
+              "type": "entities"
+            },
+            {
+              "entities": [
+                "number.battery_strategy_hacs_minimaler_soc",
+                "number.battery_strategy_hacs_maximaler_soc",
+                "number.battery_strategy_hacs_max_ladeleistung",
+                "number.battery_strategy_hacs_max_entladeleistung",
+                "number.battery_strategy_hacs_roundtrip_wirkungsgrad",
+                "number.battery_strategy_hacs_mindestmarge",
+                "number.battery_strategy_hacs_einspeiseverguetung",
+                "number.battery_strategy_hacs_planungshorizont"
+              ],
+              "title": "Batterie und Preise",
+              "type": "entities"
+            },
+            {
+              "entities": [
+                "select.battery_strategy_hacs_manueller_modus",
+                "number.battery_strategy_hacs_manuelle_leistung",
+                "sensor.battery_strategy_hacs_override_active",
+                "sensor.battery_strategy_hacs_live_command_passed"
+              ],
+              "title": "Manueller Override",
+              "type": "entities"
+            }
+          ],
+          "icon": "mdi:cog",
+          "path": "settings",
+          "title": "Einstellungen"
+        }
+      ]
+    }
+  }
+}

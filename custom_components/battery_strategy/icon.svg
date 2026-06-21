@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="Battery Strategy">
+  <defs>
+    <linearGradient id="cell" x1="56" y1="190" x2="200" y2="46" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#12b886"/>
+      <stop offset="0.52" stop-color="#0ca678"/>
+      <stop offset="1" stop-color="#087f5b"/>
+    </linearGradient>
+    <linearGradient id="bolt" x1="96" y1="202" x2="168" y2="52" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffd43b"/>
+      <stop offset="1" stop-color="#ff922b"/>
+    </linearGradient>
+  </defs>
+  <rect width="256" height="256" rx="56" fill="#101828"/>
+  <path d="M58 92c0-13.3 10.7-24 24-24h92c13.3 0 24 10.7 24 24v72c0 13.3-10.7 24-24 24H82c-13.3 0-24-10.7-24-24V92Z" fill="url(#cell)"/>
+  <path d="M198 108h10c7.7 0 14 6.3 14 14v12c0 7.7-6.3 14-14 14h-10v-40Z" fill="#0ca678"/>
+  <path d="M139 46 92 132h38l-14 78 51-96h-39l11-68Z" fill="url(#bolt)"/>
+  <path d="M83 90h28M83 166h38M159 166h18" fill="none" stroke="#d3f9d8" stroke-width="10" stroke-linecap="round"/>
+</svg>

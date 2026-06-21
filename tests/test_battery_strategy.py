@@ -11,6 +11,63 @@ spec.loader.exec_module(mod)
 
 
 class PlannedDispatchTests(unittest.TestCase):
+    def test_house_actual_profile_uses_stored_ev_corrected_load(self):
+        now = 1_800_000.0
+        hour = int(now // 3600) * 3600
+        samples = [
+            {
+                "ts": hour + 60,
+                "load_w": 200.0,
+                "house_w": 200.0,
+                "house_total_w": 10200.0,
+                "wallbox_w": 10000.0,
+            },
+            {
+                "ts": hour + 900,
+                "load_w": 240.0,
+                "house_w": 240.0,
+                "house_total_w": 10240.0,
+                "wallbox_w": 10000.0,
+            },
+        ]
+        self.assertEqual(
+            mod.build_house_actual_profile_from_samples(samples, hours=1, now_ts=now),
+            [[hour * 1000, 220.0]],
+        )
+
+    def test_charge_follow_surplus_counts_ev_load(self):
+        # PV 6 kW, non-EV house 1 kW, EV 4 kW, no battery effect => only 1 kW real export remains.
+        self.assertEqual(
+            mod.real_charge_follow_surplus_w(
+                grid_import_w=0.0,
+                grid_export_w=1000.0,
+                bat_in_out_w=0.0,
+            ),
+            1000.0,
+        )
+
+    def test_charge_follow_surplus_is_zero_when_ev_consumes_export(self):
+        # Without EV this would look like 5 kW surplus, but real grid export is zero.
+        self.assertEqual(
+            mod.real_charge_follow_surplus_w(
+                grid_import_w=0.0,
+                grid_export_w=0.0,
+                bat_in_out_w=0.0,
+            ),
+            0.0,
+        )
+
+    def test_discharge_net_still_ignores_ev_load(self):
+        self.assertEqual(
+            mod.net_no_battery_no_ev_w(
+                grid_import_w=5000.0,
+                grid_export_w=0.0,
+                bat_in_out_w=0.0,
+                wallbox_w=4000.0,
+            ),
+            1000.0,
+        )
+
     def test_idle_slot_does_not_inherit_discharge_mode(self):
         mode, power = mod.derive_planned_dispatch(
             {"mode": "idle", "power_w": 0.0},

@@ -1,0 +1,39 @@
+manual_charge:
+  fields:
+    power_w:
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 10000
+          unit_of_measurement: W
+    duration_min:
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 1440
+          unit_of_measurement: min
+
+manual_discharge:
+  fields:
+    power_w:
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 10000
+          unit_of_measurement: W
+    duration_min:
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 1440
+          unit_of_measurement: min
+
+stop_manual:
+
+recalculate:
+
+reset_statistics:

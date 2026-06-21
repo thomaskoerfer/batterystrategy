@@ -161,6 +161,16 @@ input_boolean:
     icon: mdi:battery-arrow-down
     initial: off
 
+input_select:
+  battery_strategy_control_source:
+    name: Battery Strategy Steuerung
+    icon: mdi:source-branch
+    options:
+      - Alt
+      - Neu
+      - Aus
+    initial: Neu
+
 input_number:
   battery_strategy_battery_input_baseline_kwh:
     name: Battery Strategy Battery Input Baseline kWh
@@ -180,7 +190,7 @@ template:
       - name: Battery Strategy PV Follow Strong Export
         unique_id: codex_battery_strategy_pv_follow_strong_export
         state: >
-          {% set residual = states('sensor.battery_strategy_residual_net_no_battery_no_ev') | float(0) %}
+          {% set residual = states('sensor.battery_strategy_residual_net_no_battery_with_ev') | float(0) %}
           {% set soc = states('sensor.hoa1nan7n331666_electriclevel') | float(100) %}
           {{ residual <= -200 and soc < 99 }}
       - name: Battery Strategy PV Follow Stable Export
@@ -188,14 +198,14 @@ template:
         delay_on: "00:00:45"
         delay_off: "00:01:30"
         state: >
-          {% set residual = states('sensor.battery_strategy_residual_net_no_battery_no_ev') | float(0) %}
+          {% set residual = states('sensor.battery_strategy_residual_net_no_battery_with_ev') | float(0) %}
           {% set soc = states('sensor.hoa1nan7n331666_electriclevel') | float(100) %}
           {{ residual <= -60 and soc < 99 }}
   - sensor:
       - name: Battery Strategy Mode
         unique_id: codex_battery_strategy_mode
         state: >
-          {% if is_state('input_boolean.battery_strategy_kill_switch', 'on') %}
+          {% if is_state('input_boolean.battery_strategy_kill_switch', 'on') or is_state('input_select.battery_strategy_control_source', 'Aus') %}
             disabled
           {% else %}
           {% set base_mode = state_attr('sensor.battery_strategy_dryrun', 'mode') or states('sensor.battery_strategy_dryrun') %}
@@ -327,17 +337,15 @@ template:
           {% set effective_mode = states('sensor.battery_strategy_mode') %}
           {% set planned_charge = state_attr('sensor.battery_strategy_dryrun', 'planned_charge_power_w') | float(0) %}
           {% set planned_discharge = state_attr('sensor.battery_strategy_dryrun', 'planned_discharge_power_w') | float(0) %}
-          {% set pv = states('sensor.solarmanpv_station_generationpower') | float(0) %}
           {% set gi = states('sensor.battery_strategy_grid_import_live_power_now') | float(0) %}
           {% set ge = states('sensor.battery_strategy_grid_export_live_power_now') | float(0) %}
           {% set wb = (states('sensor.wallbox_leistung') | float(0)) * 1000 %}
           {% set bat = states('sensor.battery_strategy_battery_in_out_live_power') | float(0) %}
-          {% set house_total = [0, gi + pv + bat - ge] | max %}
-          {% set house_wo_ev = [0, house_total - wb] | max %}
-          {% set pv_surplus = [0, pv - house_wo_ev] | max %}
+          {% set residual_with_ev = gi - ge + bat %}
+          {% set pv_surplus = [0, -1 * residual_with_ev] | max %}
           {% set net_wo_ev = [0, gi - ge + bat - wb] | max %}
           {% if effective_mode == 'charge_follow' %}
-            {{ [ [planned_charge, pv_surplus] | max, 2400 ] | min | round(0) }}
+            {{ [pv_surplus, 2400] | min | round(0) }}
           {% elif effective_mode in ['charge_grid', 'charge_pv_surplus'] %}
             {{ [planned_charge, 2400] | min | round(0) }}
           {% elif effective_mode == 'discharge_push' %}
@@ -354,16 +362,13 @@ template:
         state: >
           {% set effective_mode = states('sensor.battery_strategy_mode') %}
           {% set planned = state_attr('sensor.battery_strategy_dryrun', 'planned_charge_power_w') | float(0) %}
-          {% set pv = states('sensor.solarmanpv_station_generationpower') | float(0) %}
           {% set gi = states('sensor.battery_strategy_grid_import_live_power_now') | float(0) %}
           {% set ge = states('sensor.battery_strategy_grid_export_live_power_now') | float(0) %}
-          {% set wb = (states('sensor.wallbox_leistung') | float(0)) * 1000 %}
           {% set bat = states('sensor.battery_strategy_battery_in_out_live_power') | float(0) %}
-          {% set house_total = [0, gi + pv + bat - ge] | max %}
-          {% set house_wo_ev = [0, house_total - wb] | max %}
-          {% set pv_surplus = [0, pv - house_wo_ev] | max %}
+          {% set residual_with_ev = gi - ge + bat %}
+          {% set pv_surplus = [0, -1 * residual_with_ev] | max %}
           {% if effective_mode == 'charge_follow' %}
-            {{ [ [planned, pv_surplus] | max, 2400 ] | min | round(0) }}
+            {{ [pv_surplus, 2400] | min | round(0) }}
           {% elif effective_mode in ['charge_grid', 'charge_pv_surplus'] %}
             {{ [planned, 2400] | min | round(0) }}
           {% else %}
@@ -402,18 +407,28 @@ template:
           {% set wb = (wb_raw * 1000) if ('charg' in wb_status) else 0 %}
           {% set bat = states('sensor.battery_strategy_battery_in_out_live_power') | float(0) %}
           {{ (gi - ge + bat - wb) | round(0) }}
+      - name: Battery Strategy Residual Net No Battery With EV
+        unique_id: codex_battery_strategy_residual_net_no_battery_with_ev
+        unit_of_measurement: "W"
+        state_class: measurement
+        state: >
+          {% set gi = states('sensor.battery_strategy_grid_import_live_power_now') | float(0) %}
+          {% set ge = states('sensor.battery_strategy_grid_export_live_power_now') | float(0) %}
+          {% set bat = states('sensor.battery_strategy_battery_in_out_live_power') | float(0) %}
+          {{ (gi - ge + bat) | round(0) }}
       - name: Battery Strategy Live Command Power
         unique_id: codex_battery_strategy_live_command_power
         unit_of_measurement: "W"
         state_class: measurement
         state: >
-          {% if is_state('input_boolean.battery_strategy_kill_switch', 'on') %}
+          {% if is_state('input_boolean.battery_strategy_kill_switch', 'on') or is_state('input_select.battery_strategy_control_source', 'Aus') %}
             0
           {% else %}
           {% set mode = state_attr('sensor.battery_strategy_dryrun', 'mode') or states('sensor.battery_strategy_dryrun') %}
           {% set planned_charge = state_attr('sensor.battery_strategy_dryrun', 'planned_charge_power_w') | float(0) %}
           {% set planned_discharge = state_attr('sensor.battery_strategy_dryrun', 'planned_discharge_power_w') | float(0) %}
           {% set residual = states('sensor.battery_strategy_residual_net_no_battery_no_ev') | float(0) %}
+          {% set residual_with_ev = states('sensor.battery_strategy_residual_net_no_battery_with_ev') | float(0) %}
           {% set ge_live = states('sensor.battery_strategy_grid_export_live_power_now') | float(0) %}
           {% set cur_out = states('number.hoa1nan7n331666_outputlimit') | float(0) %}
           {% set pv_follow_fast = is_state('binary_sensor.battery_strategy_pv_follow_strong_export', 'on') or is_state('binary_sensor.battery_strategy_pv_follow_stable_export', 'on') %}
@@ -421,14 +436,14 @@ template:
           {% set full_discharge = is_state('input_boolean.battery_strategy_full_discharge', 'on') %}
           {% if full_discharge and residual > 20 %}
             {% set p = [[0, residual] | max, 2400] | min %}
-          {% elif full_discharge and residual < -60 %}
-            {% set p = [[0, (-1 * residual) - 20] | max, 2400] | min %}
+          {% elif full_discharge and residual_with_ev < -60 %}
+            {% set p = [[0, (-1 * residual_with_ev) - 20] | max, 2400] | min %}
           {% elif full_discharge %}
             {% set p = 0 %}
           {% elif mode in ['idle', 'discharge_blocked'] and pv_follow_fast %}
-            {% set p = [[0, (-1 * residual) - 20] | max, 2400] | min %}
+            {% set p = [[0, (-1 * residual_with_ev) - 20] | max, 2400] | min %}
           {% elif mode == 'charge_grid' and suppress_charge_grid and pv_follow_fast %}
-            {% set p = [[0, (-1 * residual) - 20] | max, 2400] | min %}
+            {% set p = [[0, (-1 * residual_with_ev) - 20] | max, 2400] | min %}
           {% elif mode == 'charge_grid' and suppress_charge_grid %}
             {% set p = 0 %}
           {% elif mode == 'discharge_push' %}
@@ -454,8 +469,8 @@ template:
               {% set p = raw %}
             {% endif %}
           {% elif mode == 'charge_follow' %}
-            {% set pv_follow = [0, -1 * residual] | max %}
-            {% set p = [[planned_charge, pv_follow] | max, 2400] | min %}
+            {% set pv_follow = [0, -1 * residual_with_ev] | max %}
+            {% set p = [pv_follow, 2400] | min %}
           {% elif mode in ['charge_grid', 'charge_pv_surplus'] %}
             {% set p = [[0, planned_charge] | max, 2400] | min %}
           {% else %}
@@ -466,12 +481,13 @@ template:
       - name: Battery Strategy Live Command Mode
         unique_id: codex_battery_strategy_live_command_mode
         state: >
-          {% if is_state('input_boolean.battery_strategy_kill_switch', 'on') %}
+          {% if is_state('input_boolean.battery_strategy_kill_switch', 'on') or is_state('input_select.battery_strategy_control_source', 'Aus') %}
             idle
           {% else %}
           {% set mode = state_attr('sensor.battery_strategy_dryrun', 'mode') or states('sensor.battery_strategy_dryrun') %}
           {% set p = states('sensor.battery_strategy_live_command_power') | float(0) %}
           {% set residual = states('sensor.battery_strategy_residual_net_no_battery_no_ev') | float(0) %}
+          {% set residual_with_ev = states('sensor.battery_strategy_residual_net_no_battery_with_ev') | float(0) %}
           {% set pv_follow_fast = is_state('binary_sensor.battery_strategy_pv_follow_strong_export', 'on') or is_state('binary_sensor.battery_strategy_pv_follow_stable_export', 'on') %}
           {% set suppress_charge_grid = is_state('input_boolean.battery_strategy_suppress_charge_grid', 'on') %}
           {% set full_discharge = is_state('input_boolean.battery_strategy_full_discharge', 'on') %}
@@ -479,7 +495,7 @@ template:
             idle
           {% elif full_discharge and residual > 20 %}
             output
-          {% elif full_discharge and residual < -60 %}
+          {% elif full_discharge and residual_with_ev < -60 %}
             input
           {% elif mode == 'charge_grid' and suppress_charge_grid and pv_follow_fast %}
             input
@@ -498,10 +514,11 @@ template:
         state: >
           {% set mode = state_attr('sensor.battery_strategy_dryrun', 'mode') or states('sensor.battery_strategy_dryrun') %}
           {% set residual = states('sensor.battery_strategy_residual_net_no_battery_no_ev') | float(0) %}
+          {% set residual_with_ev = states('sensor.battery_strategy_residual_net_no_battery_with_ev') | float(0) %}
           {% set pv_follow_fast = is_state('binary_sensor.battery_strategy_pv_follow_strong_export', 'on') or is_state('binary_sensor.battery_strategy_pv_follow_stable_export', 'on') %}
           {% if is_state('input_boolean.battery_strategy_full_discharge', 'on') and residual > 20 %}
             full_discharge_output
-          {% elif is_state('input_boolean.battery_strategy_full_discharge', 'on') and residual < -60 %}
+          {% elif is_state('input_boolean.battery_strategy_full_discharge', 'on') and residual_with_ev < -60 %}
             full_discharge_pv_follow
           {% elif is_state('input_boolean.battery_strategy_full_discharge', 'on') %}
             full_discharge_idle
@@ -932,11 +949,14 @@ automation:
           - input_boolean.battery_strategy_kill_switch
           - input_boolean.battery_strategy_suppress_charge_grid
           - input_boolean.battery_strategy_full_discharge
+          - input_select.battery_strategy_control_source
           - sensor.battery_strategy_live_command_mode
           - sensor.battery_strategy_live_command_power
       - platform: time_pattern
         seconds: "/10"
     condition:
+      - condition: template
+        value_template: "{{ states('input_select.battery_strategy_control_source') != 'Neu' }}"
       - condition: template
         value_template: >
           {{ states('select.hoa1nan7n331666_acmode') not in ['unknown', 'unavailable', 'none'] and

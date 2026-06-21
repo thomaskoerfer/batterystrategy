@@ -27,3 +27,4 @@ backups/
 *.bak
 *.swp
 *~
+.aider*

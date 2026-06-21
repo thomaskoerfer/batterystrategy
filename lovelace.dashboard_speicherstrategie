@@ -247,6 +247,155 @@
           ]
         },
         {
+          "path": "config",
+          "title": "Config",
+          "badges": [],
+          "cards": [
+            {
+              "type": "entities",
+              "title": "Steuerquelle",
+              "entities": [
+                {
+                  "entity": "input_select.battery_strategy_control_source",
+                  "name": "Aktive Steuerung"
+                },
+                {
+                  "entity": "switch.battery_strategy_hacs_strategie_aktiv",
+                  "name": "Neue Strategie aktiv"
+                },
+                {
+                  "type": "divider"
+                },
+                {
+                  "entity": "sensor.battery_strategy_hacs_mode",
+                  "name": "Neu Live-Modus"
+                },
+                {
+                  "entity": "sensor.battery_strategy_hacs_command_power",
+                  "name": "Neu Live-Leistung"
+                },
+                {
+                  "entity": "sensor.battery_strategy_hacs_reason",
+                  "name": "Neu Live-Status"
+                },
+                {
+                  "entity": "sensor.battery_strategy_parallel_dashboard_send_commands",
+                  "name": "Neu schreibt gerade"
+                }
+              ],
+              "show_header_toggle": false
+            },
+            {
+              "type": "markdown",
+              "content": "### Steuerquelle\n**Alt**: bestehende YAML-Steuerung schreibt, HACS rechnet nur mit.  \n**Neu**: HACS schreibt die Batterie-Befehle, die alte YAML-Aktuierung ist gesperrt.  \n**Aus**: Batterie-Befehl wird auf idle/0 W gesetzt."
+            },
+            {
+              "type": "entities",
+              "title": "Strategie",
+              "entities": [
+                {
+                  "entity": "select.battery_strategy_hacs_pv_ueberschuss_laden",
+                  "name": "PV-Ueberschuss laden"
+                },
+                {
+                  "entity": "select.battery_strategy_hacs_netzladen",
+                  "name": "Netzladen"
+                },
+                {
+                  "entity": "select.battery_strategy_hacs_entladen",
+                  "name": "Entladen"
+                },
+                {
+                  "entity": "switch.battery_strategy_hacs_debug_trace_aufzeichnen",
+                  "name": "Debug Trace aufzeichnen"
+                }
+              ],
+              "show_header_toggle": false
+            },
+            {
+              "type": "entities",
+              "title": "EV Policy",
+              "entities": [
+                {
+                  "entity": "switch.battery_strategy_hacs_pv_zuerst_ins_auto",
+                  "name": "PV zuerst ins Auto"
+                },
+                {
+                  "entity": "switch.battery_strategy_hacs_batterie_darf_auto_versorgen",
+                  "name": "Batterie darf Auto versorgen"
+                },
+                {
+                  "entity": "number.battery_strategy_hacs_auto_laedt_ab",
+                  "name": "Auto laedt ab"
+                }
+              ],
+              "show_header_toggle": false
+            },
+            {
+              "type": "entities",
+              "title": "Batterie und Preise",
+              "entities": [
+                {
+                  "entity": "number.battery_strategy_hacs_minimaler_soc",
+                  "name": "Minimaler SoC"
+                },
+                {
+                  "entity": "number.battery_strategy_hacs_maximaler_soc",
+                  "name": "Maximaler SoC"
+                },
+                {
+                  "entity": "number.battery_strategy_hacs_max_ladeleistung",
+                  "name": "Max Ladeleistung"
+                },
+                {
+                  "entity": "number.battery_strategy_hacs_max_entladeleistung",
+                  "name": "Max Entladeleistung"
+                },
+                {
+                  "entity": "number.battery_strategy_hacs_min_befehlsleistung",
+                  "name": "Min Befehlsleistung"
+                },
+                {
+                  "entity": "number.battery_strategy_hacs_min_befehlsaenderung",
+                  "name": "Min Befehlsaenderung"
+                },
+                {
+                  "entity": "number.battery_strategy_hacs_roundtrip_wirkungsgrad",
+                  "name": "Roundtrip Wirkungsgrad"
+                },
+                {
+                  "entity": "number.battery_strategy_hacs_mindestmarge",
+                  "name": "Mindestmarge"
+                },
+                {
+                  "entity": "number.battery_strategy_hacs_einspeiseverguetung",
+                  "name": "Einspeiseverguetung"
+                },
+                {
+                  "entity": "number.battery_strategy_hacs_planungshorizont",
+                  "name": "Planungshorizont"
+                }
+              ],
+              "show_header_toggle": false
+            },
+            {
+              "type": "entities",
+              "title": "Manueller Override",
+              "entities": [
+                {
+                  "entity": "select.battery_strategy_hacs_manueller_modus",
+                  "name": "Manueller Modus"
+                },
+                {
+                  "entity": "number.battery_strategy_hacs_manuelle_leistung",
+                  "name": "Manuelle Leistung"
+                }
+              ],
+              "show_header_toggle": false
+            }
+          ]
+        },
+        {
           "path": "debug",
           "title": "Debug",
           "badges": [],

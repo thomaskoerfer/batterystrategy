@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 220" role="img" aria-label="Battery Strategy">
+  <rect width="720" height="220" rx="44" fill="#101828"/>
+  <g transform="translate(36 34)">
+    <rect x="0" y="28" width="132" height="96" rx="24" fill="#0ca678"/>
+    <rect x="132" y="56" width="24" height="40" rx="10" fill="#0ca678"/>
+    <path d="M82 0 38 82h37l-14 78 54-98H78L82 0Z" fill="#ffd43b"/>
+    <path d="M24 52h28M24 100h38M99 100h16" fill="none" stroke="#d3f9d8" stroke-width="9" stroke-linecap="round"/>
+  </g>
+  <text x="230" y="92" fill="#f8fafc" font-family="Inter, Arial, sans-serif" font-size="46" font-weight="750">Battery Strategy</text>
+  <text x="232" y="139" fill="#98a2b3" font-family="Inter, Arial, sans-serif" font-size="24" font-weight="500">PV, price and storage optimizer</text>
+</svg>
