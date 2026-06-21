@@ -1620,7 +1620,7 @@ def build_virtual_plan(intervals, samples, start_energy_kwh, weather_factor, for
                 if inferred_tail_value_ct > terminal_value_ct:
                     terminal_value_ct = inferred_tail_value_ct
                 inferred_floor_ct = (horizon_min_ct / ETA_RT) + MIN_MARGIN_CT
-                if discharge_floor_ct is None or inferred_floor_ct > discharge_floor_ct:
+                if discharge_floor_ct is None or inferred_floor_ct < discharge_floor_ct:
                     discharge_floor_ct = inferred_floor_ct
                 cheap_slots = [s for s in slots if s["price_ct"] <= (horizon_min_ct + 0.4)]
                 if cheap_slots:
