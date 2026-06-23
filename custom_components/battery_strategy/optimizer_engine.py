@@ -1823,6 +1823,11 @@ def build_virtual_plan(intervals, samples, start_energy_kwh, weather_factor, for
         cur_mode_idx = prev_mode_idx
 
     recovery_lookahead_slots = max(1, int(round(PV_RECOVERY_LOOKAHEAD_H / SLOT_H)))
+    future_planned_export_kwh = [0.0] * (n_slots + 1)
+    for idx in range(n_slots - 1, -1, -1):
+        future_planned_export_kwh[idx] = future_planned_export_kwh[idx + 1] + max(
+            0.0, float(points[idx].get("grid_export_fc_w", 0.0)) / 1000.0 * SLOT_H
+        )
 
     def recovery_window_end_idx(t):
         price_ct = float(slots[t]["price_ct"])
@@ -1838,7 +1843,10 @@ def build_virtual_plan(intervals, samples, start_energy_kwh, weather_factor, for
         recoverable_storage_kwh = future_surplus_kwh * ETA_C * PV_RECOVERY_CONFIDENCE
         headroom_after_baseline_kwh = max(0.0, MAX_E_KWH - baseline_after_e)
         spill_storage_kwh = max(0.0, recoverable_storage_kwh - headroom_after_baseline_kwh - PV_RECOVERY_RESERVE_KWH)
-        return spill_storage_kwh * ETA_D
+        spill_recovery_ac_kwh = spill_storage_kwh * ETA_D
+        planned_export_kwh = max(0.0, future_planned_export_kwh[t + 1] - future_planned_export_kwh[end_idx])
+        planned_export_recovery_ac_kwh = planned_export_kwh * ETA_RT * PV_RECOVERY_CONFIDENCE
+        return max(spill_recovery_ac_kwh, planned_export_recovery_ac_kwh)
 
     def future_higher_value_load_kwh(t):
         price_ct = float(slots[t]["price_ct"])

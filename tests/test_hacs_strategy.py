@@ -1507,6 +1507,52 @@ class HacsStrategyTests(unittest.TestCase):
         )
         self.assertGreater(plan["points"][0]["discharge_budget_kwh"], 0.0)
 
+    def test_optimizer_discharge_budget_opens_for_planned_future_export(self):
+        tz = optimizer_engine.OPEN_METEO_TZ
+        start = dt.datetime(2026, 6, 23, 12, tzinfo=tz)
+        prices = [27.0, 26.0, 25.5, 25.0, 28.0, 35.0]
+        intervals = [
+            {"dt": start + dt.timedelta(minutes=15 * i), "price_eur": price / 100.0}
+            for i, price in enumerate(prices)
+        ]
+        samples = []
+        for weeks_ago in range(1, 5):
+            base = start - dt.timedelta(days=7 * weeks_ago)
+            for i in range(len(prices)):
+                samples.append(
+                    {
+                        "ts": (base + dt.timedelta(minutes=15 * i)).timestamp(),
+                        "load_w": 800.0 if i == 0 else 100.0,
+                        "house_w": 800.0 if i == 0 else 100.0,
+                        "house_total_w": 800.0 if i == 0 else 100.0,
+                        "wallbox_w": 0.0,
+                        "grid_import_w": 800.0 if i == 0 else 0.0,
+                        "grid_export_w": 0.0,
+                        "pv_w": 0.0 if i == 0 else 3000.0,
+                        "hp_w": 0.0,
+                        "price_ct": 30.0,
+                    }
+                )
+        plan = optimizer_engine.build_virtual_plan(
+            intervals=intervals,
+            samples=samples,
+            start_energy_kwh=3.0,
+            weather_factor=1.0,
+            forecast_tomorrow_kwh=None,
+            load_bias=1.0,
+            load_bias_slots=[1.0] * optimizer_engine.SLOTS_PER_DAY,
+            pv_bias_slots=[1.0] * optimizer_engine.SLOTS_PER_DAY,
+            initial_mode=0,
+            weather_hourly={},
+            pv_now_actual_w=0.0,
+            now_local=start,
+            pv_global_bias=1.0,
+            eex_days={},
+        )
+
+        self.assertGreater(sum(p["grid_export_fc_w"] for p in plan["points"][1:4]), 0.0)
+        self.assertGreater(plan["points"][0]["discharge_budget_kwh"], 0.0)
+
     def test_optimizer_discharge_budget_reserves_scarce_energy_for_later_high_prices(self):
         tz = dt.timezone.utc
         start = dt.datetime(2026, 5, 29, 10, tzinfo=tz)
