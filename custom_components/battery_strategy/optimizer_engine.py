@@ -76,7 +76,7 @@ PV_CAPACITY_EVENTS = [
     ("2026-05-09T12:00:00+02:00", 2.3, 2.0),
 ]
 
-# PV surplus anti-cycling thresholds (dry-run recommendation)
+# PV surplus anti-cycling thresholds
 PV_SURPLUS_START_AVG_W = 50.0
 PV_SURPLUS_MIN_SAMPLE_W = 40.0
 PV_SURPLUS_REQUIRED_COUNT = 1

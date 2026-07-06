@@ -57,7 +57,7 @@
         "title": "Strategie - Modus",
         "description": "Grundlegende Betriebsarten fuer Simulation und optionale Steuerung.",
         "data": {
-          "strategy_enabled": "Strategie aktiv",
+          "strategy_enabled": "Battery Strategy Steuerung",
           "trace_enabled": "Debug Trace aufzeichnen",
           "pv_charging": "PV-Ueberschussladen",
           "grid_charging": "Netzladen",
@@ -125,7 +125,7 @@
       },
       "reference": {
         "title": "Parallelvergleich",
-        "description": "Optionale Referenz-Entities fuer den Vergleich zwischen bestehender Steuerung und Battery Strategy.",
+        "description": "Optionale Referenz-Entities fuer den Vergleich zwischen frueherer Referenz und Battery Strategy.",
         "data": {
           "reference_mode_entity": "Referenz: Modus",
           "reference_power_entity": "Referenz: Leistung",

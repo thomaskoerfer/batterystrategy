@@ -59,10 +59,6 @@ from .strategy import calculate_command, live_command_from_directive, plan_live_
 
 LOGGER = logging.getLogger(__name__)
 LOCAL_TZ = ZoneInfo("Europe/Berlin")
-CONTROL_SOURCE_ENTITY = "input_select.battery_strategy_control_source"
-CONTROL_SOURCE_OLD = "Alt"
-CONTROL_SOURCE_NEW = "Neu"
-CONTROL_SOURCE_OFF = "Aus"
 OPTIMIZER_PREFETCH_LEAD_S = 60
 
 
@@ -98,6 +94,8 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         self._slot_discharged_kwh = 0.0
         self._last_live_accounting_ts: dt.datetime | None = None
         self._last_live_command: StrategyCommand | None = None
+        self._strategy_was_enabled = bool(entry.options.get("strategy_enabled", True))
+        self._disabled_zeroed = not self._strategy_was_enabled
 
     def set_manual_override(self, mode: str, power_w: float, duration_min: int = 0) -> None:
         """Set an in-memory manual override."""
@@ -173,6 +171,7 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         reference_plan_attrs = await self.hass.async_add_executor_job(self._reference_plan_attrs_sync)
         self.plan_comparison = self._compare_optimizer_plan(plan, command, reference_plan_attrs)
         self._record_parallel_sample(inputs, command)
+        strategy_enabled = bool(self.entry.options.get("strategy_enabled", True))
         data = {
             "inputs": inputs,
             "options": options,
@@ -182,18 +181,25 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             "plan_to_live": directive,
             "plan_comparison": self.plan_comparison,
             "parallel": self.parallel_evaluation,
-            "send_commands": self._effective_send_commands(),
-            "control_source": self._control_source(),
-            "strategy_enabled": bool(self.entry.options.get("strategy_enabled", True)),
+            "send_commands": strategy_enabled,
+            "strategy_enabled": strategy_enabled,
             "actuation": self.last_actuation,
             "optimizer_age_s": self._optimizer_engine.age_s(),
             "optimizer_forced": force_optimizer,
         }
-        if data["send_commands"] and data["strategy_enabled"]:
+        if strategy_enabled:
+            self._strategy_was_enabled = True
+            self._disabled_zeroed = False
             await self._async_apply_command(command, options)
             data["actuation"] = self.last_actuation
-        elif data["send_commands"]:
-            self.last_actuation = {"status": "skipped", "reason": "strategy_disabled"}
+        elif self._strategy_was_enabled and not self._disabled_zeroed:
+            await self._async_zero_limits_once()
+            self._strategy_was_enabled = False
+            self._disabled_zeroed = True
+            data["actuation"] = self.last_actuation
+        else:
+            self._strategy_was_enabled = False
+            self.last_actuation = {"status": "disabled_no_write", "reason": "strategy_disabled"}
             data["actuation"] = self.last_actuation
         await self.hass.async_add_executor_job(self._write_parallel_state, data)
         if bool(self.entry.options.get("trace_enabled", False)):
@@ -241,21 +247,9 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             manual_power_w=manual_power,
         )
 
-    def _control_source(self) -> str:
-        """Return the external YAML/HACS actuation selector state if present."""
-        state = self.hass.states.get(CONTROL_SOURCE_ENTITY)
-        if state is None or state.state in ("unknown", "unavailable", "none", ""):
-            return ""
-        return str(state.state)
-
     def _effective_send_commands(self) -> bool:
-        """Return whether this integration is the active command writer."""
-        source = self._control_source()
-        if source == CONTROL_SOURCE_NEW:
-            return True
-        if source in (CONTROL_SOURCE_OLD, CONTROL_SOURCE_OFF):
-            return False
-        return bool(self.entry.options.get("send_commands", False))
+        """Return whether Battery Strategy is allowed to write commands."""
+        return bool(self.entry.options.get("strategy_enabled", True))
 
     def _strategy_inputs(self) -> StrategyInputs:
         grid_import, grid_export = self._grid_import_export()
@@ -363,6 +357,43 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             entities = [self.entry.data.get(CONF_GRID_IMPORT_ENTITY), self.entry.data.get(CONF_GRID_EXPORT_ENTITY)]
             return all(entity and self._state_available(entity) and self._state_age_s(entity) < 180 for entity in entities)
         return False
+
+
+    async def _async_zero_limits_once(self) -> None:
+        """Stop charging/discharging once when control is disabled, then stay hands-off."""
+        input_limit_entity = self._entity_id(CONF_ZENDURE_INPUT_LIMIT_ENTITY, "number.hoa1nan7n331666_inputlimit")
+        output_limit_entity = self._entity_id(CONF_ZENDURE_OUTPUT_LIMIT_ENTITY, "number.hoa1nan7n331666_outputlimit")
+        required_entities = [input_limit_entity, output_limit_entity]
+        if not all(self._state_available(entity) for entity in required_entities):
+            self.last_actuation = {"status": "skipped", "reason": "control_entity_unavailable"}
+            return
+
+        current_input = self._raw_state_float(input_limit_entity)
+        current_output = self._raw_state_float(output_limit_entity)
+        actions: list[str] = []
+        if current_input > 0:
+            await self.hass.services.async_call(
+                "number",
+                "set_value",
+                {"entity_id": input_limit_entity, "value": 0},
+                blocking=False,
+            )
+            actions.append("input_limit=0")
+        if current_output > 0:
+            await self.hass.services.async_call(
+                "number",
+                "set_value",
+                {"entity_id": output_limit_entity, "value": 0},
+                blocking=False,
+            )
+            actions.append("output_limit=0")
+        self.last_actuation = {
+            "status": "disabled_zeroed" if actions else "disabled_already_zero",
+            "reason": "strategy_disabled",
+            "actions": actions,
+            "current_input_limit_w": current_input,
+            "current_output_limit_w": current_output,
+        }
 
     async def _async_apply_command(self, command: StrategyCommand, options: StrategyOptions) -> None:
         """Apply the command to Zendure with anti-oscillation guardrails."""
@@ -494,7 +525,6 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
             "strategy_enabled": data["strategy_enabled"],
             "send_commands": data["send_commands"],
-            "control_source": data.get("control_source", ""),
             "optimizer_age_s": data.get("optimizer_age_s"),
             "plan_to_live": asdict(data["plan_to_live"]),
             "inputs": asdict(data["inputs"]),
@@ -540,7 +570,6 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
                 "reference_mode": reference_mode,
                 "reference_power_w": reference_power,
                 "send_commands": data["send_commands"],
-                "control_source": data.get("control_source", ""),
                 "strategy_enabled": data["strategy_enabled"],
                 "plan_input_passed": plan_comparison.plan_input_passed,
                 "tomorrow_strategy_passed": plan_comparison.tomorrow_strategy_passed,
@@ -575,7 +604,6 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             "generated_at": generated_at,
             "strategy_enabled": data["strategy_enabled"],
             "send_commands": data["send_commands"],
-            "control_source": data.get("control_source", ""),
             "grid_import_w": round(inputs.grid_import_w),
             "grid_export_w": round(inputs.grid_export_w),
             "pv_w": round(inputs.pv_w),
@@ -605,10 +633,6 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         self.hass.states.async_set(
             "sensor.battery_strategy_parallel_dashboard_send_commands",
             str(data["send_commands"]).lower(),
-        )
-        self.hass.states.async_set(
-            "sensor.battery_strategy_parallel_dashboard_control_source",
-            data.get("control_source", ""),
         )
         self.hass.states.async_set("sensor.battery_strategy_parallel_dashboard_mode", command.mode)
         self.hass.states.async_set("sensor.battery_strategy_parallel_dashboard_reason", command.reason)

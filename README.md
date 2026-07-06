@@ -4,10 +4,10 @@ Home Assistant package, dashboard, scripts and tests for the local battery/PV st
 
 ## Main files
 
-- `codex_energy_strategy.yaml`: Home Assistant package for sensors, automations and battery actuation.
-- `lovelace.dashboard_speicherstrategie`: Home Assistant dashboard storage export.
-- `scripts/battery_strategy_dryrun.py`: optimizer, forecast, backtest and actual savings logic.
-- `tests/test_battery_strategy.py`: regression tests for optimizer behavior.
+- `custom_components/battery_strategy/`: Home Assistant custom integration for planning, live control, forecasting and diagnostics.
+- `codex_energy_strategy.yaml`: neutral Home Assistant support package for live grid/battery/PV helper signals and recorder retention.
+- `lovelace.dashboard_battery_strategy_parallel`: Battery Strategy dashboard export.
+- `tests/test_hacs_strategy.py`: regression tests for strategy, optimizer and actuation behavior.
 
 ## Secrets
 
@@ -23,7 +23,7 @@ Add the real value on the HA host in `/config/secrets.yaml`. See `secrets.exampl
 ## Basic checks
 
 ```bash
-python3 -m py_compile scripts/battery_strategy_dryrun.py
+python3 -m py_compile custom_components/battery_strategy/*.py scripts/*.py
 python3 -m pytest tests
-python3 -m json.tool lovelace.dashboard_speicherstrategie >/dev/null
+python3 -m json.tool lovelace.dashboard_battery_strategy_parallel >/dev/null
 ```

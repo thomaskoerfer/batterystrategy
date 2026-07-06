@@ -99,9 +99,9 @@ if config_entries is not None:
             CONF_ZENDURE_GRID_INPUT_POWER_ENTITY: "sensor.hoa1nan7n331666_gridinputpower",
             CONF_ZENDURE_INPUT_LIMIT_ENTITY: "number.hoa1nan7n331666_inputlimit",
             CONF_ZENDURE_OUTPUT_LIMIT_ENTITY: "number.hoa1nan7n331666_outputlimit",
-            CONF_REFERENCE_MODE_ENTITY: "sensor.battery_strategy_live_command_mode",
+            CONF_REFERENCE_MODE_ENTITY: "",
             CONF_REFERENCE_OUTPUT_ENTITY: "",
-            CONF_REFERENCE_POWER_ENTITY: "sensor.battery_strategy_live_command_power",
+            CONF_REFERENCE_POWER_ENTITY: "",
         }
 
 

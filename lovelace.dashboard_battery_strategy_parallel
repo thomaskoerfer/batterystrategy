@@ -4,7 +4,7 @@
   "key": "lovelace.dashboard_battery_strategy_parallel",
   "data": {
     "config": {
-      "title": "Battery Strategy Parallel",
+      "title": "Battery Strategy",
       "views": [
         {
           "cards": [
@@ -76,7 +76,7 @@
                 "sensor.battery_strategy_hacs_virtual_soc_end_tomorrow",
                 "sensor.battery_strategy_hacs_profile_tomorrow"
               ],
-              "title": "Strategie Alt vs Neu",
+              "title": "Battery Strategy Steuerung",
               "type": "entities"
             },
             {
@@ -132,7 +132,7 @@
                   "type": "custom:apexcharts-card",
                   "header": {
                     "show": true,
-                    "title": "Neu: Batterieprofil Heute (Preis + SoC Ist/Plan)"
+                    "title": "Battery Strategy: Batterieprofil Heute (Preis + SoC Ist/Plan)"
                   },
                   "graph_span": "24h",
                   "span": {
@@ -201,7 +201,7 @@
                   "type": "custom:apexcharts-card",
                   "header": {
                     "show": true,
-                    "title": "Neu: Batterieprofil Morgen (Preis + SoC Plan)"
+                    "title": "Battery Strategy: Batterieprofil Morgen (Preis + SoC Plan)"
                   },
                   "graph_span": "24h",
                   "span": {
@@ -260,7 +260,7 @@
                   "type": "custom:apexcharts-card",
                   "header": {
                     "show": true,
-                    "title": "Neu: PV, Hauslast und Plan-Residual (48h)"
+                    "title": "Battery Strategy: PV, Hauslast und Plan-Residual (48h)"
                   },
                   "graph_span": "48h",
                   "span": {
@@ -412,7 +412,6 @@
           "cards": [
             {
               "entities": [
-                "input_select.battery_strategy_control_source",
                 "switch.battery_strategy_hacs_strategie_aktiv",
                 "select.battery_strategy_hacs_pv_ueberschuss_laden",
                 "select.battery_strategy_hacs_netzladen",

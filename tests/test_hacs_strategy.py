@@ -2,6 +2,7 @@ import unittest
 import datetime as dt
 import tempfile
 import json
+import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -79,29 +80,62 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertEqual(attrs["pv_actual_power"], [[1_800_000_000_000, 120.0]])
         self.assertEqual(attrs["house_actual_power"], [[1_800_000_000_000, 230.0]])
 
-    def _coordinator_for_control_source(self, source, send_commands=False):
-        class FakeStates:
-            def get(self, entity_id):
-                if source is None:
-                    return None
-                return SimpleNamespace(state=source)
-
+    def _coordinator_for_strategy_enabled(self, strategy_enabled=True):
         coordinator = object.__new__(BatteryStrategyCoordinator)
-        coordinator.hass = SimpleNamespace(states=FakeStates())
-        coordinator.entry = SimpleNamespace(options={"send_commands": send_commands})
+        coordinator.entry = SimpleNamespace(options={"strategy_enabled": strategy_enabled})
         return coordinator
 
-    def test_control_source_new_enables_hacs_actuation(self):
-        coordinator = self._coordinator_for_control_source("Neu", send_commands=False)
-        self.assertTrue(coordinator._effective_send_commands())
+    def test_strategy_enabled_controls_hacs_actuation(self):
+        self.assertTrue(self._coordinator_for_strategy_enabled(True)._effective_send_commands())
+        self.assertFalse(self._coordinator_for_strategy_enabled(False)._effective_send_commands())
 
-    def test_control_source_old_and_off_disable_hacs_actuation(self):
-        self.assertFalse(self._coordinator_for_control_source("Alt", send_commands=True)._effective_send_commands())
-        self.assertFalse(self._coordinator_for_control_source("Aus", send_commands=True)._effective_send_commands())
 
-    def test_missing_control_source_keeps_existing_send_commands_option(self):
-        self.assertFalse(self._coordinator_for_control_source(None, send_commands=False)._effective_send_commands())
-        self.assertTrue(self._coordinator_for_control_source(None, send_commands=True)._effective_send_commands())
+    def test_strategy_disabled_zeroes_once_then_stays_hands_off(self):
+        async def run_case():
+            calls = []
+
+            class FakeState:
+                def __init__(self, state):
+                    self.state = state
+                    self.last_changed = dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=60)
+
+            class FakeStates:
+                def __init__(self):
+                    self.values = {
+                        "number.hoa1nan7n331666_inputlimit": FakeState("400"),
+                        "number.hoa1nan7n331666_outputlimit": FakeState("300"),
+                    }
+
+                def get(self, entity_id):
+                    return self.values.get(entity_id)
+
+            class FakeServices:
+                async def async_call(self, domain, service, data, blocking=False):
+                    calls.append((domain, service, data, blocking))
+
+            coordinator = object.__new__(BatteryStrategyCoordinator)
+            coordinator.hass = SimpleNamespace(states=FakeStates(), services=FakeServices())
+            coordinator.entry = SimpleNamespace(data={}, options={"strategy_enabled": False})
+            coordinator.last_actuation = {"status": "not_started"}
+            coordinator._strategy_was_enabled = True
+            coordinator._disabled_zeroed = False
+
+            await coordinator._async_zero_limits_once()
+            coordinator._strategy_was_enabled = False
+            coordinator._disabled_zeroed = True
+
+            self.assertEqual(len(calls), 2)
+            self.assertEqual(calls[0][2], {"entity_id": "number.hoa1nan7n331666_inputlimit", "value": 0})
+            self.assertEqual(calls[1][2], {"entity_id": "number.hoa1nan7n331666_outputlimit", "value": 0})
+            self.assertEqual(coordinator.last_actuation["status"], "disabled_zeroed")
+
+            calls.clear()
+            if coordinator._strategy_was_enabled and not coordinator._disabled_zeroed:
+                await coordinator._async_zero_limits_once()
+
+            self.assertEqual(calls, [])
+
+        asyncio.run(run_case())
 
     def test_current_simple_mode_discharges_against_load_without_feeding_ev(self):
         cmd = calculate_command(

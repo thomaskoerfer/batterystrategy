@@ -52,6 +52,32 @@ def _plan_to_live(data):
     return data["plan_to_live"]
 
 
+
+
+def _raw_float(data, key: str, default: float = 0.0) -> float:
+    try:
+        return float((data.get("optimizer_attrs") or {}).get(key, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _actual_charge_total_kwh(data) -> float:
+    return round(_raw_float(data, "actual_battery_charge_grid_today_kwh") + _raw_float(data, "actual_battery_charge_pv_today_kwh"), 3)
+
+
+def _actual_avg_charge_price_ct(data) -> float:
+    kwh = _actual_charge_total_kwh(data)
+    if kwh <= 0.01:
+        return 0.0
+    return round((_raw_float(data, "actual_battery_charge_cost_today_eur") / kwh) * 100.0, 1)
+
+
+def _actual_avg_discharge_price_ct(data) -> float:
+    kwh = _raw_float(data, "actual_battery_discharge_credited_today_kwh")
+    if kwh <= 0.01:
+        return 0.0
+    return round((_raw_float(data, "actual_battery_discharge_credit_today_eur") / kwh) * 100.0, 1)
+
 def _today(data):
     return dt.datetime.now(LOCAL_TZ).date().isoformat()
 
@@ -329,6 +355,54 @@ SENSORS: tuple[BatteryStrategySensorDescription, ...] = (
         name="Estimated Savings Tomorrow",
         value_fn=lambda data: (_plan(data).daily_costs.get(_tomorrow(data)).saving_eur if _tomorrow(data) in _plan(data).daily_costs else 0),
         native_unit_of_measurement="EUR",
+    ),
+    BatteryStrategySensorDescription(
+        key="actual_savings_today",
+        name="Actual Savings Today",
+        value_fn=lambda data: round(_raw_float(data, "actual_savings_today_eur"), 3),
+        native_unit_of_measurement="EUR",
+    ),
+    BatteryStrategySensorDescription(
+        key="actual_savings_cumulative",
+        name="Actual Savings Cumulative",
+        value_fn=lambda data: round(_raw_float(data, "actual_savings_cumulative_eur", _raw_float(data, "actual_savings_lifetime_eur")), 3),
+        native_unit_of_measurement="EUR",
+    ),
+    BatteryStrategySensorDescription(
+        key="actual_charge_total_today",
+        name="Actual Charge Total Today",
+        value_fn=_actual_charge_total_kwh,
+        native_unit_of_measurement="kWh",
+    ),
+    BatteryStrategySensorDescription(
+        key="actual_charge_grid_today",
+        name="Actual Charge Grid Today",
+        value_fn=lambda data: round(_raw_float(data, "actual_battery_charge_grid_today_kwh"), 3),
+        native_unit_of_measurement="kWh",
+    ),
+    BatteryStrategySensorDescription(
+        key="actual_charge_pv_today",
+        name="Actual Charge PV Today",
+        value_fn=lambda data: round(_raw_float(data, "actual_battery_charge_pv_today_kwh"), 3),
+        native_unit_of_measurement="kWh",
+    ),
+    BatteryStrategySensorDescription(
+        key="actual_avg_charge_price_today",
+        name="Actual Avg Charge Price Today",
+        value_fn=_actual_avg_charge_price_ct,
+        native_unit_of_measurement="ct/kWh",
+    ),
+    BatteryStrategySensorDescription(
+        key="actual_discharge_credited_today",
+        name="Actual Discharge Credited Today",
+        value_fn=lambda data: round(_raw_float(data, "actual_battery_discharge_credited_today_kwh"), 3),
+        native_unit_of_measurement="kWh",
+    ),
+    BatteryStrategySensorDescription(
+        key="actual_avg_discharge_price_today",
+        name="Actual Avg Discharge Price Today",
+        value_fn=_actual_avg_discharge_price_ct,
+        native_unit_of_measurement="ct/kWh",
     ),
     BatteryStrategySensorDescription(
         key="profile_today",
