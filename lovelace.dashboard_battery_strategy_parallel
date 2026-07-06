@@ -4,7 +4,7 @@
   "key": "lovelace.dashboard_battery_strategy_parallel",
   "data": {
     "config": {
-      "title": "Battery Strategy",
+      "title": "Speicherstrategie",
       "views": [
         {
           "cards": [
