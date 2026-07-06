@@ -8,6 +8,10 @@ from typing import Callable
 from zoneinfo import ZoneInfo
 
 from homeassistant.components.sensor import SensorEntity, SensorEntityDescription
+try:
+    from homeassistant.components.sensor import SensorStateClass
+except ImportError:  # pragma: no cover - compatibility with older HA versions.
+    SensorStateClass = None
 from homeassistant.const import UnitOfPower
 try:
     from homeassistant.const import PERCENTAGE
@@ -18,6 +22,7 @@ from .const import DOMAIN
 from .entity import BatteryStrategyEntity
 
 LOCAL_TZ = ZoneInfo("Europe/Berlin")
+STATE_CLASS_MEASUREMENT = SensorStateClass.MEASUREMENT if SensorStateClass is not None else "measurement"
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -361,30 +366,35 @@ SENSORS: tuple[BatteryStrategySensorDescription, ...] = (
         name="Actual Savings Today",
         value_fn=lambda data: round(_raw_float(data, "actual_savings_today_eur"), 3),
         native_unit_of_measurement="EUR",
+        state_class=STATE_CLASS_MEASUREMENT,
     ),
     BatteryStrategySensorDescription(
         key="actual_savings_cumulative",
         name="Actual Savings Cumulative",
         value_fn=lambda data: round(_raw_float(data, "actual_savings_cumulative_eur", _raw_float(data, "actual_savings_lifetime_eur")), 3),
         native_unit_of_measurement="EUR",
+        state_class=STATE_CLASS_MEASUREMENT,
     ),
     BatteryStrategySensorDescription(
         key="actual_charge_total_today",
         name="Actual Charge Total Today",
         value_fn=_actual_charge_total_kwh,
         native_unit_of_measurement="kWh",
+        state_class=STATE_CLASS_MEASUREMENT,
     ),
     BatteryStrategySensorDescription(
         key="actual_charge_grid_today",
         name="Actual Charge Grid Today",
         value_fn=lambda data: round(_raw_float(data, "actual_battery_charge_grid_today_kwh"), 3),
         native_unit_of_measurement="kWh",
+        state_class=STATE_CLASS_MEASUREMENT,
     ),
     BatteryStrategySensorDescription(
         key="actual_charge_pv_today",
         name="Actual Charge PV Today",
         value_fn=lambda data: round(_raw_float(data, "actual_battery_charge_pv_today_kwh"), 3),
         native_unit_of_measurement="kWh",
+        state_class=STATE_CLASS_MEASUREMENT,
     ),
     BatteryStrategySensorDescription(
         key="actual_avg_charge_price_today",
@@ -397,6 +407,7 @@ SENSORS: tuple[BatteryStrategySensorDescription, ...] = (
         name="Actual Discharge Credited Today",
         value_fn=lambda data: round(_raw_float(data, "actual_battery_discharge_credited_today_kwh"), 3),
         native_unit_of_measurement="kWh",
+        state_class=STATE_CLASS_MEASUREMENT,
     ),
     BatteryStrategySensorDescription(
         key="actual_avg_discharge_price_today",
@@ -549,6 +560,13 @@ class BatteryStrategySensor(BatteryStrategyEntity, SensorEntity):
         super().__init__(coordinator, description.key, description.name)
         self.entity_description = description
         self._attr_native_unit_of_measurement = description.native_unit_of_measurement
+        self._attr_device_class = description.device_class
+        self._attr_state_class = description.state_class
+
+    @property
+    def state_class(self):
+        """Return the state class explicitly for statistics validation."""
+        return self.entity_description.state_class
 
     @property
     def native_value(self):
