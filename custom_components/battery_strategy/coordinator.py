@@ -92,6 +92,7 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         self._last_optimizer_force_key: str | None = None
         self._slot_charged_kwh = 0.0
         self._slot_discharged_kwh = 0.0
+        self._active_discharge_budget_base_kwh = 0.0
         self._last_live_accounting_ts: dt.datetime | None = None
         self._last_live_command: StrategyCommand | None = None
         self._strategy_was_enabled = bool(entry.options.get("strategy_enabled", True))
@@ -141,10 +142,20 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             self._active_directive_slot_end_ts_ms = int(directive.slot_end_ts)
             self._slot_charged_kwh = 0.0
             self._slot_discharged_kwh = 0.0
+            self._active_discharge_budget_base_kwh = max(0.0, float(directive.discharge_budget_kwh))
+        else:
+            current_base = max(0.0, float(getattr(self, "_active_discharge_budget_base_kwh", 0.0)))
+            self._active_discharge_budget_base_kwh = min(
+                current_base,
+                max(0.0, float(directive.discharge_budget_kwh)),
+            )
         return replace(
             directive,
             must_charge_remaining_kwh=round(max(0.0, directive.must_charge_remaining_kwh - self._slot_charged_kwh), 3),
-            discharge_budget_kwh=round(max(0.0, directive.discharge_budget_kwh - self._slot_discharged_kwh), 3),
+            discharge_budget_kwh=round(
+                max(0.0, self._active_discharge_budget_base_kwh - self._slot_discharged_kwh),
+                3,
+            ),
         )
 
     async def _async_update_data(self):

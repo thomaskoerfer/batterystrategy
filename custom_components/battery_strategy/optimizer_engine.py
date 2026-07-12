@@ -1879,9 +1879,13 @@ def build_virtual_plan(intervals, samples, start_energy_kwh, weather_factor, for
                 price_ct = float(slots[slot_idx]["price_ct"])
                 if price_ct < scarce_floor_ct or price_ct < PV_EXPORT_OPPORTUNITY_CT + MIN_MARGIN_CT:
                     continue
-                eligible_kwh = min(
-                    MAX_E_SLOT_KWH,
-                    float(slots[slot_idx].get("discharge_eligible_kwh", slots[slot_idx]["net_pos_kwh"])),
+                eligible_kwh = (
+                    MAX_E_SLOT_KWH
+                    if slot_idx == 0
+                    else min(
+                        MAX_E_SLOT_KWH,
+                        float(slots[slot_idx].get("discharge_eligible_kwh", slots[slot_idx]["net_pos_kwh"])),
+                    )
                 )
                 if eligible_kwh <= 1e-6:
                     continue
@@ -1899,30 +1903,33 @@ def build_virtual_plan(intervals, samples, start_energy_kwh, weather_factor, for
     scarce_value_budgets = scarce_value_budget_by_slot()
 
     def explicit_discharge_budget_kwh(t):
-        baseline_discharge_kwh = max(0.0, path_discharge_out[t])
         if path_charge_in[t] > 1e-6:
             return 0.0
-        sl = slots[t]
         available_ac_kwh = max(0.0, (energies[path_before_idx[t]] - MIN_E_KWH) * ETA_D)
         max_total_discharge_kwh = min(MAX_E_SLOT_KWH, available_ac_kwh)
-        budget_kwh = min(baseline_discharge_kwh, max_total_discharge_kwh)
+        if max_total_discharge_kwh <= 1e-6:
+            return 0.0
 
+        sl = slots[t]
         price_ct = float(sl["price_ct"])
         if price_ct < PV_EXPORT_OPPORTUNITY_CT + MIN_MARGIN_CT:
-            return round(budget_kwh, 3)
+            return 0.0
 
         safe_recovery_kwh = safe_pv_recovery_ac_kwh(t, energies[path_after_idx[t]])
-        pv_recovery_budget_kwh = min(max_total_discharge_kwh, budget_kwh + safe_recovery_kwh)
+        pv_recovery_budget_kwh = min(max_total_discharge_kwh, max(0.0, safe_recovery_kwh))
 
         scarce_budget_kwh = 0.0
         scarce_floor_ct = float(discharge_floor_ct or 0.0)
         if price_ct >= scarce_floor_ct:
             higher_value_need_kwh = future_higher_value_load_kwh(t)
-            scarce_budget_kwh = max(scarce_value_budgets[t], max(0.0, available_ac_kwh - higher_value_need_kwh))
+            scarce_budget_kwh = max(
+                scarce_value_budgets[t],
+                max(0.0, available_ac_kwh + safe_recovery_kwh - higher_value_need_kwh),
+            )
 
-        budget_kwh = max(budget_kwh, pv_recovery_budget_kwh, min(max_total_discharge_kwh, scarce_budget_kwh))
+        budget_kwh = max(pv_recovery_budget_kwh, min(max_total_discharge_kwh, scarce_budget_kwh))
 
-        return round(budget_kwh, 3)
+        return round(min(max_total_discharge_kwh, budget_kwh), 3)
 
     for idx, point in enumerate(points):
         point["discharge_budget_kwh"] = explicit_discharge_budget_kwh(idx)

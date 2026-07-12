@@ -26,7 +26,7 @@ from custom_components.battery_strategy.optimizer import build_optimizer_plan
 from custom_components.battery_strategy import optimizer_adapter
 from custom_components.battery_strategy import optimizer_engine
 from custom_components.battery_strategy.parallel import compare_optimizer_plan, evaluate_parallel_commands
-from custom_components.battery_strategy.plan_models import ForecastPoint, PlanPoint, PricePoint, StrategyPlan
+from custom_components.battery_strategy.plan_models import ForecastPoint, PlanLiveDirective, PlanPoint, PricePoint, StrategyPlan
 from custom_components.battery_strategy.pricing import read_tibber_price_points
 from custom_components.battery_strategy import sensor as battery_sensor
 from custom_components.battery_strategy.actuator import should_write_limit, should_write_mode, zendure_targets
@@ -469,6 +469,76 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertEqual(directive.discharge_budget_kwh, 0.0)
         self.assertEqual(cmd.mode, COMMAND_IDLE)
         self.assertEqual(cmd.reason, "live_idle")
+
+    def test_price_sensitive_discharge_fc_does_not_create_live_budget(self):
+        now = dt.datetime(2026, 7, 12, 20, tzinfo=dt.timezone.utc)
+        point = PlanPoint(
+            int(now.timestamp() * 1000),
+            now.date().isoformat(),
+            35.0,
+            1200,
+            0,
+            1200,
+            0,
+            1200,
+            COMMAND_OUTPUT,
+            1200,
+            0,
+            1200,
+            80.0,
+            discharge_budget_kwh=0.0,
+        )
+        plan = StrategyPlan([point], COMMAND_OUTPUT, 1200, "planned discharge but no budget")
+        options = StrategyOptions(discharge=DISCHARGE_PRICE_SENSITIVE, min_soc_pct=10)
+        inputs = StrategyInputs(
+            grid_import_w=1200,
+            grid_export_w=0,
+            pv_w=0,
+            battery_power_w=0,
+            ev_power_w=0,
+            soc_pct=80,
+        )
+        diagnostics = calculate_command(inputs, options)
+
+        directive = plan_live_directive_from_plan(plan, options)
+        cmd = live_command_from_plan(plan, diagnostics, inputs, options)
+
+        self.assertEqual(directive.discharge_budget_kwh, 0.0)
+        self.assertEqual(cmd.mode, COMMAND_IDLE)
+        self.assertEqual(cmd.power_w, 0)
+
+    def test_current_slot_discharge_budget_cannot_increase_on_reoptimization(self):
+        coordinator = object.__new__(BatteryStrategyCoordinator)
+        coordinator._active_directive_slot_id = None
+        coordinator._active_directive_slot_end_ts_ms = 0
+        coordinator._slot_charged_kwh = 0.0
+        coordinator._slot_discharged_kwh = 0.0
+        coordinator._active_discharge_budget_base_kwh = 0.0
+
+        def directive(slot_id, budget):
+            return PlanLiveDirective(
+                slot_id=slot_id,
+                slot_start_ts=1,
+                slot_end_ts=2,
+                pv_charge_allowed=True,
+                must_charge_w=0,
+                must_charge_remaining_kwh=0.0,
+                grid_charge_allowed=False,
+                discharge_budget_kwh=budget,
+                battery_min_soc_pct=10.0,
+                battery_max_soc_pct=100.0,
+            )
+
+        first = coordinator._directive_with_progress(directive("slot-a", 0.10))
+        coordinator._slot_discharged_kwh = 0.04
+        raised = coordinator._directive_with_progress(directive("slot-a", 0.20))
+        lowered = coordinator._directive_with_progress(directive("slot-a", 0.05))
+        next_slot = coordinator._directive_with_progress(directive("slot-b", 0.20))
+
+        self.assertEqual(first.discharge_budget_kwh, 0.10)
+        self.assertEqual(raised.discharge_budget_kwh, 0.06)
+        self.assertEqual(lowered.discharge_budget_kwh, 0.01)
+        self.assertEqual(next_slot.discharge_budget_kwh, 0.20)
 
     def test_price_sensitive_low_price_does_not_use_pv_charge_as_free_replacement(self):
         now = dt.datetime(2026, 5, 29, 12, tzinfo=dt.timezone.utc)

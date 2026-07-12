@@ -290,11 +290,10 @@ def _planned_discharge_w(plan: StrategyPlan) -> float:
 def _planned_discharge_budget_kwh(plan: StrategyPlan, options: StrategyOptions) -> float:
     point = plan.points[0] if plan.points else None
     if point is None:
-        return _power_w_to_slot_kwh(_planned_discharge_w(plan))
+        return 0.0
     budget = max(0.0, float(getattr(point, "discharge_budget_kwh", 0.0)))
-    planned = _power_w_to_slot_kwh(float(point.discharge_fc_w))
     available = _available_above_min_kwh(float(point.soc_pct), options)
-    return round(min(available, max(budget, planned)), 3)
+    return round(min(available, budget), 3)
 
 
 def _deadline_required_grid_charge_w(plan: StrategyPlan, options: StrategyOptions) -> float:
