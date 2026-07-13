@@ -678,6 +678,14 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             round(directive.discharge_budget_kwh, 3),
             {"unit_of_measurement": "kWh"},
         )
+        optimizer_budget = 0.0
+        if plan.points:
+            optimizer_budget = round(max(0.0, float(getattr(plan.points[0], "discharge_budget_kwh", 0.0))), 3)
+        self.hass.states.async_set(
+            "sensor.battery_strategy_parallel_dashboard_optimizer_discharge_budget",
+            optimizer_budget,
+            {"unit_of_measurement": "kWh"},
+        )
         self.hass.states.async_set(
             "sensor.battery_strategy_parallel_dashboard_command_power",
             round(command.power_w),

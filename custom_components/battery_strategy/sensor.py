@@ -57,6 +57,13 @@ def _plan_to_live(data):
     return data["plan_to_live"]
 
 
+def _optimizer_discharge_budget_kwh(data) -> float:
+    points = getattr(_plan(data), "points", [])
+    if not points:
+        return 0.0
+    return round(max(0.0, float(getattr(points[0], "discharge_budget_kwh", 0.0))), 3)
+
+
 
 
 def _raw_float(data, key: str, default: float = 0.0) -> float:
@@ -285,8 +292,14 @@ SENSORS: tuple[BatteryStrategySensorDescription, ...] = (
     ),
     BatteryStrategySensorDescription(
         key="plan_live_discharge_budget",
-        name="Discharge Budget",
+        name="Live Remaining Discharge Budget",
         value_fn=lambda data: _plan_to_live(data).discharge_budget_kwh,
+        native_unit_of_measurement="kWh",
+    ),
+    BatteryStrategySensorDescription(
+        key="optimizer_discharge_budget",
+        name="Optimizer Discharge Budget",
+        value_fn=_optimizer_discharge_budget_kwh,
         native_unit_of_measurement="kWh",
     ),
     BatteryStrategySensorDescription(

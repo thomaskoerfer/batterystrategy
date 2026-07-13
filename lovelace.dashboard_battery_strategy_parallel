@@ -30,6 +30,7 @@
                   "type": "section",
                   "label": "Discharge"
                 },
+                "sensor.battery_strategy_optimizer_discharge_budget",
                 "sensor.battery_strategy_hacs_plan_live_discharge_budget"
               ]
             },
@@ -101,6 +102,7 @@
                   "type": "section",
                   "label": "Discharge"
                 },
+                "sensor.battery_strategy_optimizer_discharge_budget",
                 "sensor.battery_strategy_hacs_plan_live_discharge_budget"
               ]
             },

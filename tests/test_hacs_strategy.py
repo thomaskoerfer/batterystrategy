@@ -80,6 +80,49 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertEqual(attrs["pv_actual_power"], [[1_800_000_000_000, 120.0]])
         self.assertEqual(attrs["house_actual_power"], [[1_800_000_000_000, 230.0]])
 
+    def test_optimizer_discharge_budget_sensor_is_separate_from_live_remaining_budget(self):
+        today = dt.datetime.now(battery_sensor.LOCAL_TZ).date().isoformat()
+        data = {
+            "plan": StrategyPlan(
+                points=[
+                    PlanPoint(
+                        ts_ms=1_800_000_000_000,
+                        date=today,
+                        price_ct=35.0,
+                        load_fc_w=1000,
+                        pv_fc_w=0,
+                        grid_import_fc_w=1000,
+                        grid_export_fc_w=0,
+                        grid_net_fc_w=1000,
+                        mode=COMMAND_IDLE,
+                        power_w=0,
+                        charge_fc_w=0,
+                        discharge_fc_w=0,
+                        soc_pct=60.0,
+                        discharge_budget_kwh=0.6,
+                    )
+                ],
+                current_mode=COMMAND_IDLE,
+                current_power_w=0,
+                reason="test",
+            ),
+            "plan_to_live": PlanLiveDirective(
+                slot_id="slot",
+                slot_start_ts=1_800_000_000_000,
+                slot_end_ts=1_800_000_900_000,
+                pv_charge_allowed=True,
+                must_charge_w=0,
+                must_charge_remaining_kwh=0.0,
+                grid_charge_allowed=False,
+                discharge_budget_kwh=0.2,
+                battery_min_soc_pct=10.0,
+                battery_max_soc_pct=100.0,
+            ),
+        }
+
+        self.assertEqual(battery_sensor._optimizer_discharge_budget_kwh(data), 0.6)
+        self.assertEqual(battery_sensor._plan_to_live(data).discharge_budget_kwh, 0.2)
+
     def _coordinator_for_strategy_enabled(self, strategy_enabled=True):
         coordinator = object.__new__(BatteryStrategyCoordinator)
         coordinator.entry = SimpleNamespace(options={"strategy_enabled": strategy_enabled})
@@ -744,7 +787,7 @@ class HacsStrategyTests(unittest.TestCase):
         )
         self.assertEqual(directive.discharge_budget_kwh, 0.0)
 
-    def test_price_sensitive_planned_discharge_sets_budget_floor(self):
+    def test_price_sensitive_planned_discharge_does_not_create_budget_floor(self):
         now = dt.datetime(2026, 5, 29, 9, 30, tzinfo=dt.timezone.utc)
         points = [
             PlanPoint(
@@ -824,7 +867,7 @@ class HacsStrategyTests(unittest.TestCase):
                 min_soc_pct=5,
             ),
         )
-        self.assertEqual(directive.discharge_budget_kwh, 0.112)
+        self.assertEqual(directive.discharge_budget_kwh, 0.0)
 
     def test_price_sensitive_grid_replacement_budget_must_be_in_plan(self):
         now = dt.datetime(2026, 5, 29, 12, tzinfo=dt.timezone.utc)
@@ -953,7 +996,7 @@ class HacsStrategyTests(unittest.TestCase):
         )
         self.assertEqual(directive.discharge_budget_kwh, 0.0)
 
-    def test_price_sensitive_current_discharge_follows_meter_above_plan_floor(self):
+    def test_price_sensitive_current_discharge_follows_meter_with_explicit_budget(self):
         now = dt.datetime(2026, 5, 29, 21, tzinfo=dt.timezone.utc)
         point = PlanPoint(
             int(now.timestamp() * 1000),
@@ -969,6 +1012,7 @@ class HacsStrategyTests(unittest.TestCase):
             0,
             250,
             92.0,
+            discharge_budget_kwh=0.112,
         )
         inputs = StrategyInputs(
             grid_import_w=450,
@@ -1814,6 +1858,11 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertEqual(budgets[0], round(optimizer_engine.MAX_E_SLOT_KWH, 3))
         self.assertGreaterEqual(budgets[0], budgets[1])
         self.assertGreaterEqual(budgets[1], budgets[2])
+
+    def test_optimizer_discharge_budget_has_no_current_charge_path_hard_block(self):
+        source = Path(optimizer_engine.__file__).read_text(encoding="utf-8")
+        budget_fn = source.split("def explicit_discharge_budget_kwh", 1)[1].split("for idx, point in enumerate(points)", 1)[0]
+        self.assertNotIn("path_charge_in[t]", budget_fn)
 
     def test_optimizer_adapter_filters_expired_cached_slots(self):
         now = dt.datetime(2026, 5, 29, 12, tzinfo=dt.timezone.utc)
