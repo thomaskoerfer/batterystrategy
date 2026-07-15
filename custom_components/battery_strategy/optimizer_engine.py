@@ -1850,14 +1850,6 @@ def build_virtual_plan(intervals, samples, start_energy_kwh, weather_factor, for
         planned_export_recovery_ac_kwh = planned_export_kwh * ETA_RT * PV_RECOVERY_CONFIDENCE
         return max(spill_recovery_ac_kwh, planned_export_recovery_ac_kwh)
 
-    def future_higher_value_load_kwh(t):
-        price_ct = float(slots[t]["price_ct"])
-        return sum(
-            min(MAX_E_SLOT_KWH, float(future_sl.get("discharge_eligible_kwh", future_sl["net_pos_kwh"])))
-            for future_sl in slots[t + 1 :]
-            if float(future_sl["price_ct"]) > price_ct + SCARCE_VALUE_TIE_CT
-        )
-
     def final_slot_energy_kwh(t):
         return clamp((float(points[t].get("soc_pct", 0.0)) / 100.0) * CAP_KWH, MIN_E_KWH, MAX_E_KWH)
 
@@ -1887,32 +1879,64 @@ def build_virtual_plan(intervals, samples, start_energy_kwh, weather_factor, for
             if available_ac_kwh <= 1e-6:
                 continue
 
-            candidates = []
+            block_candidates = []
             for slot_idx in range(block_start, block_end):
                 price_ct = float(slots[slot_idx]["price_ct"])
                 if price_ct < scarce_floor_ct or price_ct < PV_EXPORT_OPPORTUNITY_CT + MIN_MARGIN_CT:
+                    block_candidates.append((slot_idx, price_ct, 0))
                     continue
                 eligible_kwh = min(
                     MAX_E_SLOT_KWH,
                     float(slots[slot_idx].get("discharge_eligible_kwh", slots[slot_idx]["net_pos_kwh"])),
                 )
-                if eligible_kwh <= 1e-6:
-                    continue
-                candidates.append((-price_ct, slot_idx, eligible_kwh))
+                eligible_steps = max(0, int(math.floor(eligible_kwh / e_step + 1e-9)))
+                block_candidates.append((slot_idx, price_ct, eligible_steps))
 
-            remaining_kwh = available_ac_kwh
-            for _neg_price, slot_idx, eligible_kwh in sorted(candidates):
-                if remaining_kwh <= 1e-6:
-                    break
-                allocated_kwh = min(eligible_kwh, remaining_kwh)
-                budgets[slot_idx] = allocated_kwh
-                remaining_kwh -= allocated_kwh
+            energy_steps = max(0, int(math.floor(min(available_ac_kwh, MAX_E_KWH) / e_step + 1e-9)))
+            if energy_steps <= 0:
+                continue
+
+            # Optimize scarce discharge budget across the full no-charge block.
+            # This keeps the live layer simple: it still only consumes the per-slot budget.
+            dp_values = [-inf] * (energy_steps + 1)
+            dp_values[energy_steps] = 0.0
+            backrefs = []
+            for slot_idx, price_ct, eligible_steps in block_candidates:
+                next_values = [-inf] * (energy_steps + 1)
+                back = [0] * (energy_steps + 1)
+                for remaining_steps, value in enumerate(dp_values):
+                    if value <= -inf / 2:
+                        continue
+                    max_discharge_steps = min(eligible_steps, remaining_steps)
+                    for discharge_steps in range(max_discharge_steps + 1):
+                        next_remaining = remaining_steps - discharge_steps
+                        candidate_value = value + (discharge_steps * e_step * price_ct)
+                        if candidate_value > next_values[next_remaining] + 1e-9:
+                            next_values[next_remaining] = candidate_value
+                            back[next_remaining] = discharge_steps
+                        elif abs(candidate_value - next_values[next_remaining]) <= 1e-9 and discharge_steps > back[next_remaining]:
+                            # For equal value, prefer the later slot in this forward pass.
+                            back[next_remaining] = discharge_steps
+                dp_values = next_values
+                backrefs.append((slot_idx, back))
+
+            best_value = max(dp_values)
+            remaining_steps = max(
+                step for step, value in enumerate(dp_values) if abs(value - best_value) <= 1e-9
+            )
+            allocations = []
+            for slot_idx, back in reversed(backrefs):
+                discharge_steps = back[remaining_steps]
+                allocations.append((slot_idx, discharge_steps))
+                remaining_steps += discharge_steps
+            for slot_idx, discharge_steps in allocations:
+                budgets[slot_idx] = round(discharge_steps * e_step, 3)
         return budgets
 
     scarce_value_budgets = scarce_value_budget_by_slot()
 
     def explicit_discharge_budget_kwh(t):
-        slot_energy_kwh = final_slot_energy_kwh(t)
+        slot_energy_kwh = pre_slot_energy_kwh(t)
         available_ac_kwh = max(0.0, (slot_energy_kwh - MIN_E_KWH) * ETA_D)
         max_total_discharge_kwh = min(MAX_E_SLOT_KWH, available_ac_kwh)
         if max_total_discharge_kwh <= 1e-6:
@@ -1929,11 +1953,7 @@ def build_virtual_plan(intervals, samples, start_energy_kwh, weather_factor, for
         scarce_budget_kwh = 0.0
         scarce_floor_ct = float(discharge_floor_ct or 0.0)
         if price_ct >= scarce_floor_ct:
-            higher_value_need_kwh = future_higher_value_load_kwh(t)
-            scarce_budget_kwh = max(
-                scarce_value_budgets[t],
-                max(0.0, available_ac_kwh + safe_recovery_kwh - higher_value_need_kwh),
-            )
+            scarce_budget_kwh = scarce_value_budgets[t]
 
         budget_kwh = max(pv_recovery_budget_kwh, min(max_total_discharge_kwh, scarce_budget_kwh))
 

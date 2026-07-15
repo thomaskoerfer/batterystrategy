@@ -1890,7 +1890,7 @@ class HacsStrategyTests(unittest.TestCase):
         plan = optimizer_engine.build_virtual_plan(
             intervals=intervals,
             samples=samples,
-            start_energy_kwh=2.0,
+            start_energy_kwh=1.0,
             weather_factor=1.0,
             forecast_tomorrow_kwh=None,
             load_bias=1.0,
@@ -1904,9 +1904,56 @@ class HacsStrategyTests(unittest.TestCase):
             eex_days={},
         )
         budgets = [point["discharge_budget_kwh"] for point in plan["points"][:4]]
-        self.assertEqual(budgets[0], round(optimizer_engine.MAX_E_SLOT_KWH, 3))
-        self.assertGreaterEqual(budgets[0], budgets[1])
-        self.assertGreaterEqual(budgets[1], budgets[2])
+        self.assertGreater(budgets[0], 0.0)
+        self.assertGreater(budgets[1], 0.0)
+        self.assertEqual(budgets[2], 0.0)
+
+    def test_optimizer_discharge_budget_keeps_equal_value_budget_for_later_slots(self):
+        tz = dt.timezone.utc
+        start = dt.datetime(2026, 5, 29, 21, tzinfo=tz)
+        prices = [35.0, 35.0, 35.0, 35.0]
+        intervals = [
+            {"dt": start + dt.timedelta(minutes=15 * i), "price_eur": price / 100.0}
+            for i, price in enumerate(prices)
+        ]
+        samples = []
+        for weeks_ago in range(1, 5):
+            base = start - dt.timedelta(days=7 * weeks_ago)
+            for i in range(len(prices)):
+                samples.append(
+                    {
+                        "ts": (base + dt.timedelta(minutes=15 * i)).timestamp(),
+                        "load_w": 2400.0,
+                        "house_w": 2400.0,
+                        "house_total_w": 2400.0,
+                        "wallbox_w": 0.0,
+                        "grid_import_w": 2400.0,
+                        "grid_export_w": 0.0,
+                        "pv_w": 0.0,
+                        "hp_w": 0.0,
+                        "price_ct": 30.0,
+                    }
+                )
+        plan = optimizer_engine.build_virtual_plan(
+            intervals=intervals,
+            samples=samples,
+            start_energy_kwh=1.0,
+            weather_factor=1.0,
+            forecast_tomorrow_kwh=None,
+            load_bias=1.0,
+            load_bias_slots=[1.0] * optimizer_engine.SLOTS_PER_DAY,
+            pv_bias_slots=[1.0] * optimizer_engine.SLOTS_PER_DAY,
+            initial_mode=0,
+            weather_hourly={},
+            pv_now_actual_w=0.0,
+            now_local=start,
+            pv_global_bias=1.0,
+            eex_days={},
+        )
+        budgets = [point["discharge_budget_kwh"] for point in plan["points"][:4]]
+        self.assertEqual(budgets[:2], [0.0, 0.0])
+        self.assertGreater(budgets[2], 0.0)
+        self.assertGreater(budgets[3], 0.0)
 
     def test_optimizer_discharge_budget_has_no_current_charge_path_hard_block(self):
         source = Path(optimizer_engine.__file__).read_text(encoding="utf-8")
