@@ -1879,58 +1879,46 @@ def build_virtual_plan(intervals, samples, start_energy_kwh, weather_factor, for
             if available_ac_kwh <= 1e-6:
                 continue
 
-            block_candidates = []
+            eligible_steps_by_slot = {}
             for slot_idx in range(block_start, block_end):
                 price_ct = float(slots[slot_idx]["price_ct"])
                 if price_ct < scarce_floor_ct or price_ct < PV_EXPORT_OPPORTUNITY_CT + MIN_MARGIN_CT:
-                    block_candidates.append((slot_idx, price_ct, 0))
+                    eligible_steps_by_slot[slot_idx] = 0
                     continue
                 eligible_kwh = min(
                     MAX_E_SLOT_KWH,
                     float(slots[slot_idx].get("discharge_eligible_kwh", slots[slot_idx]["net_pos_kwh"])),
                 )
-                eligible_steps = max(0, int(math.floor(eligible_kwh / e_step + 1e-9)))
-                block_candidates.append((slot_idx, price_ct, eligible_steps))
+                eligible_steps_by_slot[slot_idx] = max(0, int(math.floor(eligible_kwh / e_step + 1e-9)))
 
             energy_steps = max(0, int(math.floor(min(available_ac_kwh, MAX_E_KWH) / e_step + 1e-9)))
             if energy_steps <= 0:
                 continue
 
-            # Optimize scarce discharge budget across the full no-charge block.
-            # This keeps the live layer simple: it still only consumes the per-slot budget.
-            dp_values = [-inf] * (energy_steps + 1)
-            dp_values[energy_steps] = 0.0
-            backrefs = []
-            for slot_idx, price_ct, eligible_steps in block_candidates:
-                next_values = [-inf] * (energy_steps + 1)
-                back = [0] * (energy_steps + 1)
-                for remaining_steps, value in enumerate(dp_values):
-                    if value <= -inf / 2:
-                        continue
-                    max_discharge_steps = min(eligible_steps, remaining_steps)
-                    for discharge_steps in range(max_discharge_steps + 1):
-                        next_remaining = remaining_steps - discharge_steps
-                        candidate_value = value + (discharge_steps * e_step * price_ct)
-                        if candidate_value > next_values[next_remaining] + 1e-9:
-                            next_values[next_remaining] = candidate_value
-                            back[next_remaining] = discharge_steps
-                        elif abs(candidate_value - next_values[next_remaining]) <= 1e-9 and discharge_steps > back[next_remaining]:
-                            # For equal value, prefer the later slot in this forward pass.
-                            back[next_remaining] = discharge_steps
-                dp_values = next_values
-                backrefs.append((slot_idx, back))
-
-            best_value = max(dp_values)
-            remaining_steps = max(
-                step for step, value in enumerate(dp_values) if abs(value - best_value) <= 1e-9
+            current_price_ref = max(
+                float(slots[slot_idx]["price_ct"])
+                for slot_idx in range(block_start, block_end)
             )
-            allocations = []
-            for slot_idx, back in reversed(backrefs):
-                discharge_steps = back[remaining_steps]
-                allocations.append((slot_idx, discharge_steps))
-                remaining_steps += discharge_steps
-            for slot_idx, discharge_steps in allocations:
-                budgets[slot_idx] = round(discharge_steps * e_step, 3)
+            switch_energy_kwh = (SWITCH_PENALTY_MIN / 60.0) * (SWITCH_PENALTY_REF_W / 1000.0)
+            switch_margin_ct = (switch_energy_kwh * current_price_ref) / max(e_step, min(available_ac_kwh, MAX_E_SLOT_KWH))
+            meaningful_margin_ct = max(SCARCE_VALUE_TIE_CT, switch_margin_ct)
+
+            higher_value_steps_by_slot = {}
+            for slot_idx in range(block_end - 1, block_start - 1, -1):
+                price_ct = float(slots[slot_idx]["price_ct"])
+                higher_steps = 0
+                for future_idx in range(slot_idx + 1, block_end):
+                    if float(slots[future_idx]["price_ct"]) > price_ct + meaningful_margin_ct:
+                        higher_steps += eligible_steps_by_slot.get(future_idx, 0)
+                higher_value_steps_by_slot[slot_idx] = higher_steps
+
+            for slot_idx in range(block_start, block_end):
+                price_ct = float(slots[slot_idx]["price_ct"])
+                if price_ct < scarce_floor_ct or price_ct < PV_EXPORT_OPPORTUNITY_CT + MIN_MARGIN_CT:
+                    continue
+                reserve_steps = min(energy_steps, higher_value_steps_by_slot[slot_idx])
+                available_after_reserve_steps = max(0, energy_steps - reserve_steps)
+                budgets[slot_idx] = round(min(MAX_E_SLOT_KWH, available_after_reserve_steps * e_step), 3)
         return budgets
 
     scarce_value_budgets = scarce_value_budget_by_slot()

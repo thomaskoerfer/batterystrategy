@@ -93,6 +93,7 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         self._slot_charged_kwh = 0.0
         self._slot_discharged_kwh = 0.0
         self._active_discharge_budget_base_kwh = 0.0
+        self._active_discharge_mode: str | None = None
         self._last_live_accounting_ts: dt.datetime | None = None
         self._last_live_command: StrategyCommand | None = None
         self._strategy_was_enabled = bool(entry.options.get("strategy_enabled", True))
@@ -139,14 +140,20 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         self,
         directive: PlanLiveDirective,
         *,
+        discharge_mode: str | None = None,
         allow_discharge_budget_increase: bool = False,
     ) -> PlanLiveDirective:
         """Return directive with slot-local charge/discharge budgets decremented."""
-        if directive.slot_id != self._active_directive_slot_id:
+        slot_changed = directive.slot_id != self._active_directive_slot_id
+        active_mode = getattr(self, "_active_discharge_mode", None)
+        mode_changed = discharge_mode is not None and discharge_mode != active_mode
+        if slot_changed or mode_changed:
             self._active_directive_slot_id = directive.slot_id
             self._active_directive_slot_end_ts_ms = int(directive.slot_end_ts)
-            self._slot_charged_kwh = 0.0
-            self._slot_discharged_kwh = 0.0
+            if slot_changed:
+                self._slot_charged_kwh = 0.0
+                self._slot_discharged_kwh = 0.0
+            self._active_discharge_mode = discharge_mode
             self._active_discharge_budget_base_kwh = max(0.0, float(directive.discharge_budget_kwh))
         else:
             current_base = max(0.0, float(getattr(self, "_active_discharge_budget_base_kwh", 0.0)))
@@ -183,6 +190,7 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         )
         directive = self._directive_with_progress(
             plan_live_directive_from_plan(plan, options),
+            discharge_mode=options.discharge,
             allow_discharge_budget_increase=options.discharge == DISCHARGE_LOAD,
         )
         command = live_command_from_directive(directive, simple_command, inputs, options)

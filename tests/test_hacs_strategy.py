@@ -614,6 +614,42 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertEqual(first.discharge_budget_kwh, 0.0)
         self.assertEqual(opened.discharge_budget_kwh, 0.6)
 
+    def test_discharge_mode_change_resets_current_slot_budget_context(self):
+        coordinator = object.__new__(BatteryStrategyCoordinator)
+        coordinator._active_directive_slot_id = None
+        coordinator._active_directive_slot_end_ts_ms = 0
+        coordinator._slot_charged_kwh = 0.0
+        coordinator._slot_discharged_kwh = 0.0
+        coordinator._active_discharge_budget_base_kwh = 0.0
+        coordinator._active_discharge_mode = None
+
+        def directive(slot_id, budget):
+            return PlanLiveDirective(
+                slot_id=slot_id,
+                slot_start_ts=1,
+                slot_end_ts=2,
+                pv_charge_allowed=True,
+                must_charge_w=0,
+                must_charge_remaining_kwh=0.0,
+                grid_charge_allowed=False,
+                discharge_budget_kwh=budget,
+                battery_min_soc_pct=10.0,
+                battery_max_soc_pct=100.0,
+            )
+
+        load_open = coordinator._directive_with_progress(
+            directive("slot-a", 0.6),
+            discharge_mode=DISCHARGE_LOAD,
+            allow_discharge_budget_increase=True,
+        )
+        price_sensitive = coordinator._directive_with_progress(
+            directive("slot-a", 0.05),
+            discharge_mode=DISCHARGE_PRICE_SENSITIVE,
+        )
+
+        self.assertEqual(load_open.discharge_budget_kwh, 0.6)
+        self.assertEqual(price_sensitive.discharge_budget_kwh, 0.05)
+
     def test_price_sensitive_low_price_does_not_use_pv_charge_as_free_replacement(self):
         now = dt.datetime(2026, 5, 29, 12, tzinfo=dt.timezone.utc)
         points = [
@@ -1892,7 +1928,7 @@ class HacsStrategyTests(unittest.TestCase):
         )
         self.assertGreater(plan["points"][3]["discharge_budget_kwh"], 0.0)
 
-    def test_optimizer_discharge_budget_prioritizes_earlier_higher_prices(self):
+    def test_optimizer_discharge_budget_opens_when_no_later_higher_price_reserve_is_needed(self):
         tz = dt.timezone.utc
         start = dt.datetime(2026, 5, 29, 21, tzinfo=tz)
         prices = [35.0, 32.0, 29.0, 26.0, 23.0, 20.0]
@@ -1937,9 +1973,9 @@ class HacsStrategyTests(unittest.TestCase):
         budgets = [point["discharge_budget_kwh"] for point in plan["points"][:4]]
         self.assertGreater(budgets[0], 0.0)
         self.assertGreater(budgets[1], 0.0)
-        self.assertEqual(budgets[2], 0.0)
+        self.assertGreater(budgets[2], 0.0)
 
-    def test_optimizer_discharge_budget_keeps_equal_value_budget_for_later_slots(self):
+    def test_optimizer_discharge_budget_does_not_reserve_for_equal_value_later_slots(self):
         tz = dt.timezone.utc
         start = dt.datetime(2026, 5, 29, 21, tzinfo=tz)
         prices = [35.0, 35.0, 35.0, 35.0]
@@ -1982,9 +2018,53 @@ class HacsStrategyTests(unittest.TestCase):
             eex_days={},
         )
         budgets = [point["discharge_budget_kwh"] for point in plan["points"][:4]]
-        self.assertEqual(budgets[:2], [0.0, 0.0])
-        self.assertGreater(budgets[2], 0.0)
-        self.assertGreater(budgets[3], 0.0)
+        self.assertGreater(budgets[0], 0.0)
+        self.assertGreater(budgets[1], 0.0)
+
+    def test_optimizer_discharge_budget_peak_slot_is_not_capped_by_current_forecast_load(self):
+        tz = dt.timezone.utc
+        start = dt.datetime(2026, 7, 16, 20, 30, tzinfo=tz)
+        prices = [58.0, 54.0, 50.0, 45.0]
+        intervals = [
+            {"dt": start + dt.timedelta(minutes=15 * i), "price_eur": price / 100.0}
+            for i, price in enumerate(prices)
+        ]
+        samples = []
+        for weeks_ago in range(1, 5):
+            base = start - dt.timedelta(days=7 * weeks_ago)
+            for i in range(len(prices)):
+                samples.append(
+                    {
+                        "ts": (base + dt.timedelta(minutes=15 * i)).timestamp(),
+                        "load_w": 200.0,
+                        "house_w": 200.0,
+                        "house_total_w": 200.0,
+                        "wallbox_w": 0.0,
+                        "grid_import_w": 200.0,
+                        "grid_export_w": 0.0,
+                        "pv_w": 0.0,
+                        "hp_w": 0.0,
+                        "price_ct": 40.0,
+                    }
+                )
+        plan = optimizer_engine.build_virtual_plan(
+            intervals=intervals,
+            samples=samples,
+            start_energy_kwh=3.0,
+            weather_factor=1.0,
+            forecast_tomorrow_kwh=None,
+            load_bias=1.0,
+            load_bias_slots=[1.0] * optimizer_engine.SLOTS_PER_DAY,
+            pv_bias_slots=[1.0] * optimizer_engine.SLOTS_PER_DAY,
+            initial_mode=0,
+            weather_hourly={},
+            pv_now_actual_w=0.0,
+            now_local=start,
+            pv_global_bias=1.0,
+            eex_days={},
+        )
+
+        self.assertEqual(plan["points"][0]["discharge_budget_kwh"], round(optimizer_engine.MAX_E_SLOT_KWH, 3))
 
     def test_optimizer_discharge_budget_has_no_current_charge_path_hard_block(self):
         source = Path(optimizer_engine.__file__).read_text(encoding="utf-8")
