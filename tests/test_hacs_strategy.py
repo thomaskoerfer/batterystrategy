@@ -583,6 +583,37 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertEqual(lowered.discharge_budget_kwh, 0.01)
         self.assertEqual(next_slot.discharge_budget_kwh, 0.20)
 
+    def test_load_discharge_can_open_budget_inside_current_slot(self):
+        coordinator = object.__new__(BatteryStrategyCoordinator)
+        coordinator._active_directive_slot_id = None
+        coordinator._active_directive_slot_end_ts_ms = 0
+        coordinator._slot_charged_kwh = 0.0
+        coordinator._slot_discharged_kwh = 0.0
+        coordinator._active_discharge_budget_base_kwh = 0.0
+
+        def directive(slot_id, budget):
+            return PlanLiveDirective(
+                slot_id=slot_id,
+                slot_start_ts=1,
+                slot_end_ts=2,
+                pv_charge_allowed=True,
+                must_charge_w=0,
+                must_charge_remaining_kwh=0.0,
+                grid_charge_allowed=False,
+                discharge_budget_kwh=budget,
+                battery_min_soc_pct=10.0,
+                battery_max_soc_pct=100.0,
+            )
+
+        first = coordinator._directive_with_progress(directive("slot-a", 0.0))
+        opened = coordinator._directive_with_progress(
+            directive("slot-a", 0.6),
+            allow_discharge_budget_increase=True,
+        )
+
+        self.assertEqual(first.discharge_budget_kwh, 0.0)
+        self.assertEqual(opened.discharge_budget_kwh, 0.6)
+
     def test_price_sensitive_low_price_does_not_use_pv_charge_as_free_replacement(self):
         now = dt.datetime(2026, 5, 29, 12, tzinfo=dt.timezone.utc)
         points = [

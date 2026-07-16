@@ -135,7 +135,12 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         elif self._last_live_command.mode == COMMAND_OUTPUT:
             self._slot_discharged_kwh += energy_kwh
 
-    def _directive_with_progress(self, directive: PlanLiveDirective) -> PlanLiveDirective:
+    def _directive_with_progress(
+        self,
+        directive: PlanLiveDirective,
+        *,
+        allow_discharge_budget_increase: bool = False,
+    ) -> PlanLiveDirective:
         """Return directive with slot-local charge/discharge budgets decremented."""
         if directive.slot_id != self._active_directive_slot_id:
             self._active_directive_slot_id = directive.slot_id
@@ -145,10 +150,11 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             self._active_discharge_budget_base_kwh = max(0.0, float(directive.discharge_budget_kwh))
         else:
             current_base = max(0.0, float(getattr(self, "_active_discharge_budget_base_kwh", 0.0)))
-            self._active_discharge_budget_base_kwh = min(
-                current_base,
-                max(0.0, float(directive.discharge_budget_kwh)),
-            )
+            new_base = max(0.0, float(directive.discharge_budget_kwh))
+            if allow_discharge_budget_increase:
+                self._active_discharge_budget_base_kwh = max(current_base, new_base)
+            else:
+                self._active_discharge_budget_base_kwh = min(current_base, new_base)
         return replace(
             directive,
             must_charge_remaining_kwh=round(max(0.0, directive.must_charge_remaining_kwh - self._slot_charged_kwh), 3),
@@ -175,7 +181,10 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             options,
             force_optimizer,
         )
-        directive = self._directive_with_progress(plan_live_directive_from_plan(plan, options))
+        directive = self._directive_with_progress(
+            plan_live_directive_from_plan(plan, options),
+            allow_discharge_budget_increase=options.discharge == DISCHARGE_LOAD,
+        )
         command = live_command_from_directive(directive, simple_command, inputs, options)
         self._last_live_command = command
         self._last_live_accounting_ts = now
