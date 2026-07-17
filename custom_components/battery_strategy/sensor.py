@@ -37,6 +37,14 @@ def _command(data):
     return data["command"]
 
 
+def _command_source(data):
+    if not data.get("strategy_enabled", True):
+        return "external_control_strategy_disabled"
+    if not data.get("send_commands", True):
+        return "strategy_not_sending"
+    return "battery_strategy"
+
+
 def _inputs(data):
     return data["inputs"]
 
@@ -106,6 +114,7 @@ SENSORS: tuple[BatteryStrategySensorDescription, ...] = (
         value_fn=lambda data: _command(data).power_w,
         native_unit_of_measurement=UnitOfPower.WATT,
     ),
+    BatteryStrategySensorDescription(key="command_source", name="Command Source", value_fn=_command_source),
     BatteryStrategySensorDescription(key="reason", name="Reason", value_fn=lambda data: _command(data).reason),
     BatteryStrategySensorDescription(
         key="residual_with_ev",

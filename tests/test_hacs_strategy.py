@@ -21,7 +21,7 @@ from custom_components.battery_strategy.const import (
     PV_CHARGING_ON,
 )
 from custom_components.battery_strategy.forecast import clamp_bias, fallback_weather_factor
-from custom_components.battery_strategy.models import StrategyInputs, StrategyOptions
+from custom_components.battery_strategy.models import StrategyCommand, StrategyInputs, StrategyOptions
 from custom_components.battery_strategy.optimizer import build_optimizer_plan
 from custom_components.battery_strategy import optimizer_adapter
 from custom_components.battery_strategy import optimizer_engine
@@ -131,6 +131,28 @@ class HacsStrategyTests(unittest.TestCase):
     def test_strategy_enabled_controls_hacs_actuation(self):
         self.assertTrue(self._coordinator_for_strategy_enabled(True)._effective_send_commands())
         self.assertFalse(self._coordinator_for_strategy_enabled(False)._effective_send_commands())
+
+    def test_strategy_disabled_live_display_is_idle_with_external_source(self):
+        coordinator = self._coordinator_for_strategy_enabled(False)
+        calculated = StrategyCommand(
+            mode=COMMAND_OUTPUT,
+            power_w=850,
+            reason="budget_discharge",
+            residual_with_ev_w=850,
+            residual_no_ev_w=850,
+            pv_surplus_w=0,
+            allowed_discharge_load_w=850,
+            house_load_total_w=850,
+            house_load_no_ev_w=850,
+        )
+
+        display = coordinator._disabled_display_command(calculated)
+        data = {"strategy_enabled": False, "send_commands": False, "command": display}
+
+        self.assertEqual(display.mode, COMMAND_IDLE)
+        self.assertEqual(display.power_w, 0)
+        self.assertEqual(display.reason, "strategy_disabled_external_control")
+        self.assertEqual(battery_sensor._command_source(data), "external_control_strategy_disabled")
 
 
     def test_strategy_disabled_zeroes_once_then_stays_hands_off(self):

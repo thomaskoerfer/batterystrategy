@@ -194,16 +194,19 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             allow_discharge_budget_increase=options.discharge == DISCHARGE_LOAD,
         )
         command = live_command_from_directive(directive, simple_command, inputs, options)
-        self._last_live_command = command
+        calculated_command = command
+        strategy_enabled = bool(self.entry.options.get("strategy_enabled", True))
+        display_command = command if strategy_enabled else self._disabled_display_command(command)
+        self._last_live_command = display_command
         self._last_live_accounting_ts = now
         reference_plan_attrs = await self.hass.async_add_executor_job(self._reference_plan_attrs_sync)
         self.plan_comparison = self._compare_optimizer_plan(plan, command, reference_plan_attrs)
         self._record_parallel_sample(inputs, command)
-        strategy_enabled = bool(self.entry.options.get("strategy_enabled", True))
         data = {
             "inputs": inputs,
             "options": options,
-            "command": command,
+            "command": display_command,
+            "calculated_command": calculated_command,
             "plan": plan,
             "optimizer_attrs": self._optimizer_attrs,
             "plan_to_live": directive,
@@ -218,7 +221,7 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         if strategy_enabled:
             self._strategy_was_enabled = True
             self._disabled_zeroed = False
-            await self._async_apply_command(command, options)
+            await self._async_apply_command(calculated_command, options)
             data["actuation"] = self.last_actuation
         elif self._strategy_was_enabled and not self._disabled_zeroed:
             await self._async_zero_limits_once()
@@ -533,6 +536,16 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             self._reference_input_points,
         )
 
+    def _disabled_display_command(self, command: StrategyCommand) -> StrategyCommand:
+        """Return the safe UI command while actuation is disabled."""
+        return replace(
+            command,
+            mode=COMMAND_IDLE,
+            power_w=0,
+            reason="strategy_disabled_external_control",
+            allowed_discharge_load_w=0,
+        )
+
     def _reference_data_points(self) -> dict[str, float] | None:
         """Return comparable comparison live data points if they are available."""
         entities = {
@@ -558,6 +571,7 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             "inputs": asdict(data["inputs"]),
             "options": asdict(data["options"]),
             "command": asdict(data["command"]),
+            "calculated_command": asdict(data["calculated_command"]),
             "plan": asdict(data["plan"]),
             "plan_comparison": asdict(data["plan_comparison"]),
             "parallel": asdict(data["parallel"]),
@@ -575,6 +589,7 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         reference_mode = self._state_value(CONF_REFERENCE_MODE_ENTITY)
         reference_power = self._state_float(CONF_REFERENCE_POWER_ENTITY)
         command = data["command"]
+        calculated_command = data["calculated_command"]
         plan = data["plan"]
         plan_comparison = data["plan_comparison"]
         inputs = data["inputs"]
@@ -595,6 +610,9 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
                 "mode": command.mode,
                 "power_w": command.power_w,
                 "reason": command.reason,
+                "calculated_mode": calculated_command.mode,
+                "calculated_power_w": calculated_command.power_w,
+                "calculated_reason": calculated_command.reason,
                 "reference_mode": reference_mode,
                 "reference_power_w": reference_power,
                 "send_commands": data["send_commands"],
@@ -623,6 +641,7 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         """Publish simple read-only state-machine values for the parallel dashboard."""
         inputs = data["inputs"]
         command = data["command"]
+        calculated_command = data["calculated_command"]
         plan = data["plan"]
         plan_comparison = data["plan_comparison"]
         parallel = data["parallel"]
@@ -641,6 +660,9 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             "mode": command.mode,
             "power_w": command.power_w,
             "reason": command.reason,
+            "calculated_mode": calculated_command.mode,
+            "calculated_power_w": calculated_command.power_w,
+            "calculated_reason": calculated_command.reason,
             "planned_mode": plan.current_mode,
             "planned_power_w": plan.current_power_w,
             "plan_to_live": asdict(directive),

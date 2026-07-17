@@ -40,6 +40,7 @@
               "entities": [
                 "sensor.battery_strategy_hacs_mode",
                 "sensor.battery_strategy_hacs_command_power",
+                "sensor.battery_strategy_command_source",
                 "sensor.battery_strategy_hacs_reason",
                 "sensor.battery_strategy_hacs_pv_surplus",
                 "sensor.battery_strategy_hacs_allowed_discharge_load",
