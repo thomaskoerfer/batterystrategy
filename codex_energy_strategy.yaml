@@ -214,3 +214,9 @@ recorder:
       - assist_satellite
       - image
       - camera
+    entities:
+      # Chart carrier sensors publish large live attributes for ApexCharts.
+      # Recording them creates 16 KB attribute warnings and unnecessary DB work.
+      - sensor.battery_strategy_hacs_profile_today
+      - sensor.battery_strategy_hacs_profile_tomorrow
+      - sensor.battery_strategy_hacs_profile_48h
