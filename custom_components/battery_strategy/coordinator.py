@@ -60,12 +60,40 @@ from .strategy import calculate_command, live_command_from_directive, plan_live_
 LOGGER = logging.getLogger(__name__)
 LOCAL_TZ = ZoneInfo("Europe/Berlin")
 OPTIMIZER_PREFETCH_LEAD_S = 60
+OPTIMIZER_STATE_FILE = "battery_strategy_hacs_optimizer_state.json"
+
+
+def _load_last_known_soc_pct(path: Path) -> float | None:
+    """Load the most recent valid real battery SoC from optimizer state."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    sample_soc = None
+    for sample in reversed(data.get("samples") or []):
+        candidate = sample.get("soc") if isinstance(sample, dict) else None
+        try:
+            candidate = float(candidate)
+        except (TypeError, ValueError):
+            continue
+        if 0.0 <= candidate <= 100.0:
+            sample_soc = candidate
+            break
+    candidates = [data.get("last_known_soc_pct"), sample_soc]
+    for candidate in candidates:
+        try:
+            value = float(candidate)
+        except (TypeError, ValueError):
+            continue
+        if 0.0 <= value <= 100.0:
+            return value
+    return None
 
 
 class BatteryStrategyCoordinator(DataUpdateCoordinator):
     """Collect HA states and calculate read-only strategy commands."""
 
-    def __init__(self, hass, entry, update_interval):
+    def __init__(self, hass, entry, update_interval, last_known_soc_pct: float | None = None):
         """Initialize coordinator."""
         super().__init__(
             hass,
@@ -96,6 +124,7 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         self._active_discharge_mode: str | None = None
         self._last_live_accounting_ts: dt.datetime | None = None
         self._last_live_command: StrategyCommand | None = None
+        self._last_known_soc_pct = last_known_soc_pct
         self._strategy_was_enabled = bool(entry.options.get("strategy_enabled", True))
         self._disabled_zeroed = not self._strategy_was_enabled
 
@@ -189,7 +218,7 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             force_optimizer,
         )
         directive = self._directive_with_progress(
-            plan_live_directive_from_plan(plan, options),
+            plan_live_directive_from_plan(plan, options, current_soc_pct=inputs.soc_pct),
             discharge_mode=options.discharge,
             allow_discharge_budget_increase=options.discharge == DISCHARGE_LOAD,
         )
@@ -290,8 +319,25 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             pv_w=self._state_float(CONF_PV_POWER_ENTITY),
             battery_power_w=self._battery_power_w(),
             ev_power_w=self._ev_power_w(),
-            soc_pct=self._state_float(CONF_BATTERY_SOC_ENTITY, 50.0),
+            soc_pct=self._battery_soc_pct(),
         )
+
+    def _battery_soc_pct(self) -> float:
+        """Return live SoC, bridging startup gaps with the last persisted value."""
+        entity_id = self.entry.data.get(CONF_BATTERY_SOC_ENTITY)
+        if entity_id:
+            state = self.hass.states.get(entity_id)
+            if state is not None and state.state not in ("unknown", "unavailable", "none", ""):
+                try:
+                    value = float(state.state)
+                except (TypeError, ValueError):
+                    value = None
+                if value is not None and 0.0 <= value <= 100.0:
+                    self._last_known_soc_pct = value
+                    return value
+        if self._last_known_soc_pct is not None:
+            return float(self._last_known_soc_pct)
+        return 50.0
 
     def _grid_import_export(self) -> tuple[float, float]:
         mode = self.entry.data.get(CONF_GRID_MODE, GRID_MODE_THREE_PHASE)

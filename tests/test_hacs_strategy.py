@@ -30,7 +30,7 @@ from custom_components.battery_strategy.plan_models import ForecastPoint, PlanLi
 from custom_components.battery_strategy.pricing import read_tibber_price_points
 from custom_components.battery_strategy import sensor as battery_sensor
 from custom_components.battery_strategy.actuator import should_write_limit, should_write_mode, zendure_targets
-from custom_components.battery_strategy.coordinator import BatteryStrategyCoordinator
+from custom_components.battery_strategy.coordinator import BatteryStrategyCoordinator, _load_last_known_soc_pct
 from custom_components.battery_strategy.strategy import (
     calculate_command,
     live_command_from_plan,
@@ -1322,7 +1322,7 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertEqual(cmd.power_w, 1000)
         self.assertEqual(cmd.pv_surplus_w, 1000)
 
-    def test_pv_surplus_charging_can_ignore_ev_when_configured(self):
+    def test_pv_surplus_charging_never_treats_ev_load_as_export(self):
         cmd = calculate_command(
             StrategyInputs(
                 grid_import_w=0,
@@ -1335,8 +1335,59 @@ class HacsStrategyTests(unittest.TestCase):
             StrategyOptions(pv_charging=PV_CHARGING_ON, discharge=DISCHARGE_OFF, pv_to_ev_first=False),
         )
         self.assertEqual(cmd.mode, COMMAND_INPUT)
-        self.assertEqual(cmd.power_w, 2400)
-        self.assertEqual(cmd.pv_surplus_w, 5000)
+        self.assertEqual(cmd.power_w, 1000)
+        self.assertEqual(cmd.pv_surplus_w, 1000)
+
+    def test_live_discharge_budget_uses_current_soc_instead_of_stale_plan_soc(self):
+        now = dt.datetime(2026, 7, 21, 20, tzinfo=dt.timezone.utc)
+        point = PlanPoint(
+            int(now.timestamp() * 1000),
+            now.date().isoformat(),
+            40.0,
+            500,
+            0,
+            500,
+            0,
+            500,
+            COMMAND_IDLE,
+            0,
+            0,
+            0,
+            5.0,
+            discharge_budget_kwh=0.6,
+        )
+        directive = plan_live_directive_from_plan(
+            StrategyPlan([point], COMMAND_IDLE, 0, "cached plan soc"),
+            StrategyOptions(discharge=DISCHARGE_PRICE_SENSITIVE, min_soc_pct=10),
+            current_soc_pct=50.0,
+        )
+        self.assertEqual(directive.discharge_budget_kwh, 0.6)
+
+    def test_last_known_soc_is_loaded_for_restart_bridge(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "optimizer-state.json"
+            path.write_text(json.dumps({"last_known_soc_pct": 37.0}), encoding="utf-8")
+            self.assertEqual(_load_last_known_soc_pct(path), 37.0)
+
+    def test_last_sample_soc_bridges_upgrade_before_persisted_soc_exists(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "optimizer-state.json"
+            path.write_text(
+                json.dumps({"samples": [{"soc": 42.0}, {"soc": -1}]}),
+                encoding="utf-8",
+            )
+            self.assertEqual(_load_last_known_soc_pct(path), 42.0)
+
+    def test_coordinator_uses_last_known_soc_while_entity_is_unavailable(self):
+        coordinator = object.__new__(BatteryStrategyCoordinator)
+        coordinator.entry = SimpleNamespace(data={"battery_soc_entity": "sensor.battery_soc"})
+        coordinator.hass = SimpleNamespace(
+            states=SimpleNamespace(
+                get=lambda _entity_id: SimpleNamespace(state="unavailable")
+            )
+        )
+        coordinator._last_known_soc_pct = 37.0
+        self.assertEqual(coordinator._battery_soc_pct(), 37.0)
 
     def test_manual_charge_is_override_but_respects_battery_limits(self):
         cmd = calculate_command(

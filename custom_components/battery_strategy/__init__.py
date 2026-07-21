@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from pathlib import Path
 
 try:
     from homeassistant import config_entries
@@ -15,9 +16,11 @@ except ImportError:  # pragma: no cover - unit tests run without Home Assistant.
 
 from .const import DOMAIN
 try:
-    from .coordinator import BatteryStrategyCoordinator
+    from .coordinator import BatteryStrategyCoordinator, OPTIMIZER_STATE_FILE, _load_last_known_soc_pct
 except ImportError:  # pragma: no cover - unit tests run without Home Assistant.
     BatteryStrategyCoordinator = None
+    OPTIMIZER_STATE_FILE = "battery_strategy_hacs_optimizer_state.json"
+    _load_last_known_soc_pct = None
 
 PLATFORMS = [] if Platform is None else [Platform.SENSOR, Platform.SELECT, Platform.SWITCH, Platform.NUMBER]
 
@@ -42,7 +45,16 @@ async def async_setup_entry(hass, entry) -> bool:
     if BatteryStrategyCoordinator is None:
         return False
     _async_remove_deprecated_entities(hass, entry)
-    coordinator = BatteryStrategyCoordinator(hass, entry, update_interval=timedelta(seconds=10))
+    last_known_soc_pct = await hass.async_add_executor_job(
+        _load_last_known_soc_pct,
+        Path(hass.config.path(OPTIMIZER_STATE_FILE)),
+    )
+    coordinator = BatteryStrategyCoordinator(
+        hass,
+        entry,
+        update_interval=timedelta(seconds=10),
+        last_known_soc_pct=last_known_soc_pct,
+    )
     await coordinator.async_config_entry_first_refresh()
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)

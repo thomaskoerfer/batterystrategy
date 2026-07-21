@@ -50,10 +50,10 @@ def net_no_battery_no_ev_w(inputs: StrategyInputs, options: StrategyOptions) -> 
 
 def real_pv_surplus_w(inputs: StrategyInputs, options: StrategyOptions) -> float:
     """PV surplus available for strategy charging."""
-    residual = net_no_battery_with_ev_w(inputs)
-    if not options.pv_to_ev_first:
-        residual -= active_ev_power_w(inputs, options)
-    return max(0.0, -residual)
+    # Charge-follow may only consume export that remains after all live loads,
+    # including the EV. Otherwise an EV session can turn charge-follow into
+    # unintended grid charging.
+    return max(0.0, -net_no_battery_with_ev_w(inputs))
 
 
 def allowed_discharge_load_w(inputs: StrategyInputs, options: StrategyOptions) -> float:
@@ -154,11 +154,15 @@ def live_command_from_plan(
     options: StrategyOptions,
 ) -> StrategyCommand:
     """Return a safe live command using the current plan directive."""
-    directive = plan_live_directive_from_plan(plan, options)
+    directive = plan_live_directive_from_plan(plan, options, current_soc_pct=inputs.soc_pct)
     return live_command_from_directive(directive, live_command, inputs, options)
 
 
-def plan_live_directive_from_plan(plan: StrategyPlan, options: StrategyOptions) -> PlanLiveDirective:
+def plan_live_directive_from_plan(
+    plan: StrategyPlan,
+    options: StrategyOptions,
+    current_soc_pct: float | None = None,
+) -> PlanLiveDirective:
     """Translate the optimizer plan into the minimal live-control directive."""
     manual = options.manual_mode in (MANUAL_CHARGE, MANUAL_DISCHARGE)
     current_point = plan.points[0] if plan.points else None
@@ -189,7 +193,11 @@ def plan_live_directive_from_plan(plan: StrategyPlan, options: StrategyOptions) 
     if not manual and options.discharge == DISCHARGE_LOAD:
         discharge_budget_kwh = _power_w_to_slot_kwh(float(options.max_discharge_power_w))
     elif not manual and options.discharge == DISCHARGE_PRICE_SENSITIVE:
-        discharge_budget_kwh = _planned_discharge_budget_kwh(plan, options) if must_charge_w <= 0 else 0.0
+        discharge_budget_kwh = (
+            _planned_discharge_budget_kwh(plan, options, current_soc_pct=current_soc_pct)
+            if must_charge_w <= 0
+            else 0.0
+        )
 
     return PlanLiveDirective(
         slot_id=slot_id,
@@ -287,12 +295,17 @@ def _planned_discharge_w(plan: StrategyPlan) -> float:
     return float(plan.current_power_w) if plan.current_mode == COMMAND_OUTPUT else 0.0
 
 
-def _planned_discharge_budget_kwh(plan: StrategyPlan, options: StrategyOptions) -> float:
+def _planned_discharge_budget_kwh(
+    plan: StrategyPlan,
+    options: StrategyOptions,
+    current_soc_pct: float | None = None,
+) -> float:
     point = plan.points[0] if plan.points else None
     if point is None:
         return 0.0
     budget = max(0.0, float(getattr(point, "discharge_budget_kwh", 0.0)))
-    available = _available_above_min_kwh(float(point.soc_pct), options)
+    soc_pct = float(point.soc_pct) if current_soc_pct is None else float(current_soc_pct)
+    available = _available_above_min_kwh(soc_pct, options)
     return round(min(available, budget), 3)
 
 

@@ -20,7 +20,7 @@ DEFAULT_DB_URL = "sqlite:////config/home-assistant_v2.db"
 STATE_FILE = "/config/battery_strategy_hacs_optimizer_state.json"
 TIBBER_POOL_FILE = "/config/.storage/tibber_prices.interval_pool.01KE9K39QKKGE5VHHJBHNEW8RD"
 TIBBER_POOL_GLOB = "/config/.storage/tibber_prices.interval_pool.*"
-SCRIPT_VERSION = "1.8.6-hacs-internal"
+SCRIPT_VERSION = "1.8.7-hacs-internal"
 _DB_ENGINE = None
 
 ETA_RT = 0.80
@@ -729,6 +729,7 @@ def load_state():
         "virtual_last_mode": "idle",
         "virtual_last_power_w": 0.0,
         "virtual_trace": [],
+        "last_known_soc_pct": None,
         "eex_cache": {},
         "daily_savings": {},
         "actual_daily_savings": {},
@@ -1861,69 +1862,29 @@ def build_virtual_plan(intervals, samples, start_energy_kwh, weather_factor, for
     def point_charge_kwh(t):
         return max(0.0, float(points[t].get("charge_fc_w", 0.0)) / 1000.0 * SLOT_H)
 
-    def scarce_value_budget_by_slot():
-        budgets = [0.0] * n_slots
-        scarce_floor_ct = float(discharge_floor_ct or 0.0)
-        idx = 0
-        while idx < n_slots:
-            if point_charge_kwh(idx) > 1e-6:
-                idx += 1
+    def future_higher_value_load_kwh(t):
+        """Return forecast load worth reserving inventory for before recharge."""
+        current_price_ct = float(slots[t]["price_ct"])
+        reserved_kwh = 0.0
+        for future_idx in range(t + 1, n_slots):
+            if point_charge_kwh(future_idx) > 1e-6:
+                break
+            if float(slots[future_idx]["price_ct"]) <= current_price_ct + 1e-9:
                 continue
-
-            block_start = idx
-            while idx < n_slots and point_charge_kwh(idx) <= 1e-6:
-                idx += 1
-            block_end = idx
-
-            available_ac_kwh = max(0.0, (pre_slot_energy_kwh(block_start) - MIN_E_KWH) * ETA_D)
-            if available_ac_kwh <= 1e-6:
-                continue
-
-            eligible_steps_by_slot = {}
-            for slot_idx in range(block_start, block_end):
-                price_ct = float(slots[slot_idx]["price_ct"])
-                if price_ct < scarce_floor_ct or price_ct < PV_EXPORT_OPPORTUNITY_CT + MIN_MARGIN_CT:
-                    eligible_steps_by_slot[slot_idx] = 0
-                    continue
-                eligible_kwh = min(
-                    MAX_E_SLOT_KWH,
-                    float(slots[slot_idx].get("discharge_eligible_kwh", slots[slot_idx]["net_pos_kwh"])),
-                )
-                eligible_steps_by_slot[slot_idx] = max(0, int(math.floor(eligible_kwh / e_step + 1e-9)))
-
-            energy_steps = max(0, int(math.floor(min(available_ac_kwh, MAX_E_KWH) / e_step + 1e-9)))
-            if energy_steps <= 0:
-                continue
-
-            current_price_ref = max(
-                float(slots[slot_idx]["price_ct"])
-                for slot_idx in range(block_start, block_end)
+            reserved_kwh += min(
+                MAX_E_SLOT_KWH,
+                float(
+                    slots[future_idx].get(
+                        "discharge_eligible_kwh",
+                        slots[future_idx]["net_pos_kwh"],
+                    )
+                ),
             )
-            switch_energy_kwh = (SWITCH_PENALTY_MIN / 60.0) * (SWITCH_PENALTY_REF_W / 1000.0)
-            switch_margin_ct = (switch_energy_kwh * current_price_ref) / max(e_step, min(available_ac_kwh, MAX_E_SLOT_KWH))
-            meaningful_margin_ct = max(SCARCE_VALUE_TIE_CT, switch_margin_ct)
-
-            higher_value_steps_by_slot = {}
-            for slot_idx in range(block_end - 1, block_start - 1, -1):
-                price_ct = float(slots[slot_idx]["price_ct"])
-                higher_steps = 0
-                for future_idx in range(slot_idx + 1, block_end):
-                    if float(slots[future_idx]["price_ct"]) > price_ct + meaningful_margin_ct:
-                        higher_steps += eligible_steps_by_slot.get(future_idx, 0)
-                higher_value_steps_by_slot[slot_idx] = higher_steps
-
-            for slot_idx in range(block_start, block_end):
-                price_ct = float(slots[slot_idx]["price_ct"])
-                if price_ct < scarce_floor_ct or price_ct < PV_EXPORT_OPPORTUNITY_CT + MIN_MARGIN_CT:
-                    continue
-                reserve_steps = min(energy_steps, higher_value_steps_by_slot[slot_idx])
-                available_after_reserve_steps = max(0, energy_steps - reserve_steps)
-                budgets[slot_idx] = round(min(MAX_E_SLOT_KWH, available_after_reserve_steps * e_step), 3)
-        return budgets
-
-    scarce_value_budgets = scarce_value_budget_by_slot()
+        return reserved_kwh
 
     def explicit_discharge_budget_kwh(t):
+        if point_charge_kwh(t) > 1e-6:
+            return 0.0
         slot_energy_kwh = pre_slot_energy_kwh(t)
         available_ac_kwh = max(0.0, (slot_energy_kwh - MIN_E_KWH) * ETA_D)
         max_total_discharge_kwh = min(MAX_E_SLOT_KWH, available_ac_kwh)
@@ -1941,7 +1902,11 @@ def build_virtual_plan(intervals, samples, start_energy_kwh, weather_factor, for
         scarce_budget_kwh = 0.0
         scarce_floor_ct = float(discharge_floor_ct or 0.0)
         if price_ct >= scarce_floor_ct:
-            scarce_budget_kwh = scarce_value_budgets[t]
+            higher_value_need_kwh = future_higher_value_load_kwh(t)
+            scarce_budget_kwh = max(
+                0.0,
+                available_ac_kwh + safe_recovery_kwh - higher_value_need_kwh,
+            )
 
         budget_kwh = max(pv_recovery_budget_kwh, min(max_total_discharge_kwh, scarce_budget_kwh))
 
@@ -2603,6 +2568,27 @@ def main():
     house_load_total_w = max(0.0, grid_import_w + pv_w + bat_in_out_w - grid_export_w)
     house_load_w = max(0.0, house_load_total_w - wallbox_w)
     soc = inputs["soc"]
+    if soc is not None and 0.0 <= float(soc) <= 100.0:
+        soc = float(soc)
+        data["last_known_soc_pct"] = soc
+    else:
+        persisted_soc = data.get("last_known_soc_pct")
+        try:
+            persisted_soc = float(persisted_soc)
+        except (TypeError, ValueError):
+            persisted_soc = None
+        if persisted_soc is None:
+            for sample in reversed(data.get("samples") or []):
+                try:
+                    sample_soc = float(sample.get("soc"))
+                except (AttributeError, TypeError, ValueError):
+                    continue
+                if 0.0 <= sample_soc <= 100.0:
+                    persisted_soc = sample_soc
+                    break
+        soc = persisted_soc if persisted_soc is not None and 0.0 <= persisted_soc <= 100.0 else None
+        if soc is not None:
+            data["last_known_soc_pct"] = soc
     soc_min_pct = clamp(float(inputs.get("soc_min_pct", SOC_MIN)), 0.0, 40.0)
     SOC_MIN = soc_min_pct
     MIN_E_KWH = CAP_KWH * (SOC_MIN / 100.0)
