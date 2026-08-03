@@ -1,4 +1,6 @@
 {
   "name": "Battery Strategy",
-  "country": "DE"
+  "country": "DE",
+  "homeassistant": "2026.7.0",
+  "render_readme": true
 }
