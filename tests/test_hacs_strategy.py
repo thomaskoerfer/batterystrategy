@@ -65,6 +65,41 @@ from custom_components.battery_strategy.strategy import (
 
 
 class HacsStrategyTests(unittest.TestCase):
+    def test_slot_progress_accounts_measured_battery_power(self):
+        coordinator = object.__new__(BatteryStrategyCoordinator)
+        now = dt.datetime.now(dt.timezone.utc)
+        coordinator._last_live_accounting_ts = now - dt.timedelta(seconds=36)
+        coordinator._last_actual_battery_power_w = -1000.0
+        coordinator._slot_charged_kwh = 0.0
+        coordinator._slot_discharged_kwh = 0.0
+        coordinator._account_actual_battery_power(now)
+        self.assertAlmostEqual(coordinator._slot_charged_kwh, 0.01, places=4)
+        self.assertEqual(coordinator._slot_discharged_kwh, 0.0)
+
+    def test_failsafe_zeros_limits_only_once_per_fault(self):
+        calls = []
+
+        class Services:
+            @staticmethod
+            async def async_call(domain, service, data, blocking=False):
+                calls.append((domain, service, data, blocking))
+
+        coordinator = object.__new__(BatteryStrategyCoordinator)
+        coordinator.hass = SimpleNamespace(services=Services())
+        coordinator._failsafe_zeroed_reason = None
+        coordinator._entity_id = lambda key: key
+        coordinator._state_available = lambda _entity: True
+        coordinator._raw_state_float = lambda _entity: 200.0
+
+        async def scenario():
+            await coordinator._async_failsafe_zero_once("grid_inputs_stale")
+            await coordinator._async_failsafe_zero_once("grid_inputs_stale")
+
+        asyncio.run(scenario())
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(all(call[2]["value"] == 0 for call in calls))
+        self.assertEqual(coordinator.last_actuation["status"], "failsafe_no_write")
+
     def test_optimizer_state_migrates_plain_json_to_atomic_gzip(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "optimizer-state.json"
