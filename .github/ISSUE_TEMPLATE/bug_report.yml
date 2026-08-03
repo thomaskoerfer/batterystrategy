@@ -1,0 +1,44 @@
+name: Bug report
+description: Report incorrect planning, control, installation, or runtime behavior.
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: checkboxes
+    attributes:
+      label: Safety check
+      options:
+        - label: I disabled battery control if the issue could cause unsafe charging or discharging.
+          required: true
+  - type: input
+    attributes:
+      label: Battery Strategy version
+      placeholder: 0.2.0-beta.2
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: Home Assistant version
+    validations:
+      required: true
+  - type: dropdown
+    attributes:
+      label: Battery profile
+      options:
+        - Zendure
+        - Generic monitoring
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: What happened?
+      description: Include expected behavior, actual behavior, timestamps, modes, and relevant power values.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Diagnostics and logs
+      description: Attach Home Assistant diagnostics and relevant logs. Remove serial numbers, addresses, tokens, and other private data.
+  - type: textarea
+    attributes:
+      label: Additional context
