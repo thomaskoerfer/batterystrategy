@@ -7,13 +7,9 @@ from datetime import timedelta
 from pathlib import Path
 
 try:
-    from homeassistant import config_entries
     from homeassistant.const import Platform
-    from homeassistant.helpers import config_validation as cv
     from homeassistant.helpers import entity_registry as er
 except ImportError:  # pragma: no cover - unit tests run without Home Assistant.
-    config_entries = None
-    cv = None
     Platform = None
     er = None
 
@@ -37,24 +33,6 @@ PLATFORMS = (
     if Platform is None
     else [Platform.SENSOR, Platform.SELECT, Platform.SWITCH, Platform.NUMBER]
 )
-CONFIG_SCHEMA = None if cv is None else cv.config_entry_only_config_schema(DOMAIN)
-
-
-async def async_setup(hass, config) -> bool:
-    """Set up YAML import."""
-    if config_entries is None:
-        return False
-    if DOMAIN in config:
-        hass.async_create_task(
-            hass.config_entries.flow.async_init(
-                DOMAIN,
-                context={"source": config_entries.SOURCE_IMPORT},
-                data=config.get(DOMAIN) or {},
-            )
-        )
-    return True
-
-
 async def async_setup_entry(hass, entry) -> bool:
     """Set up Battery Strategy from a config entry."""
     if BatteryStrategyCoordinator is None:
