@@ -14,6 +14,7 @@ except ImportError:  # pragma: no cover - unit tests run without Home Assistant.
     er = None
 
 from .const import DOMAIN
+from .optimizer_state import runtime_snapshot
 
 try:
     from .coordinator import (
@@ -33,6 +34,8 @@ PLATFORMS = (
     if Platform is None
     else [Platform.SENSOR, Platform.SELECT, Platform.SWITCH, Platform.NUMBER]
 )
+
+
 async def async_setup_entry(hass, entry) -> bool:
     """Set up Battery Strategy from a config entry."""
     if BatteryStrategyCoordinator is None:
@@ -40,8 +43,8 @@ async def async_setup_entry(hass, entry) -> bool:
     _async_clean_deprecated_options(hass, entry)
     _async_remove_deprecated_entities(hass, entry)
     await hass.async_add_executor_job(_migrate_runtime_files, hass.config.config_dir)
-    last_known_soc_pct = await hass.async_add_executor_job(
-        _load_last_known_soc_pct,
+    last_known_soc_pct, last_optimizer_output = await hass.async_add_executor_job(
+        runtime_snapshot,
         Path(hass.config.path(OPTIMIZER_STATE_FILE)),
     )
     coordinator = BatteryStrategyCoordinator(
@@ -49,6 +52,7 @@ async def async_setup_entry(hass, entry) -> bool:
         entry,
         update_interval=timedelta(seconds=10),
         last_known_soc_pct=last_known_soc_pct,
+        last_optimizer_output=last_optimizer_output,
     )
     await coordinator.async_config_entry_first_refresh()
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator

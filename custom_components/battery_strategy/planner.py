@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from pathlib import Path
 
 from .models import StrategyInputs, StrategyOptions
 from .optimizer_adapter import OptimizerEngineAdapter
@@ -16,14 +15,13 @@ LOGGER = logging.getLogger(__name__)
 class BackgroundPlanner:
     """Keep one optimizer run in flight while serving the last valid plan."""
 
-    def __init__(self, hass, adapter: OptimizerEngineAdapter, state_path: Path) -> None:
+    def __init__(self, hass, adapter: OptimizerEngineAdapter) -> None:
         self._hass = hass
         self._adapter = adapter
         self._task: asyncio.Future | None = None
         self._closing = False
         self._pending_force = False
         self._last_error: str | None = None
-        self._adapter.hydrate(state_path)
 
     def current(
         self,

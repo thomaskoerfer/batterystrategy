@@ -7,7 +7,6 @@ import datetime as dt
 import io
 import json
 import time
-from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from .const import (
@@ -22,7 +21,6 @@ from .const import (
     CONF_PV_POWER_ENTITY,
 )
 from .models import StrategyInputs, StrategyOptions
-from .optimizer_state import last_optimizer_output
 from .plan_models import DailyCost, PlanPoint, StrategyPlan
 
 CACHE_TTL_S = 240
@@ -41,11 +39,10 @@ class OptimizerEngineAdapter:
         self._last_options: StrategyOptions | None = None
         self._timezone = dt.timezone.utc
 
-    def hydrate(self, state_path: str | Path) -> None:
-        """Hydrate the cache from the last persisted valid optimizer output."""
-        output = last_optimizer_output(state_path)
+    def hydrate_output(self, output: dict | None) -> None:
+        """Hydrate the cache from an already loaded startup snapshot."""
         if output:
-            self._last_output = output
+            self._last_output = dict(output)
 
     def cached_result(
         self, inputs: StrategyInputs, options: StrategyOptions

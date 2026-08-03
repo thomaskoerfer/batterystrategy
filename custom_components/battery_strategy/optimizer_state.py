@@ -64,3 +64,26 @@ def last_optimizer_output(path: str | Path) -> dict[str, Any] | None:
         return None
     output = data.get("last_output")
     return dict(output) if isinstance(output, dict) and output else None
+
+
+def runtime_snapshot(path: str | Path) -> tuple[float | None, dict[str, Any] | None]:
+    """Load startup values in one executor-backed disk read."""
+    data = load_state_document(path)
+    if data is None:
+        return None, None
+    output = data.get("last_output")
+    output = dict(output) if isinstance(output, dict) and output else None
+    candidates = [data.get("last_known_soc_pct")]
+    candidates.extend(
+        sample.get("soc")
+        for sample in reversed(data.get("samples") or [])
+        if isinstance(sample, dict)
+    )
+    for candidate in candidates:
+        try:
+            value = float(candidate)
+        except (TypeError, ValueError):
+            continue
+        if 0.0 <= value <= 100.0:
+            return value, output
+    return None, output

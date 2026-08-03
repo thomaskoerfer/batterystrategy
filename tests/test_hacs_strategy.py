@@ -153,7 +153,7 @@ class HacsStrategyTests(unittest.TestCase):
                 return asyncio.get_running_loop().run_in_executor(None, target, *args)
 
         async def scenario():
-            planner = BackgroundPlanner(Hass(), Adapter(), Path("unused"))
+            planner = BackgroundPlanner(Hass(), Adapter())
             inputs = StrategyInputs(0, 0, 0, 0)
             options = StrategyOptions()
             started = time.monotonic()

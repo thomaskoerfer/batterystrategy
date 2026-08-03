@@ -74,7 +74,12 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
     """Collect HA states, calculate the strategy, and apply commands."""
 
     def __init__(
-        self, hass, entry, update_interval, last_known_soc_pct: float | None = None
+        self,
+        hass,
+        entry,
+        update_interval,
+        last_known_soc_pct: float | None = None,
+        last_optimizer_output: dict | None = None,
     ):
         """Initialize coordinator."""
         super().__init__(
@@ -88,11 +93,8 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         self._manual_power_w = 0.0
         self._manual_until: dt.datetime | None = None
         self._optimizer_engine = OptimizerEngineAdapter(hass, entry)
-        self._planner = BackgroundPlanner(
-            hass,
-            self._optimizer_engine,
-            Path(hass.config.path(OPTIMIZER_STATE_FILE)),
-        )
+        self._optimizer_engine.hydrate_output(last_optimizer_output)
+        self._planner = BackgroundPlanner(hass, self._optimizer_engine)
         self._optimizer_attrs: dict = {}
         self.last_actuation: dict[str, object] = {"status": "not_started"}
         self._active_directive_slot_id: str | None = None
