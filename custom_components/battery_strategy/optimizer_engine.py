@@ -24,6 +24,7 @@ _DB_ENGINE = None
 _RUNTIME_STATES = {}
 _RUNTIME_PRICE_INTERVALS = []
 _ENTITY_MAP = {}
+_ENTITY_SCALE = {}
 
 E_PRICE_CURRENT = "price_current"
 E_PRICE_EUR = "price_eur"
@@ -124,7 +125,7 @@ OPEN_METEO_URL = (
 def configure_runtime(context):
     """Apply one config-entry runtime context before an optimizer run."""
     global DB, DEFAULT_DB_URL, STATE_FILE, _DB_ENGINE
-    global _RUNTIME_STATES, _RUNTIME_PRICE_INTERVALS, _ENTITY_MAP
+    global _RUNTIME_STATES, _RUNTIME_PRICE_INTERVALS, _ENTITY_MAP, _ENTITY_SCALE
     global CAP_KWH, SOC_MIN, SOC_MAX, MIN_E_KWH, MAX_E_KWH, MAX_P_W, MAX_E_SLOT_KWH
     global MAX_CHARGE_P_W, MAX_DISCHARGE_P_W, MAX_CHARGE_E_SLOT_KWH, MAX_DISCHARGE_E_SLOT_KWH
     global PV_CHARGING_ENABLED, GRID_CHARGING_ENABLED, DISCHARGE_ENABLED, PLANNING_HORIZON_H
@@ -139,6 +140,11 @@ def configure_runtime(context):
     _RUNTIME_STATES = dict(context.get("states") or {})
     _RUNTIME_PRICE_INTERVALS = list(context.get("price_intervals") or [])
     _ENTITY_MAP = {key: value for key, value in (context.get("entity_map") or {}).items() if value}
+    _ENTITY_SCALE = {
+        key: float(value)
+        for key, value in (context.get("entity_scale") or {}).items()
+        if value is not None
+    }
 
     CAP_KWH = max(0.5, float(context.get("battery_capacity_kwh") or 6.0))
     SOC_MIN = max(0.0, min(100.0, float(context.get("min_soc_pct") or 0.0)))
@@ -332,7 +338,7 @@ def fetch_sensor_series_many(entity_ids, cutoff_ts):
             out = []
             for ts, st in rows_map.get(entity_id, []):
                 try:
-                    out.append((float(ts), float(st)))
+                    out.append((float(ts), float(st) * _ENTITY_SCALE.get(entity_id, 1.0)))
                 except Exception:
                     continue
             parsed[entity_id] = out
@@ -362,7 +368,7 @@ def fetch_sensor_series(entity_id, cutoff_ts):
     out = []
     for ts, st in rows:
         try:
-            v = float(st)
+            v = float(st) * _ENTITY_SCALE.get(entity_id, 1.0)
             out.append((float(ts), v))
         except Exception:
             continue
@@ -373,19 +379,13 @@ def fetch_net_actual_profile(hours=48):
     cutoff_ts = dt.datetime.now(dt.timezone.utc).timestamp() - hours * 3600
     series_map = fetch_sensor_series_many(
         [
-            "sensor.battery_strategy_grid_import_live_power_now",
             E_GRID_IMPORT,
-            "sensor.battery_strategy_grid_export_live_power_now",
             E_GRID_EXPORT,
         ],
         cutoff_ts,
     )
-    imp = series_map["sensor.battery_strategy_grid_import_live_power_now"]
-    if len(imp) < 8:
-        imp = series_map[E_GRID_IMPORT]
-    exp = series_map["sensor.battery_strategy_grid_export_live_power_now"]
-    if len(exp) < 8:
-        exp = series_map[E_GRID_EXPORT]
+    imp = series_map[E_GRID_IMPORT]
+    exp = series_map[E_GRID_EXPORT]
     buckets = {}
     for ts, v in imp:
         h = int(ts // 3600) * 3600
@@ -450,9 +450,7 @@ def fetch_house_actual_profile(hours=48, samples=None):
     cutoff_ts = dt.datetime.now(dt.timezone.utc).timestamp() - hours * 3600
     series_map = fetch_sensor_series_many(
         [
-            "sensor.battery_strategy_grid_import_live_power_now",
             E_GRID_IMPORT,
-            "sensor.battery_strategy_grid_export_live_power_now",
             E_GRID_EXPORT,
             E_PV_POWER,
             E_EV_POWER,
@@ -460,12 +458,8 @@ def fetch_house_actual_profile(hours=48, samples=None):
         ],
         cutoff_ts,
     )
-    imp = series_map["sensor.battery_strategy_grid_import_live_power_now"]
-    if len(imp) < 8:
-        imp = series_map[E_GRID_IMPORT]
-    exp = series_map["sensor.battery_strategy_grid_export_live_power_now"]
-    if len(exp) < 8:
-        exp = series_map[E_GRID_EXPORT]
+    imp = series_map[E_GRID_IMPORT]
+    exp = series_map[E_GRID_EXPORT]
     pv = series_map[E_PV_POWER]
     wallbox = series_map[E_EV_POWER]
     bat = series_map[E_BATTERY_POWER]
@@ -898,9 +892,7 @@ def bootstrap_samples_from_db(now_ts, days=21):
     cutoff = now_ts - days * 86400
     series_map = fetch_sensor_series_many(
         [
-            "sensor.battery_strategy_grid_import_live_power_now",
             E_GRID_IMPORT,
-            "sensor.battery_strategy_grid_export_live_power_now",
             E_GRID_EXPORT,
             E_PV_POWER,
             E_EV_POWER,
@@ -910,12 +902,8 @@ def bootstrap_samples_from_db(now_ts, days=21):
         ],
         cutoff,
     )
-    grid_import = series_map["sensor.battery_strategy_grid_import_live_power_now"]
-    if len(grid_import) < 8:
-        grid_import = series_map[E_GRID_IMPORT]
-    grid_export = series_map["sensor.battery_strategy_grid_export_live_power_now"]
-    if len(grid_export) < 8:
-        grid_export = series_map[E_GRID_EXPORT]
+    grid_import = series_map[E_GRID_IMPORT]
+    grid_export = series_map[E_GRID_EXPORT]
     pv = series_map[E_PV_POWER]
     wallbox = series_map[E_EV_POWER]
     bat = series_map[E_BATTERY_POWER]
@@ -953,7 +941,7 @@ def bootstrap_samples_from_db(now_ts, days=21):
         gi = float(rec.get("grid_import_w", 0.0))
         ge = float(rec.get("grid_export_w", 0.0))
         pv_w = float(rec.get("pv_w", 0.0))
-        wallbox_w = max(0.0, float(rec.get("wallbox_w", 0.0)) * 1000.0)
+        wallbox_w = max(0.0, float(rec.get("wallbox_w", 0.0)))
         bat_w = float(rec.get("bat_in_out_w", 0.0))
         # Reconstruct pre-battery house power from meter values.
         house_w_total = max(0.0, gi + pv_w + bat_w - ge)
@@ -1280,8 +1268,6 @@ def collect_inputs():
         E_PRICE_CURRENT,
         E_PRICE_EUR,
         E_GRID_IMPORT,
-        "sensor.battery_strategy_grid_import_live_power_now",
-        "sensor.battery_strategy_grid_export_live_power_now",
         E_GRID_EXPORT,
         E_PV_POWER,
         E_BATTERY_SOC,
@@ -1332,14 +1318,8 @@ def collect_inputs():
     return {
         "p_now": p_now,
         "p_future_max": p_future_max,
-        "grid_import_w": as_float(
-            s["sensor.battery_strategy_grid_import_live_power_now"],
-            as_float(s[E_GRID_IMPORT], 0.0),
-        ),
-        "grid_export_w": as_float(
-            s["sensor.battery_strategy_grid_export_live_power_now"],
-            as_float(s[E_GRID_EXPORT], 0.0),
-        ),
+        "grid_import_w": as_float(s[E_GRID_IMPORT], 0.0),
+        "grid_export_w": as_float(s[E_GRID_EXPORT], 0.0),
         "pv_w": as_float(s[E_PV_POWER], 0.0),
         "wallbox_w": wallbox_w,
         "bat_in_out_w": as_float(s[E_BATTERY_POWER], 0.0),
@@ -2407,8 +2387,8 @@ def update_actual_savings_incremental(data, now_ts):
             E_PRICE_EUR,
             E_BATTERY_INPUT_ENERGY,
             E_BATTERY_OUTPUT_ENERGY,
-            "sensor.battery_strategy_grid_import_live_power_now",
-            "sensor.battery_strategy_grid_export_live_power_now",
+            E_GRID_IMPORT,
+            E_GRID_EXPORT,
             E_BATTERY_POWER,
         ],
         query_from,
@@ -2416,8 +2396,8 @@ def update_actual_savings_incremental(data, now_ts):
     price_series         = series_map.get(E_PRICE_EUR, [])
     input_series         = series_map.get(E_BATTERY_INPUT_ENERGY, [])
     output_series        = series_map.get(E_BATTERY_OUTPUT_ENERGY, [])
-    grid_import_series   = series_map.get("sensor.battery_strategy_grid_import_live_power_now", [])
-    grid_export_series   = series_map.get("sensor.battery_strategy_grid_export_live_power_now", [])
+    grid_import_series   = series_map.get(E_GRID_IMPORT, [])
+    grid_export_series   = series_map.get(E_GRID_EXPORT, [])
     battery_power_series = series_map.get(E_BATTERY_POWER, [])
     tibber_price_ts, tibber_price_vals = build_tibber_price_index(local_date_set_between(query_from, now_ts))
 
@@ -2547,6 +2527,11 @@ def update_actual_savings_incremental(data, now_ts):
                 rec["saving_eur"]       -= cost
 
             # -- discharge (battery_output) -------------------------------------
+            # Product decision for this release: every measured battery-output
+            # counter delta is credited at the current import price. This is a
+            # deliberately simple gross-savings metric; it does not yet remove
+            # battery export or EV consumption. Keep this explicit until the
+            # metric is intentionally upgraded to avoided-grid-import savings.
             if needs_backfill:
                 prev_v = output_prev_init
             else:

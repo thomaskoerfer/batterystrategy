@@ -124,6 +124,90 @@ if config_entries is not None:
             CONF_ZENDURE_OUTPUT_LIMIT_ENTITY: "",
         }
 
+    def _required_entity_keys(data: dict[str, str]) -> set[str]:
+        """Return entity mappings required by the selected source profiles."""
+        required = {
+            CONF_PV_POWER_ENTITY,
+            CONF_PRICE_ENTITY,
+            CONF_BATTERY_SOC_ENTITY,
+        }
+        grid_mode = data.get(CONF_GRID_MODE, GRID_MODE_THREE_PHASE)
+        if grid_mode == GRID_MODE_SIGNED:
+            required.add(CONF_SIGNED_GRID_POWER_ENTITY)
+        elif grid_mode == GRID_MODE_IMPORT_EXPORT:
+            required.update((CONF_GRID_IMPORT_ENTITY, CONF_GRID_EXPORT_ENTITY))
+        else:
+            required.update(
+                (CONF_GRID_L1_ENTITY, CONF_GRID_L2_ENTITY, CONF_GRID_L3_ENTITY)
+            )
+
+        if (
+            data.get(CONF_BATTERY_PROFILE, BATTERY_PROFILE_ZENDURE)
+            == BATTERY_PROFILE_ZENDURE
+        ):
+            required.update(
+                (
+                    CONF_ZENDURE_AC_MODE_ENTITY,
+                    CONF_ZENDURE_OUTPUT_HOME_POWER_ENTITY,
+                    CONF_ZENDURE_GRID_INPUT_POWER_ENTITY,
+                    CONF_ZENDURE_INPUT_LIMIT_ENTITY,
+                    CONF_ZENDURE_OUTPUT_LIMIT_ENTITY,
+                )
+            )
+        else:
+            required.add(CONF_BATTERY_POWER_ENTITY)
+        return required
+
+    def _validate_entity_mapping(hass, data: dict[str, str]) -> dict[str, str]:
+        """Validate profile completeness and measurement units before saving."""
+        errors = {
+            key: "required" for key in _required_entity_keys(data) if not data.get(key)
+        }
+        power_keys = {
+            CONF_SIGNED_GRID_POWER_ENTITY,
+            CONF_GRID_L1_ENTITY,
+            CONF_GRID_L2_ENTITY,
+            CONF_GRID_L3_ENTITY,
+            CONF_GRID_IMPORT_ENTITY,
+            CONF_GRID_EXPORT_ENTITY,
+            CONF_PV_POWER_ENTITY,
+            CONF_EV_POWER_ENTITY,
+            CONF_BATTERY_POWER_ENTITY,
+            CONF_ZENDURE_OUTPUT_PACK_POWER_ENTITY,
+            CONF_ZENDURE_PACK_INPUT_POWER_ENTITY,
+            CONF_ZENDURE_OUTPUT_HOME_POWER_ENTITY,
+            CONF_ZENDURE_GRID_INPUT_POWER_ENTITY,
+        }
+        energy_keys = {
+            CONF_BATTERY_INPUT_ENERGY_ENTITY,
+            CONF_BATTERY_OUTPUT_ENERGY_ENTITY,
+        }
+        for key, entity_id in data.items():
+            if not entity_id or key in errors:
+                continue
+            state = hass.states.get(entity_id)
+            if state is None:
+                continue
+            unit = (
+                str(state.attributes.get("unit_of_measurement") or "").strip().lower()
+            )
+            if key in power_keys and unit not in {"w", "kw", "mw"}:
+                errors[key] = "invalid_power_unit"
+            elif key in energy_keys and unit != "kwh":
+                # Savings consumes recorder counter deltas directly in kWh. Reject
+                # Wh counters rather than silently scaling history incorrectly.
+                errors[key] = "invalid_energy_unit"
+            elif key == CONF_BATTERY_SOC_ENTITY and unit != "%":
+                errors[key] = "invalid_soc_unit"
+
+        price_entity = data.get(CONF_PRICE_ENTITY)
+        price_state = hass.states.get(price_entity) if price_entity else None
+        if price_state is not None and not isinstance(
+            price_state.attributes.get("data"), list
+        ):
+            errors[CONF_PRICE_ENTITY] = "invalid_price_entity"
+        return errors
+
     class BatteryStrategyConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Handle a config flow for Battery Strategy."""
 
@@ -144,6 +228,13 @@ if config_entries is not None:
             integration can be installed without touching the existing package.
             """
             if user_input is not None:
+                errors = _validate_entity_mapping(self.hass, user_input)
+                if errors:
+                    return self.async_show_form(
+                        step_id="user",
+                        data_schema=_entity_schema(user_input),
+                        errors=errors,
+                    )
                 await self.async_set_unique_id(DOMAIN)
                 self._abort_if_unique_id_configured()
                 return self.async_create_entry(
@@ -196,6 +287,13 @@ if config_entries is not None:
             if user_input is not None:
                 data = dict(self._config_entry.data)
                 data.update(user_input)
+                errors = _validate_entity_mapping(self.hass, data)
+                if errors:
+                    return self.async_show_form(
+                        step_id="entities",
+                        data_schema=_entity_schema(data),
+                        errors=errors,
+                    )
                 self.hass.config_entries.async_update_entry(
                     self._config_entry, data=data
                 )
@@ -300,10 +398,26 @@ if config_entries is not None:
         async def async_step_strategy_battery(self, user_input=None):
             """Manage battery and price options."""
             if user_input is not None:
+                errors = {}
+                if float(user_input["min_soc_pct"]) >= float(user_input["max_soc_pct"]):
+                    errors["base"] = "invalid_soc_range"
+                if errors:
+                    return self.async_show_form(
+                        step_id="strategy_battery",
+                        data_schema=self._battery_schema(user_input),
+                        errors=errors,
+                    )
                 return self._save_options(user_input)
 
-            options = self._config_entry.options
-            schema = vol.Schema(
+            return self.async_show_form(
+                step_id="strategy_battery",
+                data_schema=self._battery_schema(dict(self._config_entry.options)),
+            )
+
+        @staticmethod
+        def _battery_schema(options):
+            """Return battery options schema with submitted values preserved."""
+            return vol.Schema(
                 {
                     vol.Required(
                         "min_soc_pct", default=options.get("min_soc_pct", 10.0)
@@ -357,7 +471,6 @@ if config_entries is not None:
                     ): _number_selector(0, 100, 0.1, "kW"),
                 }
             )
-            return self.async_show_form(step_id="strategy_battery", data_schema=schema)
 
         async def async_step_strategy_manual(self, user_input=None):
             """Manage manual override options."""

@@ -39,10 +39,13 @@ Existing installations preserve their stored control state. A fresh installation
 ## Safety behavior
 
 - Stale or unavailable grid inputs zero both battery limits once and remain in fail-safe until measurements recover.
+- A configured EV power sensor is bridged for three minutes. If it remains unavailable, automatic discharge is blocked whenever the EV policy excludes EV consumption; charging remains available.
 - A persisted SoC bridges a short startup gap. If no valid SoC becomes available, active control is stopped.
 - Discharge follows eligible household load and is capped to avoid battery export.
-- Disabling control writes zero limits once, then stops writing so manual battery control remains possible.
+- Disabling control retries the safe zero command until the control entities are available, then stops writing so manual battery control remains possible.
 - PV surplus charging remains available according to the selected policy.
+
+The current actual-savings metric is intentionally a gross battery metric: measured charge energy is split into PV and grid energy, while every measured discharge-counter delta is credited at the applicable import price. Battery export and EV consumption are not yet removed from the discharge credit.
 
 ## Troubleshooting
 

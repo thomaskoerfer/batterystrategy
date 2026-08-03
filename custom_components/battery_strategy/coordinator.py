@@ -14,6 +14,7 @@ from .actuator import should_write_limit, should_write_mode, zendure_targets
 from .const import (
     BATTERY_PROFILE_ZENDURE,
     COMMAND_IDLE,
+    COMMAND_OUTPUT,
     CONF_BATTERY_CAPACITY_KWH,
     CONF_BATTERY_POWER_ENTITY,
     CONF_BATTERY_PROFILE,
@@ -59,6 +60,7 @@ from .strategy import (
 LOGGER = logging.getLogger(__name__)
 OPTIMIZER_PREFETCH_LEAD_S = 60
 SOC_BRIDGE_MAX_AGE_S = 300
+EV_POWER_BRIDGE_MAX_AGE_S = 180
 OPTIMIZER_STATE_FILE = "battery_strategy_optimizer_state.json"
 COMMAND_TRACE_FILE = "battery_strategy_command_trace.jsonl"
 COMMAND_TRACE_MAX_BYTES = 64 * 1024 * 1024
@@ -112,6 +114,9 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             dt.datetime.now(dt.timezone.utc) if last_known_soc_pct is not None else None
         )
         self._failsafe_zeroed_reason: str | None = None
+        self._last_known_ev_power_w = 0.0
+        self._last_valid_ev_at: dt.datetime | None = None
+        self._ev_control_ready = not bool(entry.data.get(CONF_EV_POWER_ENTITY))
         self._strategy_was_enabled = bool(entry.options.get("strategy_enabled", False))
         self._disabled_zeroed = not self._strategy_was_enabled
 
@@ -255,10 +260,9 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             self._disabled_zeroed = False
             await self._async_apply_command(calculated_command, options)
             data["actuation"] = self.last_actuation
-        elif self._strategy_was_enabled and not self._disabled_zeroed:
-            await self._async_zero_limits_once()
+        elif not self._disabled_zeroed:
+            self._disabled_zeroed = await self._async_zero_limits_once()
             self._strategy_was_enabled = False
-            self._disabled_zeroed = True
             data["actuation"] = self.last_actuation
         else:
             self._strategy_was_enabled = False
@@ -331,7 +335,7 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         return StrategyInputs(
             grid_import_w=grid_import,
             grid_export_w=grid_export,
-            pv_w=self._state_float(CONF_PV_POWER_ENTITY),
+            pv_w=self._state_power_w(CONF_PV_POWER_ENTITY),
             battery_power_w=self._battery_power_w(),
             ev_power_w=self._ev_power_w(),
             soc_pct=self._battery_soc_pct(),
@@ -373,30 +377,30 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
     def _grid_import_export(self) -> tuple[float, float]:
         mode = self.entry.data.get(CONF_GRID_MODE, GRID_MODE_THREE_PHASE)
         if mode == GRID_MODE_SIGNED:
-            net = self._state_float(CONF_SIGNED_GRID_POWER_ENTITY)
+            net = self._state_power_w(CONF_SIGNED_GRID_POWER_ENTITY)
             return max(0.0, net), max(0.0, -net)
         if mode == GRID_MODE_IMPORT_EXPORT:
-            return self._state_float(CONF_GRID_IMPORT_ENTITY), self._state_float(
+            return self._state_power_w(CONF_GRID_IMPORT_ENTITY), self._state_power_w(
                 CONF_GRID_EXPORT_ENTITY
             )
         if mode == GRID_MODE_THREE_PHASE:
             net = (
-                self._state_float(CONF_GRID_L1_ENTITY)
-                + self._state_float(CONF_GRID_L2_ENTITY)
-                + self._state_float(CONF_GRID_L3_ENTITY)
+                self._state_power_w(CONF_GRID_L1_ENTITY)
+                + self._state_power_w(CONF_GRID_L2_ENTITY)
+                + self._state_power_w(CONF_GRID_L3_ENTITY)
             )
             return max(0.0, net), max(0.0, -net)
         return 0.0, 0.0
 
     def _battery_power_w(self) -> float:
         if self.entry.data.get(CONF_BATTERY_PROFILE) != BATTERY_PROFILE_ZENDURE:
-            return self._state_float(CONF_BATTERY_POWER_ENTITY)
+            return self._state_power_w(CONF_BATTERY_POWER_ENTITY)
 
         ac_mode = self._state_value(CONF_ZENDURE_AC_MODE_ENTITY).lower()
-        output_pack = self._state_float(CONF_ZENDURE_OUTPUT_PACK_POWER_ENTITY)
-        pack_input = self._state_float(CONF_ZENDURE_PACK_INPUT_POWER_ENTITY)
-        output_home = self._state_float(CONF_ZENDURE_OUTPUT_HOME_POWER_ENTITY)
-        grid_input = self._state_float(CONF_ZENDURE_GRID_INPUT_POWER_ENTITY)
+        output_pack = self._state_power_w(CONF_ZENDURE_OUTPUT_PACK_POWER_ENTITY)
+        pack_input = self._state_power_w(CONF_ZENDURE_PACK_INPUT_POWER_ENTITY)
+        output_home = self._state_power_w(CONF_ZENDURE_OUTPUT_HOME_POWER_ENTITY)
+        grid_input = self._state_power_w(CONF_ZENDURE_GRID_INPUT_POWER_ENTITY)
 
         if "input" in ac_mode:
             return -max(grid_input, output_pack, pack_input, output_home, 0.0)
@@ -405,16 +409,54 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         return 0.0
 
     def _ev_power_w(self) -> float:
+        """Return EV power, briefly bridging dropouts before blocking discharge."""
         entity_id = self.entry.data.get(CONF_EV_POWER_ENTITY)
         if not entity_id:
+            self._ev_control_ready = True
             return 0.0
         state = self.hass.states.get(entity_id)
+        if state is not None and state.state not in (
+            "unknown",
+            "unavailable",
+            "none",
+            "",
+        ):
+            try:
+                value = max(0.0, self._raw_power_w(entity_id))
+            except (TypeError, ValueError):
+                value = None
+            if value is not None:
+                self._last_known_ev_power_w = value
+                self._last_valid_ev_at = dt.datetime.now(dt.timezone.utc)
+                self._ev_control_ready = True
+                return value
+        now = dt.datetime.now(dt.timezone.utc)
+        if (
+            self._last_valid_ev_at is not None
+            and (now - self._last_valid_ev_at).total_seconds()
+            <= EV_POWER_BRIDGE_MAX_AGE_S
+        ):
+            self._ev_control_ready = True
+            return self._last_known_ev_power_w
+        self._ev_control_ready = False
+        return 0.0
+
+    def _state_power_w(self, config_key: str, default: float = 0.0) -> float:
+        """Return configured power normalized to watts."""
+        entity_id = self.entry.data.get(config_key)
+        if not entity_id:
+            return default
+        return self._raw_power_w(entity_id, default)
+
+    def _raw_power_w(self, entity_id: str, default: float = 0.0) -> float:
+        """Return a power entity in watts, preserving legacy unitless sensors."""
+        state = self.hass.states.get(entity_id)
         if state is None or state.state in ("unknown", "unavailable", "none", ""):
-            return 0.0
+            return default
         try:
-            raw = max(0.0, float(state.state))
+            raw = float(state.state)
         except (TypeError, ValueError):
-            return 0.0
+            return default
         unit = str(state.attributes.get("unit_of_measurement") or "W").strip().lower()
         if unit == "kw":
             return raw * 1000.0
@@ -517,8 +559,8 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             )
         return False
 
-    async def _async_zero_limits_once(self) -> None:
-        """Stop charging/discharging once when control is disabled, then stay hands-off."""
+    async def _async_zero_limits_once(self) -> bool:
+        """Stop once when disabled; retry only until the safe stop can be issued."""
         input_limit_entity = self._entity_id(CONF_ZENDURE_INPUT_LIMIT_ENTITY)
         output_limit_entity = self._entity_id(CONF_ZENDURE_OUTPUT_LIMIT_ENTITY)
         required_entities = [input_limit_entity, output_limit_entity]
@@ -527,7 +569,7 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
                 "status": "skipped",
                 "reason": "control_entity_unavailable",
             }
-            return
+            return False
 
         current_input = self._raw_state_float(input_limit_entity)
         current_output = self._raw_state_float(output_limit_entity)
@@ -555,6 +597,7 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             "current_input_limit_w": current_input,
             "current_output_limit_w": current_output,
         }
+        return True
 
     async def _async_apply_command(
         self, command: StrategyCommand, options: StrategyOptions
@@ -575,6 +618,17 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             return
         if not self._grid_inputs_fresh():
             await self._async_failsafe_zero_once("grid_inputs_stale")
+            return
+        if (
+            command.mode == COMMAND_OUTPUT
+            and self.entry.data.get(CONF_EV_POWER_ENTITY)
+            and not self._ev_control_ready
+            and (
+                not options.battery_may_feed_ev
+                or not options.discharge_during_ev_charging
+            )
+        ):
+            await self._async_failsafe_zero_once("ev_power_unavailable")
             return
 
         self._failsafe_zeroed_reason = None

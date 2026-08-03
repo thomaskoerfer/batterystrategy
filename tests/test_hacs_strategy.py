@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 from custom_components.battery_strategy.const import (
+    BATTERY_PROFILE_GENERIC,
     COMMAND_IDLE,
     COMMAND_INPUT,
     COMMAND_OUTPUT,
@@ -17,6 +18,7 @@ from custom_components.battery_strategy.const import (
     DISCHARGE_PRICE_SENSITIVE,
     CONF_ZENDURE_INPUT_LIMIT_ENTITY,
     CONF_ZENDURE_OUTPUT_LIMIT_ENTITY,
+    GRID_MODE_SIGNED,
     GRID_CHARGING_OFF,
     GRID_CHARGING_PRICE_SENSITIVE,
     MANUAL_CHARGE,
@@ -34,6 +36,7 @@ from custom_components.battery_strategy.models import (
     StrategyOptions,
 )
 from custom_components.battery_strategy import optimizer_adapter
+from custom_components.battery_strategy import config_flow
 from custom_components.battery_strategy import optimizer_engine
 from custom_components.battery_strategy.optimizer_state import (
     load_state_document,
@@ -66,18 +69,26 @@ from custom_components.battery_strategy.strategy import (
 
 class HacsStrategyTests(unittest.TestCase):
     def test_optimizer_runtime_maps_recorded_battery_power_sensor(self):
-        test_case = self
-
         class Registry:
             @staticmethod
             def async_get_entity_id(platform, domain, unique_id):
-                test_case.assertEqual(
-                    (platform, domain), ("sensor", "battery_strategy")
-                )
-                test_case.assertEqual(unique_id, "entry-1_battery_power")
-                return "sensor.renamed_battery_power"
+                assert (platform, domain) == ("sensor", "battery_strategy")
+                return {
+                    "entry-1_grid_import": "sensor.renamed_grid_import",
+                    "entry-1_grid_export": "sensor.renamed_grid_export",
+                    "entry-1_battery_power": "sensor.renamed_battery_power",
+                }[unique_id]
 
-        price_state = SimpleNamespace(state="0.25", attributes={"data": []})
+        state_map = {
+            "sensor.price": SimpleNamespace(state="0.25", attributes={"data": []}),
+            "sensor.pv": SimpleNamespace(
+                state="1.2", attributes={"unit_of_measurement": "kW"}
+            ),
+            "sensor.ev": SimpleNamespace(
+                state="11", attributes={"unit_of_measurement": "kW"}
+            ),
+        }
+
         class FakeHass:
             config = SimpleNamespace(
                 config_dir="/config",
@@ -85,12 +96,16 @@ class HacsStrategyTests(unittest.TestCase):
                 longitude=6.1,
                 time_zone="Europe/Berlin",
             )
-            states = SimpleNamespace(get=lambda _entity_id: price_state)
+            states = SimpleNamespace(get=state_map.get)
 
         hass = FakeHass()
         entry = SimpleNamespace(
             entry_id="entry-1",
-            data={"price_entity": "sensor.price"},
+            data={
+                "price_entity": "sensor.price",
+                "pv_power_entity": "sensor.pv",
+                "ev_power_entity": "sensor.ev",
+            },
             options={},
         )
         adapter = optimizer_adapter.OptimizerEngineAdapter(hass, entry)
@@ -115,6 +130,69 @@ class HacsStrategyTests(unittest.TestCase):
             context["entity_map"]["battery_power"],
             "sensor.renamed_battery_power",
         )
+        self.assertEqual(
+            context["entity_map"]["grid_import"],
+            "sensor.renamed_grid_import",
+        )
+        self.assertEqual(
+            context["entity_map"]["grid_export"],
+            "sensor.renamed_grid_export",
+        )
+        self.assertEqual(context["entity_scale"]["pv_power"], 1000.0)
+        self.assertEqual(context["entity_scale"]["ev_power"], 1000.0)
+
+    def test_optimizer_history_normalizes_mapped_power_units(self):
+        original_scale = dict(optimizer_engine._ENTITY_SCALE)
+        original_query = optimizer_engine._query_series_many_sql
+        optimizer_engine._ENTITY_SCALE = {"pv_power": 1000.0}
+        optimizer_engine._query_series_many_sql = lambda _entities, _cutoff: {
+            "pv_power": [(100.0, "1.25")]
+        }
+        try:
+            result = optimizer_engine.fetch_sensor_series_many(["pv_power"], 0.0)
+        finally:
+            optimizer_engine._ENTITY_SCALE = original_scale
+            optimizer_engine._query_series_many_sql = original_query
+        self.assertEqual(result["pv_power"], [(100.0, 1250.0)])
+
+    def test_config_mapping_requires_selected_profiles_and_valid_units(self):
+        states = {
+            "sensor.grid": SimpleNamespace(attributes={"unit_of_measurement": "kW"}),
+            "sensor.pv": SimpleNamespace(attributes={"unit_of_measurement": "W"}),
+            "sensor.soc": SimpleNamespace(attributes={"unit_of_measurement": "%"}),
+            "sensor.battery": SimpleNamespace(attributes={"unit_of_measurement": "kW"}),
+            "sensor.price": SimpleNamespace(attributes={"data": []}),
+        }
+        hass = SimpleNamespace(states=SimpleNamespace(get=states.get))
+        data = {
+            "grid_mode": GRID_MODE_SIGNED,
+            "battery_profile": BATTERY_PROFILE_GENERIC,
+            "signed_grid_power_entity": "sensor.grid",
+            "pv_power_entity": "sensor.pv",
+            "battery_soc_entity": "sensor.soc",
+            "battery_power_entity": "sensor.battery",
+            "price_entity": "sensor.price",
+        }
+        self.assertEqual(config_flow._validate_entity_mapping(hass, data), {})
+
+        data["pv_power_entity"] = "sensor.soc"
+        self.assertEqual(
+            config_flow._validate_entity_mapping(hass, data)["pv_power_entity"],
+            "invalid_power_unit",
+        )
+
+    def test_config_mapping_rejects_incomplete_selected_grid_mode(self):
+        hass = SimpleNamespace(states=SimpleNamespace(get=lambda _entity_id: None))
+        data = {
+            "grid_mode": GRID_MODE_SIGNED,
+            "battery_profile": BATTERY_PROFILE_GENERIC,
+            "pv_power_entity": "sensor.pv",
+            "battery_soc_entity": "sensor.soc",
+            "battery_power_entity": "sensor.battery",
+            "price_entity": "sensor.price",
+        }
+        errors = config_flow._validate_entity_mapping(hass, data)
+        self.assertEqual(errors["signed_grid_power_entity"], "required")
 
     def test_slot_progress_accounts_measured_battery_power(self):
         coordinator = object.__new__(BatteryStrategyCoordinator)
@@ -150,6 +228,57 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         self.assertTrue(all(call[2]["value"] == 0 for call in calls))
         self.assertEqual(coordinator.last_actuation["status"], "failsafe_no_write")
+
+    def test_disabled_zero_retries_when_control_entities_recover(self):
+        calls = []
+        available = False
+
+        class Services:
+            @staticmethod
+            async def async_call(domain, service, data, blocking=False):
+                calls.append((domain, service, data, blocking))
+
+        coordinator = object.__new__(BatteryStrategyCoordinator)
+        coordinator.hass = SimpleNamespace(services=Services())
+        coordinator._entity_id = lambda key: key
+        coordinator._state_available = lambda _entity: available
+        coordinator._raw_state_float = lambda _entity: 200.0
+
+        async def scenario():
+            nonlocal available
+            first = await coordinator._async_zero_limits_once()
+            available = True
+            second = await coordinator._async_zero_limits_once()
+            return first, second
+
+        first, second = asyncio.run(scenario())
+        self.assertFalse(first)
+        self.assertTrue(second)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(coordinator.last_actuation["status"], "disabled_zeroed")
+
+    def test_ev_power_dropout_bridges_then_marks_discharge_input_unsafe(self):
+        now = dt.datetime.now(dt.timezone.utc)
+
+        class FakeState:
+            state = "unavailable"
+            attributes = {"unit_of_measurement": "kW"}
+
+        coordinator = object.__new__(BatteryStrategyCoordinator)
+        coordinator.hass = SimpleNamespace(
+            states=SimpleNamespace(get=lambda _entity_id: FakeState())
+        )
+        coordinator.entry = SimpleNamespace(data={"ev_power_entity": "sensor.ev"})
+        coordinator._last_known_ev_power_w = 11000.0
+        coordinator._last_valid_ev_at = now
+        coordinator._ev_control_ready = True
+
+        self.assertEqual(coordinator._ev_power_w(), 11000.0)
+        self.assertTrue(coordinator._ev_control_ready)
+
+        coordinator._last_valid_ev_at = now - dt.timedelta(minutes=4)
+        self.assertEqual(coordinator._ev_power_w(), 0.0)
+        self.assertFalse(coordinator._ev_control_ready)
 
     def test_optimizer_state_migrates_plain_json_to_atomic_gzip(self):
         with tempfile.TemporaryDirectory() as tmp:

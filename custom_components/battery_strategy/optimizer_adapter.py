@@ -6,6 +6,7 @@ import contextlib
 import datetime as dt
 import io
 import json
+import threading
 import time
 from zoneinfo import ZoneInfo
 
@@ -28,6 +29,7 @@ from .plan_models import DailyCost, PlanPoint, StrategyPlan
 
 CACHE_TTL_S = 240
 SLOT_MS = 15 * 60 * 1000
+_ENGINE_RUN_LOCK = threading.Lock()
 
 
 class OptimizerEngineAdapter:
@@ -89,11 +91,15 @@ class OptimizerEngineAdapter:
 
         from . import optimizer_engine as engine
 
-        if runtime_context:
-            engine.configure_runtime(runtime_context)
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            engine.main()
+        # Reloading a config entry cannot cancel Python code already running in an
+        # executor thread. Serialize engine runs so an old and a new coordinator
+        # never mutate the module-global optimizer context or state file together.
+        with _ENGINE_RUN_LOCK:
+            if runtime_context:
+                engine.configure_runtime(runtime_context)
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                engine.main()
         raw = buf.getvalue().strip().splitlines()
         output = json.loads(raw[-1]) if raw else {}
         self._last_output = output
@@ -133,9 +139,17 @@ class OptimizerEngineAdapter:
         if price_state is not None:
             states["price_current"] = price_state.state
         registry = er.async_get(self._hass)
+        grid_import_entity = registry.async_get_entity_id(
+            "sensor", DOMAIN, f"{self._entry.entry_id}_grid_import"
+        )
+        grid_export_entity = registry.async_get_entity_id(
+            "sensor", DOMAIN, f"{self._entry.entry_id}_grid_export"
+        )
         battery_power_entity = registry.async_get_entity_id(
             "sensor", DOMAIN, f"{self._entry.entry_id}_battery_power"
         )
+        ev_entity = data.get(CONF_EV_POWER_ENTITY)
+        pv_entity = data.get(CONF_PV_POWER_ENTITY)
         return {
             "config_dir": self._hass.config.config_dir,
             "db_engine": db_engine,
@@ -147,12 +161,18 @@ class OptimizerEngineAdapter:
             "entity_map": {
                 "price_current": price_entity,
                 "price_eur": price_entity,
-                "pv_power": data.get(CONF_PV_POWER_ENTITY),
+                "grid_import": grid_import_entity,
+                "grid_export": grid_export_entity,
+                "pv_power": pv_entity,
                 "battery_soc": data.get(CONF_BATTERY_SOC_ENTITY),
                 "battery_input_energy": data.get(CONF_BATTERY_INPUT_ENERGY_ENTITY),
                 "battery_output_energy": data.get(CONF_BATTERY_OUTPUT_ENERGY_ENTITY),
                 "battery_power": battery_power_entity,
-                "ev_power": data.get(CONF_EV_POWER_ENTITY),
+                "ev_power": ev_entity,
+            },
+            "entity_scale": {
+                "pv_power": self._power_scale(pv_entity),
+                "ev_power": self._power_scale(ev_entity),
             },
             "battery_capacity_kwh": options.battery_capacity_kwh,
             "min_soc_pct": options.min_soc_pct,
@@ -175,6 +195,20 @@ class OptimizerEngineAdapter:
             "discharge": options.discharge,
             "planning_horizon_h": options.planning_horizon_h,
         }
+
+    def _power_scale(self, entity_id: str | None) -> float:
+        """Return the recorder-history scale needed to normalize power to watts."""
+        state = self._hass.states.get(entity_id) if entity_id else None
+        unit = (
+            str(
+                state.attributes.get("unit_of_measurement")
+                if state is not None
+                else "W"
+            )
+            .strip()
+            .lower()
+        )
+        return {"kw": 1000.0, "mw": 1_000_000.0}.get(unit, 1.0)
 
     def age_s(self) -> float | None:
         """Return seconds since the last optimizer run."""

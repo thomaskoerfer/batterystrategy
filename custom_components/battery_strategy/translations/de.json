@@ -30,6 +30,13 @@
           "battery_output_energy_entity": "Batterie-Entladeenergie"
         }
       }
+    },
+    "error": {
+      "required": "Waehle eine fuer dieses Netz- oder Batterieprofil erforderliche Entity.",
+      "invalid_power_unit": "Diese Entity muss Leistung in W, kW oder MW liefern.",
+      "invalid_energy_unit": "Dieser Zaehler muss Energie in kWh liefern.",
+      "invalid_soc_unit": "Diese Entity muss den Ladezustand in Prozent liefern.",
+      "invalid_price_entity": "Diese Entity muss Viertelstundenpreise im Attribut data bereitstellen."
     }
   },
   "options": {
@@ -127,6 +134,14 @@
           "battery_output_energy_entity": "Batterie-Entladeenergie"
         }
       }
+    },
+    "error": {
+      "required": "Waehle eine fuer dieses Netz- oder Batterieprofil erforderliche Entity.",
+      "invalid_power_unit": "Diese Entity muss Leistung in W, kW oder MW liefern.",
+      "invalid_energy_unit": "Dieser Zaehler muss Energie in kWh liefern.",
+      "invalid_soc_unit": "Diese Entity muss den Ladezustand in Prozent liefern.",
+      "invalid_price_entity": "Diese Entity muss Viertelstundenpreise im Attribut data bereitstellen.",
+      "invalid_soc_range": "Der minimale SoC muss kleiner als der maximale SoC sein."
     }
   }
 }
