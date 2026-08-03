@@ -94,21 +94,3 @@ class StrategyPlan:
         """Return a chart profile for a plan point key."""
         selected = self.points if date is None else [p for p in self.points if p.date == date]
         return [[p.ts_ms, getattr(p, key)] for p in selected]
-
-
-@dataclass(frozen=True)
-class PlanComparison:
-    """Comparison between the new HACS plan and reference attributes."""
-
-    plan_input_passed: bool
-    tomorrow_strategy_passed: bool
-    forty8h_strategy_passed: bool
-    live_command_passed: bool
-    override_active: bool
-    samples_tomorrow: int
-    samples_48h: int
-    max_tomorrow_power_delta_w: int
-    max_48h_power_delta_w: int
-    max_tomorrow_soc_delta_pct: float
-    max_forecast_load_delta_w: int
-    max_forecast_pv_delta_w: int

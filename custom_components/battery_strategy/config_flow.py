@@ -27,9 +27,6 @@ from .const import (
     CONF_GRID_L2_ENTITY,
     CONF_GRID_L3_ENTITY,
     CONF_GRID_MODE,
-    CONF_REFERENCE_MODE_ENTITY,
-    CONF_REFERENCE_OUTPUT_ENTITY,
-    CONF_REFERENCE_POWER_ENTITY,
     CONF_PRICE_ENTITY,
     CONF_PV_CAPACITY_KWP,
     CONF_PV_INVERTER_POWER_KW,
@@ -108,9 +105,6 @@ if config_entries is not None:
             CONF_ZENDURE_GRID_INPUT_POWER_ENTITY: "",
             CONF_ZENDURE_INPUT_LIMIT_ENTITY: "",
             CONF_ZENDURE_OUTPUT_LIMIT_ENTITY: "",
-            CONF_REFERENCE_MODE_ENTITY: "",
-            CONF_REFERENCE_OUTPUT_ENTITY: "",
-            CONF_REFERENCE_POWER_ENTITY: "",
         }
 
 
@@ -120,7 +114,7 @@ if config_entries is not None:
         VERSION = 1
 
         async def async_step_import(self, user_input):
-            """Import a minimal YAML configuration for unattended parallel runs."""
+            """Import a minimal YAML configuration."""
             await self.async_set_unique_id(DOMAIN)
             self._abort_if_unique_id_configured()
             data = _default_entry_data()
@@ -138,7 +132,7 @@ if config_entries is not None:
                 self._abort_if_unique_id_configured()
                 return self.async_create_entry(title="Battery Strategy", data=user_input)
 
-            schema = _entity_schema(_default_entry_data(), include_reference=True)
+            schema = _entity_schema(_default_entry_data())
             return self.async_show_form(step_id="user", data_schema=schema)
 
         @staticmethod
@@ -160,8 +154,6 @@ if config_entries is not None:
                 section = user_input.get("section")
                 if section == "entities":
                     return await self.async_step_entities()
-                if section == "reference":
-                    return await self.async_step_reference()
                 return await self.async_step_strategy()
 
             schema = vol.Schema(
@@ -170,7 +162,6 @@ if config_entries is not None:
                         [
                             {"value": "strategy", "label": "Strategie"},
                             {"value": "entities", "label": "Entities zuordnen"},
-                            {"value": "reference", "label": "Parallelvergleich"},
                         ]
                     )
                 }
@@ -194,22 +185,8 @@ if config_entries is not None:
 
             data = dict(_default_entry_data())
             data.update(dict(self._config_entry.data))
-            schema = _entity_schema(data, include_reference=False)
+            schema = _entity_schema(data)
             return self.async_show_form(step_id="entities", data_schema=schema)
-
-        async def async_step_reference(self, user_input=None):
-            """Edit optional reference entities for parallel comparison."""
-            if user_input is not None:
-                data = dict(self._config_entry.data)
-                data.update(user_input)
-                self.hass.config_entries.async_update_entry(self._config_entry, data=data)
-                self.hass.async_create_task(self.hass.config_entries.async_reload(self._config_entry.entry_id))
-                return self.async_create_entry(title="", data=dict(self._config_entry.options))
-
-            data = dict(_default_entry_data())
-            data.update(dict(self._config_entry.data))
-            schema = _reference_schema(data)
-            return self.async_show_form(step_id="reference", data_schema=schema)
 
         async def async_step_strategy(self, user_input=None):
             """Show strategy options sections."""
@@ -364,7 +341,7 @@ if config_entries is not None:
             return self.async_create_entry(title="", data=options)
 
 
-    def _entity_schema(data: dict[str, str], include_reference: bool) -> vol.Schema:
+    def _entity_schema(data: dict[str, str]) -> vol.Schema:
         """Return entity mapping schema."""
         schema = {
             vol.Required(CONF_GRID_MODE, default=data.get(CONF_GRID_MODE, GRID_MODE_THREE_PHASE)): _select_selector(
@@ -400,17 +377,4 @@ if config_entries is not None:
             vol.Optional(CONF_ZENDURE_INPUT_LIMIT_ENTITY, default=data.get(CONF_ZENDURE_INPUT_LIMIT_ENTITY, "")): _entity_selector(["number"]),
             vol.Optional(CONF_ZENDURE_OUTPUT_LIMIT_ENTITY, default=data.get(CONF_ZENDURE_OUTPUT_LIMIT_ENTITY, "")): _entity_selector(["number"]),
         }
-        if include_reference:
-            schema.update(_reference_schema(data).schema)
         return vol.Schema(schema)
-
-
-    def _reference_schema(data: dict[str, str]) -> vol.Schema:
-        """Return optional reference mapping schema."""
-        return vol.Schema(
-            {
-                vol.Optional(CONF_REFERENCE_MODE_ENTITY, default=data.get(CONF_REFERENCE_MODE_ENTITY, "")): _entity_selector(["sensor"]),
-                vol.Optional(CONF_REFERENCE_POWER_ENTITY, default=data.get(CONF_REFERENCE_POWER_ENTITY, "")): _entity_selector(["sensor"]),
-                vol.Optional(CONF_REFERENCE_OUTPUT_ENTITY, default=data.get(CONF_REFERENCE_OUTPUT_ENTITY, "")): _entity_selector(["sensor"]),
-            }
-        )

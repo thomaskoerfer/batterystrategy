@@ -1,6 +1,7 @@
 import importlib.util
 import pathlib
 import sys
+import tempfile
 import unittest
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -12,6 +13,18 @@ spec.loader.exec_module(mod)
 
 
 class BatteryStrategyBacktestTests(unittest.TestCase):
+    def test_load_trace_accepts_json_lines(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "trace.jsonl"
+            path.write_text(
+                '{"ts":1800000,"grid_import_w":250,"soc_pct":42,"mode":"output","power_w":250}\n',
+                encoding="utf-8",
+            )
+            samples = mod.load_trace(path)
+        self.assertEqual(len(samples), 1)
+        self.assertEqual(samples[0].grid_import_w, 250)
+        self.assertEqual(samples[0].soc_pct, 42)
+
     def test_aggregation_excludes_ev_from_dischargeable_load(self):
         samples = [
             mod.RawSample(

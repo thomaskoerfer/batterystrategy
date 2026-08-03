@@ -1,4 +1,4 @@
-"""Sensors for Battery Strategy read-only parallel operation."""
+"""Sensors for Battery Strategy."""
 
 from __future__ import annotations
 
@@ -48,16 +48,8 @@ def _inputs(data):
     return data["inputs"]
 
 
-def _parallel(data):
-    return data["parallel"]
-
-
 def _plan(data):
     return data["plan"]
-
-
-def _plan_comparison(data):
-    return data["plan_comparison"]
 
 
 def _plan_to_live(data):
@@ -180,68 +172,6 @@ SENSORS: tuple[BatteryStrategySensorDescription, ...] = (
         name="SoC",
         value_fn=lambda data: round(_inputs(data).soc_pct, 1),
         native_unit_of_measurement=PERCENTAGE,
-    ),
-    BatteryStrategySensorDescription(
-        key="parallel_samples",
-        name="Parallel Samples",
-        value_fn=lambda data: _parallel(data).samples,
-    ),
-    BatteryStrategySensorDescription(
-        key="parallel_mode_match",
-        name="Parallel Mode Match",
-        value_fn=lambda data: round(_parallel(data).mode_match_ratio * 100.0, 1),
-        native_unit_of_measurement=PERCENTAGE,
-    ),
-    BatteryStrategySensorDescription(
-        key="parallel_max_power_delta",
-        name="Parallel Max Power Delta",
-        value_fn=lambda data: _parallel(data).max_power_delta_w,
-        native_unit_of_measurement=UnitOfPower.WATT,
-    ),
-    BatteryStrategySensorDescription(
-        key="parallel_passed",
-        name="Parallel Passed",
-        value_fn=lambda data: "on" if _parallel(data).passed else "off",
-    ),
-    BatteryStrategySensorDescription(
-        key="parallel_input_samples",
-        name="Parallel Input Samples",
-        value_fn=lambda data: _parallel(data).input_samples,
-    ),
-    BatteryStrategySensorDescription(
-        key="parallel_command_passed",
-        name="Parallel Command Passed",
-        value_fn=lambda data: "on" if _parallel(data).command_passed else "off",
-    ),
-    BatteryStrategySensorDescription(
-        key="parallel_max_house_load_no_ev_delta",
-        name="Parallel Max House Load No EV Delta",
-        value_fn=lambda data: _parallel(data).max_house_load_no_ev_delta_w,
-        native_unit_of_measurement=UnitOfPower.WATT,
-    ),
-    BatteryStrategySensorDescription(
-        key="parallel_max_house_load_total_delta",
-        name="Parallel Max House Load Total Delta",
-        value_fn=lambda data: _parallel(data).max_house_load_total_delta_w,
-        native_unit_of_measurement=UnitOfPower.WATT,
-    ),
-    BatteryStrategySensorDescription(
-        key="parallel_max_pv_delta",
-        name="Parallel Max PV Delta",
-        value_fn=lambda data: _parallel(data).max_pv_delta_w,
-        native_unit_of_measurement=UnitOfPower.WATT,
-    ),
-    BatteryStrategySensorDescription(
-        key="parallel_max_residual_no_ev_delta",
-        name="Parallel Max Residual No EV Delta",
-        value_fn=lambda data: _parallel(data).max_residual_no_ev_delta_w,
-        native_unit_of_measurement=UnitOfPower.WATT,
-    ),
-    BatteryStrategySensorDescription(
-        key="parallel_max_residual_with_ev_delta",
-        name="Parallel Max Residual With EV Delta",
-        value_fn=lambda data: _parallel(data).max_residual_with_ev_delta_w,
-        native_unit_of_measurement=UnitOfPower.WATT,
     ),
     BatteryStrategySensorDescription(
         key="planned_mode",
@@ -453,43 +383,6 @@ SENSORS: tuple[BatteryStrategySensorDescription, ...] = (
         name="Profile 48h",
         value_fn=lambda data: len(_plan(data).points),
         attr_fn=lambda data: _profile_attrs(data, None),
-    ),
-    BatteryStrategySensorDescription(
-        key="plan_input_passed",
-        name="Plan Input Passed",
-        value_fn=lambda data: "on" if _plan_comparison(data).plan_input_passed else "off",
-    ),
-    BatteryStrategySensorDescription(
-        key="tomorrow_strategy_passed",
-        name="Tomorrow Strategy Passed",
-        value_fn=lambda data: "on" if _plan_comparison(data).tomorrow_strategy_passed else "off",
-    ),
-    BatteryStrategySensorDescription(
-        key="forty8h_strategy_passed",
-        name="48h Strategy Passed",
-        value_fn=lambda data: "on" if _plan_comparison(data).forty8h_strategy_passed else "off",
-    ),
-    BatteryStrategySensorDescription(
-        key="live_command_passed",
-        name="Live Command Passed",
-        value_fn=lambda data: "on" if _plan_comparison(data).live_command_passed else "off",
-    ),
-    BatteryStrategySensorDescription(
-        key="override_active",
-        name="Override Active",
-        value_fn=lambda data: "on" if _plan_comparison(data).override_active else "off",
-    ),
-    BatteryStrategySensorDescription(
-        key="plan_max_tomorrow_power_delta",
-        name="Plan Max Tomorrow Power Delta",
-        value_fn=lambda data: _plan_comparison(data).max_tomorrow_power_delta_w,
-        native_unit_of_measurement=UnitOfPower.WATT,
-    ),
-    BatteryStrategySensorDescription(
-        key="plan_max_48h_power_delta",
-        name="Plan Max 48h Power Delta",
-        value_fn=lambda data: _plan_comparison(data).max_48h_power_delta_w,
-        native_unit_of_measurement=UnitOfPower.WATT,
     ),
 )
 

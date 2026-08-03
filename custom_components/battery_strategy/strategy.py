@@ -1,7 +1,7 @@
 """Pure Battery Strategy command calculation.
 
 This module intentionally has no Home Assistant imports. It is the first
-parallel-run core for the HACS integration and covers the currently used mode:
+runtime core for the integration and covers the currently used mode:
 no grid charging and load-following discharge.
 """
 
@@ -87,7 +87,7 @@ def apply_minimum_power(power_w: float, options: StrategyOptions) -> int:
 
 
 def calculate_command(inputs: StrategyInputs, options: StrategyOptions) -> StrategyCommand:
-    """Calculate the current battery command for the minimal parallel strategy."""
+    """Calculate the current battery command."""
     residual_with_ev = net_no_battery_with_ev_w(inputs)
     residual_no_ev = net_no_battery_no_ev_w(inputs, options)
     pv_surplus = real_pv_surplus_w(inputs, options)

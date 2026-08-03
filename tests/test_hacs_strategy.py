@@ -27,12 +27,12 @@ from custom_components.battery_strategy.models import StrategyCommand, StrategyI
 from custom_components.battery_strategy.optimizer import build_optimizer_plan
 from custom_components.battery_strategy import optimizer_adapter
 from custom_components.battery_strategy import optimizer_engine
-from custom_components.battery_strategy.parallel import compare_optimizer_plan, evaluate_parallel_commands
 from custom_components.battery_strategy.plan_models import ForecastPoint, PlanLiveDirective, PlanPoint, PricePoint, StrategyPlan
 from custom_components.battery_strategy.pricing import read_tibber_price_points
 from custom_components.battery_strategy import sensor as battery_sensor
 from custom_components.battery_strategy.actuator import should_write_limit, should_write_mode, zendure_targets
 from custom_components.battery_strategy.coordinator import BatteryStrategyCoordinator, _load_last_known_soc_pct
+from custom_components.battery_strategy import _migrate_runtime_files
 from custom_components.battery_strategy.strategy import (
     calculate_command,
     live_command_from_plan,
@@ -41,6 +41,17 @@ from custom_components.battery_strategy.strategy import (
 
 
 class HacsStrategyTests(unittest.TestCase):
+    def test_runtime_file_migration_compacts_legacy_trace(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            legacy = root / "battery_strategy_hacs_command_trace.json"
+            legacy.write_text(json.dumps([{"ts": 1, "mode": "idle"}, {"ts": 2, "mode": "input"}]))
+            _migrate_runtime_files(tmp)
+            current = root / "battery_strategy_command_trace.jsonl"
+            lines = [json.loads(line) for line in current.read_text().splitlines()]
+            self.assertEqual(lines, [{"ts": 1, "mode": "idle"}, {"ts": 2, "mode": "input"}])
+            self.assertFalse(legacy.exists())
+
     def test_profile_attrs_prefer_raw_unfiltered_optimizer_profiles(self):
         today = dt.datetime.now().date().isoformat()
         raw_price = [[1_800_000_000_000, 31.2], [1_800_000_900_000, 32.4]]
@@ -1542,84 +1553,6 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertEqual(cmd.mode, COMMAND_IDLE)
         self.assertEqual(cmd.reason, "min_soc")
 
-    def test_parallel_evaluation_passes_conservative_match(self):
-        commands = [
-            calculate_command(
-                StrategyInputs(grid_import_w=500, grid_export_w=0, pv_w=0, battery_power_w=0, soc_pct=80),
-                StrategyOptions(discharge=DISCHARGE_LOAD),
-            )
-            for _ in range(12)
-        ]
-        data = [
-            {
-                "house_load_no_ev_w": 500,
-                "house_load_total_w": 500,
-                "pv_w": 100,
-                "residual_no_ev_w": 500,
-                "residual_with_ev_w": 500,
-            }
-            for _ in range(12)
-        ]
-        result = evaluate_parallel_commands(commands, [COMMAND_OUTPUT] * 12, [500] * 12, data, data)
-        self.assertTrue(result.command_passed)
-        self.assertTrue(result.passed)
-        self.assertEqual(result.max_power_delta_w, 0)
-
-    def test_parallel_evaluation_fails_large_power_delta(self):
-        commands = [
-            calculate_command(
-                StrategyInputs(grid_import_w=500, grid_export_w=0, pv_w=0, battery_power_w=0, soc_pct=80),
-                StrategyOptions(discharge=DISCHARGE_LOAD),
-            )
-            for _ in range(12)
-        ]
-        data = [
-            {
-                "house_load_no_ev_w": 500,
-                "house_load_total_w": 500,
-                "pv_w": 100,
-                "residual_no_ev_w": 500,
-                "residual_with_ev_w": 500,
-            }
-            for _ in range(12)
-        ]
-        result = evaluate_parallel_commands(commands, [COMMAND_OUTPUT] * 12, [900] * 12, data, data)
-        self.assertFalse(result.command_passed)
-        self.assertTrue(result.passed)
-        self.assertEqual(result.max_power_delta_w, 400)
-
-    def test_parallel_evaluation_fails_input_delta(self):
-        commands = [
-            calculate_command(
-                StrategyInputs(grid_import_w=500, grid_export_w=0, pv_w=0, battery_power_w=0, soc_pct=80),
-                StrategyOptions(discharge=DISCHARGE_LOAD),
-            )
-            for _ in range(12)
-        ]
-        new_data = [
-            {
-                "house_load_no_ev_w": 500,
-                "house_load_total_w": 500,
-                "pv_w": 100,
-                "residual_no_ev_w": 500,
-                "residual_with_ev_w": 500,
-            }
-            for _ in range(12)
-        ]
-        reference_data = [
-            {
-                "house_load_no_ev_w": 700,
-                "house_load_total_w": 500,
-                "pv_w": 100,
-                "residual_no_ev_w": 500,
-                "residual_with_ev_w": 500,
-            }
-            for _ in range(12)
-        ]
-        result = evaluate_parallel_commands(commands, [COMMAND_OUTPUT] * 12, [500] * 12, new_data, reference_data)
-        self.assertFalse(result.passed)
-        self.assertEqual(result.max_house_load_no_ev_delta_w, 200)
-
     def test_zendure_targets_clear_opposite_limit(self):
         charge = calculate_command(
             StrategyInputs(grid_import_w=0, grid_export_w=500, pv_w=500, battery_power_w=0, soc_pct=80),
@@ -2271,32 +2204,6 @@ class HacsStrategyTests(unittest.TestCase):
         )
         self.assertEqual(out[0]["discharge_fc_w"], 200.0)
         self.assertEqual(out[0]["grid_export_fc_w"], 0.0)
-
-    def test_plan_comparison_ignores_live_command_mismatch_during_override(self):
-        now = dt.datetime(2026, 5, 26, 12, tzinfo=dt.timezone.utc)
-        forecast = [
-            ForecastPoint(int((now + dt.timedelta(minutes=15 * i)).timestamp() * 1000), 300, 0, 30.0)
-            for i in range(8)
-        ]
-        plan = build_optimizer_plan(
-            StrategyInputs(0, 0, 0, 0, 0, 50),
-            StrategyOptions(manual_mode=MANUAL_DISCHARGE, manual_power_w=500),
-            now,
-            [PricePoint(p.ts_ms, p.price_ct) for p in forecast],
-            forecast,
-        )
-        attrs = {
-            "profile_tomorrow_power": [],
-            "profile_tomorrow_soc": [],
-            "profile_48h_charge_fc_power": [],
-            "profile_48h_discharge_fc_power": [],
-            "profile_48h_house_fc_power": [[p.ts_ms, p.load_fc_w] for p in plan.points],
-            "profile_48h_pv_fc_power": [[p.ts_ms, p.pv_fc_w] for p in plan.points],
-        }
-        comparison = compare_optimizer_plan(plan, attrs, COMMAND_IDLE, 0, COMMAND_IDLE, 0)
-        self.assertTrue(comparison.live_command_passed)
-        self.assertTrue(comparison.override_active)
-
 
 if __name__ == "__main__":
     unittest.main()

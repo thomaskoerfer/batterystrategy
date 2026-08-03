@@ -17,7 +17,7 @@ from sqlalchemy import create_engine, text
 DB = "/config/home-assistant_v2.db"
 DEFAULT_DB_URL = "sqlite:////config/home-assistant_v2.db"
 STATE_FILE = "/config/battery_strategy_optimizer_state.json"
-SCRIPT_VERSION = "1.8.7-hacs-internal"
+SCRIPT_VERSION = "1.8.7"
 _DB_ENGINE = None
 _RUNTIME_STATES = {}
 _RUNTIME_PRICE_INTERVALS = []

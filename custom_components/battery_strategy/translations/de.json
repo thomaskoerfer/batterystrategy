@@ -25,9 +25,6 @@
           "zendure_grid_input_power_entity": "Zendure Netz-Eingangsleistung",
           "zendure_input_limit_entity": "Zendure Eingangslimit",
           "zendure_output_limit_entity": "Zendure Ausgangslimit",
-          "reference_mode_entity": "Referenz: Modus",
-          "reference_power_entity": "Referenz: Leistung",
-          "reference_output_entity": "Referenz: Optimizer-Ausgabe",
           "price_entity": "Viertelstunden-Preisdaten",
           "battery_input_energy_entity": "Batterie-Ladeenergie",
           "battery_output_energy_entity": "Batterie-Entladeenergie"
@@ -45,8 +42,7 @@
         },
         "menu_options": {
           "strategy": "Strategie",
-          "entities": "Entities",
-          "reference": "Parallelvergleich"
+          "entities": "Entities"
         }
       },
       "strategy": {
@@ -131,15 +127,6 @@
           "price_entity": "Viertelstunden-Preisdaten",
           "battery_input_energy_entity": "Batterie-Ladeenergie",
           "battery_output_energy_entity": "Batterie-Entladeenergie"
-        }
-      },
-      "reference": {
-        "title": "Parallelvergleich",
-        "description": "Optionale Referenz-Entities fuer den Vergleich zwischen frueherer Referenz und Battery Strategy.",
-        "data": {
-          "reference_mode_entity": "Referenz: Modus",
-          "reference_power_entity": "Referenz: Leistung",
-          "reference_output_entity": "Referenz: Optimizer-Ausgabe"
         }
       }
     }

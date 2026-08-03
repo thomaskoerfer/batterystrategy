@@ -26,8 +26,8 @@ DEFAULT_MAX_SOC_PCT = 100.0
 DEFAULT_MAX_POWER_W = 2400.0
 DEFAULT_ETA_RT = 0.80
 ENERGY_STEP_KWH = 0.025
-DEFAULT_PRICE_ENTITY = "sensor.heerlener_strasse_300_aktueller_strompreis"
-DEFAULT_TRACE = "/config/battery_strategy_hacs_command_trace.json"
+DEFAULT_PRICE_ENTITY = "sensor.electricity_price"
+DEFAULT_TRACE = "/config/battery_strategy_command_trace.jsonl"
 DEFAULT_DB = "/config/home-assistant_v2.db"
 DEFAULT_TIBBER_POOL_GLOB = "/config/.storage/tibber_prices.interval_pool.*"
 
@@ -115,7 +115,11 @@ def slot_start(ts: float) -> int:
 
 
 def load_trace(path: str | Path) -> list[RawSample]:
-    raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    text = Path(path).read_text(encoding="utf-8")
+    if Path(path).suffix == ".jsonl":
+        raw = [json.loads(line) for line in text.splitlines() if line.strip()]
+    else:
+        raw = json.loads(text)
     if isinstance(raw, dict):
         raw = raw.get("samples") or raw.get("trace") or []
     samples: list[RawSample] = []

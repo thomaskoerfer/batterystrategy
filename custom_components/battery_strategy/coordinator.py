@@ -1,4 +1,4 @@
-"""Data coordinator for Battery Strategy read-only parallel operation."""
+"""Data coordinator for Battery Strategy."""
 
 from __future__ import annotations
 
@@ -27,9 +27,6 @@ from .const import (
     CONF_GRID_L2_ENTITY,
     CONF_GRID_L3_ENTITY,
     CONF_GRID_MODE,
-    CONF_REFERENCE_MODE_ENTITY,
-    CONF_REFERENCE_OUTPUT_ENTITY,
-    CONF_REFERENCE_POWER_ENTITY,
     CONF_PV_CAPACITY_KWP,
     CONF_PV_INVERTER_POWER_KW,
     CONF_PV_POWER_ENTITY,
@@ -52,15 +49,16 @@ from .const import (
 )
 from .models import StrategyCommand, StrategyInputs, StrategyOptions
 from .optimizer import build_optimizer_plan
-from .parallel import ParallelEvaluation, compare_optimizer_plan, evaluate_parallel_commands
-from .plan_models import PlanComparison, PlanLiveDirective, StrategyPlan
 from .optimizer_adapter import OptimizerEngineAdapter
-from .history import write_json_atomic
+from .plan_models import PlanLiveDirective, StrategyPlan
 from .strategy import calculate_command, live_command_from_directive, plan_live_directive_from_plan
 
 LOGGER = logging.getLogger(__name__)
 OPTIMIZER_PREFETCH_LEAD_S = 60
 OPTIMIZER_STATE_FILE = "battery_strategy_optimizer_state.json"
+COMMAND_TRACE_FILE = "battery_strategy_command_trace.jsonl"
+COMMAND_TRACE_MAX_BYTES = 64 * 1024 * 1024
+COMMAND_TRACE_RETAIN_LINES = 50000
 
 
 def _load_last_known_soc_pct(path: Path) -> float | None:
@@ -91,7 +89,7 @@ def _load_last_known_soc_pct(path: Path) -> float | None:
 
 
 class BatteryStrategyCoordinator(DataUpdateCoordinator):
-    """Collect HA states and calculate read-only strategy commands."""
+    """Collect HA states, calculate the strategy, and apply commands."""
 
     def __init__(self, hass, entry, update_interval, last_known_soc_pct: float | None = None):
         """Initialize coordinator."""
@@ -105,13 +103,6 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         self._manual_mode = MANUAL_OFF
         self._manual_power_w = 0.0
         self._manual_until: dt.datetime | None = None
-        self._new_commands: list[StrategyCommand] = []
-        self._reference_modes: list[str] = []
-        self._reference_powers_w: list[float] = []
-        self._new_data_points: list[dict[str, float]] = []
-        self._reference_input_points: list[dict[str, float]] = []
-        self.parallel_evaluation = ParallelEvaluation(0, 0, 0)
-        self.plan_comparison = PlanComparison(False, False, False, False, False, 0, 0, 0, 0, 0.0, 0, 0)
         self._optimizer_engine = OptimizerEngineAdapter(hass, entry)
         self._optimizer_attrs: dict = {}
         self.last_actuation: dict[str, object] = {"status": "not_started"}
@@ -142,15 +133,6 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         self._manual_mode = MANUAL_OFF
         self._manual_power_w = 0.0
         self._manual_until = None
-
-    def reset_parallel_samples(self) -> None:
-        """Clear parallel comparison samples."""
-        self._new_commands.clear()
-        self._reference_modes.clear()
-        self._reference_powers_w.clear()
-        self._new_data_points.clear()
-        self._reference_input_points.clear()
-        self.parallel_evaluation = ParallelEvaluation(0, 0, 0)
 
     def _account_last_live_command(self, now: dt.datetime) -> None:
         """Account energy used by the last live command inside the active slot."""
@@ -230,9 +212,6 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         display_command = command if strategy_enabled else self._disabled_display_command(command)
         self._last_live_command = display_command
         self._last_live_accounting_ts = now
-        reference_plan_attrs = await self.hass.async_add_executor_job(self._reference_plan_attrs_sync)
-        self.plan_comparison = self._compare_optimizer_plan(plan, command, reference_plan_attrs)
-        self._record_parallel_sample(inputs, command)
         data = {
             "inputs": inputs,
             "options": options,
@@ -241,8 +220,6 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             "plan": plan,
             "optimizer_attrs": self._optimizer_attrs,
             "plan_to_live": directive,
-            "plan_comparison": self.plan_comparison,
-            "parallel": self.parallel_evaluation,
             "send_commands": strategy_enabled,
             "strategy_enabled": strategy_enabled,
             "actuation": self.last_actuation,
@@ -263,7 +240,6 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             self._strategy_was_enabled = False
             self.last_actuation = {"status": "disabled_no_write", "reason": "strategy_disabled"}
             data["actuation"] = self.last_actuation
-        await self.hass.async_add_executor_job(self._write_parallel_state, data)
         if bool(self.entry.options.get("trace_enabled", False)):
             await self.hass.async_add_executor_job(self._append_command_trace, data)
         return data
@@ -560,43 +536,6 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             "current_output_limit_w": current_output,
         }
 
-    def _record_parallel_sample(self, inputs: StrategyInputs, command: StrategyCommand) -> None:
-        reference_mode_entity = self.entry.data.get(CONF_REFERENCE_MODE_ENTITY)
-        reference_power_entity = self.entry.data.get(CONF_REFERENCE_POWER_ENTITY)
-        if reference_mode_entity and reference_power_entity:
-            reference_mode = self._state_value(CONF_REFERENCE_MODE_ENTITY)
-            reference_power = self._state_float(CONF_REFERENCE_POWER_ENTITY)
-            if reference_mode not in ("unknown", "unavailable", "none", ""):
-                self._new_commands.append(command)
-                self._reference_modes.append(reference_mode)
-                self._reference_powers_w.append(reference_power)
-
-        reference_data = self._reference_data_points()
-        if reference_data is not None:
-            self._new_data_points.append(
-                {
-                    "house_load_no_ev_w": command.house_load_no_ev_w,
-                    "house_load_total_w": command.house_load_total_w,
-                    "pv_w": inputs.pv_w,
-                    "residual_no_ev_w": command.residual_no_ev_w,
-                    "residual_with_ev_w": command.residual_with_ev_w,
-                }
-            )
-            self._reference_input_points.append(reference_data)
-
-        self._new_commands = self._new_commands[-288:]
-        self._reference_modes = self._reference_modes[-288:]
-        self._reference_powers_w = self._reference_powers_w[-288:]
-        self._new_data_points = self._new_data_points[-288:]
-        self._reference_input_points = self._reference_input_points[-288:]
-        self.parallel_evaluation = evaluate_parallel_commands(
-            self._new_commands,
-            self._reference_modes,
-            self._reference_powers_w,
-            self._new_data_points,
-            self._reference_input_points,
-        )
-
     def _disabled_display_command(self, command: StrategyCommand) -> StrategyCommand:
         """Return the safe UI command while actuation is disabled."""
         return replace(
@@ -607,65 +546,16 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             allowed_discharge_load_w=0,
         )
 
-    def _reference_data_points(self) -> dict[str, float] | None:
-        """Return comparable comparison live data points if they are available."""
-        entities = {
-            "house_load_no_ev_w": "sensor.battery_strategy_house_load_actual_power_now",
-            "house_load_total_w": "sensor.battery_strategy_house_load_total_actual_power_now",
-            "pv_w": "sensor.battery_strategy_pv_generation_actual_power_now",
-            "residual_no_ev_w": "sensor.battery_strategy_residual_net_no_battery_no_ev",
-            "residual_with_ev_w": "sensor.battery_strategy_residual_net_no_battery_with_ev",
-        }
-        if not all(self._state_available(entity_id) for entity_id in entities.values()):
-            return None
-        return {key: self._raw_state_float(entity_id) for key, entity_id in entities.items()}
-
-    def _write_parallel_state(self, data: dict) -> None:
-        """Write the latest read-only parallel result for server-side inspection."""
-        path = Path(self.hass.config.path("battery_strategy_parallel_state.json"))
-        payload = {
-            "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
-            "strategy_enabled": data["strategy_enabled"],
-            "send_commands": data["send_commands"],
-            "optimizer_age_s": data.get("optimizer_age_s"),
-            "plan_to_live": asdict(data["plan_to_live"]),
-            "inputs": asdict(data["inputs"]),
-            "options": asdict(data["options"]),
-            "command": asdict(data["command"]),
-            "calculated_command": asdict(data["calculated_command"]),
-            "plan": asdict(data["plan"]),
-            "plan_comparison": asdict(data["plan_comparison"]),
-            "parallel": asdict(data["parallel"]),
-            "parallel_passed": data["parallel"].passed,
-            "parallel_input_passed": data["parallel"].input_passed,
-            "parallel_command_passed": data["parallel"].command_passed,
-            "actuation": data["actuation"],
-        }
-        write_json_atomic(path, payload)
-
     def _append_command_trace(self, data: dict) -> None:
         """Append a compact command trace for later 12h/48h analysis."""
-        path = Path(self.hass.config.path("battery_strategy_hacs_command_trace.json"))
+        path = Path(self.hass.config.path(COMMAND_TRACE_FILE))
         now = dt.datetime.now(dt.timezone.utc)
-        reference_mode = self._state_value(CONF_REFERENCE_MODE_ENTITY)
-        reference_power = self._state_float(CONF_REFERENCE_POWER_ENTITY)
         command = data["command"]
         calculated_command = data["calculated_command"]
         plan = data["plan"]
-        plan_comparison = data["plan_comparison"]
         inputs = data["inputs"]
         directive = data["plan_to_live"]
-        trace = []
-        try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(raw, list):
-                trace = raw
-        except (OSError, json.JSONDecodeError):
-            trace = []
-        cutoff = (now - dt.timedelta(days=7)).timestamp()
-        trace = [item for item in trace if float(item.get("ts", 0.0)) >= cutoff]
-        trace.append(
-            {
+        item = {
                 "ts": now.timestamp(),
                 "iso": now.isoformat(),
                 "mode": command.mode,
@@ -674,15 +564,8 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
                 "calculated_mode": calculated_command.mode,
                 "calculated_power_w": calculated_command.power_w,
                 "calculated_reason": calculated_command.reason,
-                "reference_mode": reference_mode,
-                "reference_power_w": reference_power,
                 "send_commands": data["send_commands"],
                 "strategy_enabled": data["strategy_enabled"],
-                "plan_input_passed": plan_comparison.plan_input_passed,
-                "tomorrow_strategy_passed": plan_comparison.tomorrow_strategy_passed,
-                "forty8h_strategy_passed": plan_comparison.forty8h_strategy_passed,
-                "live_command_passed": plan_comparison.live_command_passed,
-                "override_active": plan_comparison.override_active,
                 "grid_import_w": round(inputs.grid_import_w),
                 "grid_export_w": round(inputs.grid_export_w),
                 "pv_w": round(inputs.pv_w),
@@ -695,28 +578,20 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
                 "plan_power_w": plan.current_power_w,
                 "plan_to_live": asdict(directive),
             }
-        )
-        write_json_atomic(path, trace[-60480:])
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(item, separators=(",", ":")) + "\n")
+        if path.stat().st_size > COMMAND_TRACE_MAX_BYTES:
+            self._trim_command_trace(path)
 
-    def _compare_optimizer_plan(
-        self,
-        plan: StrategyPlan,
-        command: StrategyCommand,
-        reference_output: dict | None = None,
-    ) -> PlanComparison:
-        """Compare internal optimizer output with the reference attributes."""
-        reference_output = reference_output or self._reference_plan_attrs_sync()
-        reference_mode = self._state_value(CONF_REFERENCE_MODE_ENTITY)
-        reference_power = self._state_float(CONF_REFERENCE_POWER_ENTITY)
-        if command.reason.startswith("manual_"):
-            reference_mode = command.mode
-            reference_power = command.power_w
-        return compare_optimizer_plan(plan, reference_output, command.mode, command.power_w, reference_mode, reference_power)
+    @staticmethod
+    def _trim_command_trace(path: Path) -> None:
+        """Bound trace disk usage without rewriting it during normal updates."""
+        from collections import deque
 
-    def _reference_plan_attrs_sync(self) -> dict:
-        """Return reference attributes when available."""
-        entity_id = self.entry.data.get(CONF_REFERENCE_OUTPUT_ENTITY, "")
-        if not entity_id:
-            return {}
-        state = self.hass.states.get(entity_id)
-        return dict(state.attributes) if state is not None else {}
+        with path.open("r", encoding="utf-8") as handle:
+            retained = deque(handle, maxlen=COMMAND_TRACE_RETAIN_LINES)
+        tmp = path.with_suffix(f"{path.suffix}.tmp")
+        with tmp.open("w", encoding="utf-8") as handle:
+            handle.writelines(retained)
+        tmp.replace(path)
