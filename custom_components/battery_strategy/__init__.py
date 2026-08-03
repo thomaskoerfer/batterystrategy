@@ -9,9 +9,11 @@ from pathlib import Path
 try:
     from homeassistant import config_entries
     from homeassistant.const import Platform
+    from homeassistant.helpers import config_validation as cv
     from homeassistant.helpers import entity_registry as er
 except ImportError:  # pragma: no cover - unit tests run without Home Assistant.
     config_entries = None
+    cv = None
     Platform = None
     er = None
 
@@ -25,6 +27,7 @@ except ImportError:  # pragma: no cover - unit tests run without Home Assistant.
     _load_last_known_soc_pct = None
 
 PLATFORMS = [] if Platform is None else [Platform.SENSOR, Platform.SELECT, Platform.SWITCH, Platform.NUMBER]
+CONFIG_SCHEMA = None if cv is None else cv.config_entry_only_config_schema(DOMAIN)
 
 
 async def async_setup(hass, config) -> bool:
