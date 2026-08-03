@@ -3,6 +3,7 @@ import datetime as dt
 import tempfile
 import json
 import asyncio
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
@@ -23,16 +24,38 @@ from custom_components.battery_strategy.const import (
     PV_CHARGING_OFF,
     PV_CHARGING_ON,
 )
-from custom_components.battery_strategy.forecast import clamp_bias, fallback_weather_factor
-from custom_components.battery_strategy.models import StrategyCommand, StrategyInputs, StrategyOptions
-from custom_components.battery_strategy.optimizer import build_optimizer_plan
+from custom_components.battery_strategy.forecast import (
+    clamp_bias,
+    fallback_weather_factor,
+)
+from custom_components.battery_strategy.models import (
+    StrategyCommand,
+    StrategyInputs,
+    StrategyOptions,
+)
 from custom_components.battery_strategy import optimizer_adapter
 from custom_components.battery_strategy import optimizer_engine
-from custom_components.battery_strategy.plan_models import ForecastPoint, PlanLiveDirective, PlanPoint, PricePoint, StrategyPlan
+from custom_components.battery_strategy.optimizer_state import (
+    load_state_document,
+    save_state_document,
+)
+from custom_components.battery_strategy.planner import BackgroundPlanner
+from custom_components.battery_strategy.plan_models import (
+    PlanLiveDirective,
+    PlanPoint,
+    StrategyPlan,
+)
 from custom_components.battery_strategy.pricing import read_tibber_price_points
 from custom_components.battery_strategy import sensor as battery_sensor
-from custom_components.battery_strategy.actuator import should_write_limit, should_write_mode, zendure_targets
-from custom_components.battery_strategy.coordinator import BatteryStrategyCoordinator, _load_last_known_soc_pct
+from custom_components.battery_strategy.actuator import (
+    should_write_limit,
+    should_write_mode,
+    zendure_targets,
+)
+from custom_components.battery_strategy.coordinator import (
+    BatteryStrategyCoordinator,
+    _load_last_known_soc_pct,
+)
 from custom_components.battery_strategy import _migrate_runtime_files
 from custom_components.battery_strategy.strategy import (
     calculate_command,
@@ -42,15 +65,127 @@ from custom_components.battery_strategy.strategy import (
 
 
 class HacsStrategyTests(unittest.TestCase):
+    def test_optimizer_state_migrates_plain_json_to_atomic_gzip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "optimizer-state.json"
+            original = {
+                "samples": [{"soc": 42.0}] * 100,
+                "last_output": {"mode": "idle"},
+            }
+            path.write_text(json.dumps(original), encoding="utf-8")
+            self.assertEqual(load_state_document(path), original)
+            save_state_document(path, original)
+            self.assertEqual(path.read_bytes()[:2], b"\x1f\x8b")
+            self.assertEqual(load_state_document(path), original)
+
+    def test_full_optimizer_honors_disabled_action_policies(self):
+        original = (
+            optimizer_engine.PV_CHARGING_ENABLED,
+            optimizer_engine.GRID_CHARGING_ENABLED,
+            optimizer_engine.DISCHARGE_ENABLED,
+        )
+        optimizer_engine.PV_CHARGING_ENABLED = False
+        optimizer_engine.GRID_CHARGING_ENABLED = False
+        optimizer_engine.DISCHARGE_ENABLED = False
+        try:
+            start = dt.datetime(2026, 7, 1, tzinfo=dt.timezone.utc)
+            intervals = [
+                {
+                    "dt": start + dt.timedelta(minutes=15 * i),
+                    "price_eur": (5.0 if i < 4 else 50.0) / 100.0,
+                }
+                for i in range(8)
+            ]
+            samples = [
+                {
+                    "ts": (
+                        start - dt.timedelta(days=7) + dt.timedelta(minutes=15 * i)
+                    ).timestamp(),
+                    "load_w": 800.0,
+                    "pv_w": 0.0,
+                    "price_ct": 30.0,
+                }
+                for i in range(8)
+            ]
+            plan = optimizer_engine.build_virtual_plan(
+                intervals,
+                samples,
+                3.0,
+                1.0,
+                None,
+                1.0,
+                [1.0] * optimizer_engine.SLOTS_PER_DAY,
+                [1.0] * optimizer_engine.SLOTS_PER_DAY,
+                now_local=start,
+            )
+            self.assertTrue(all(point["charge_fc_w"] == 0 for point in plan["points"]))
+            self.assertTrue(
+                all(point["discharge_fc_w"] == 0 for point in plan["points"])
+            )
+        finally:
+            (
+                optimizer_engine.PV_CHARGING_ENABLED,
+                optimizer_engine.GRID_CHARGING_ENABLED,
+                optimizer_engine.DISCHARGE_ENABLED,
+            ) = original
+
+    def test_background_planner_serves_cached_plan_without_waiting(self):
+        class Adapter:
+            def __init__(self):
+                self.finished = False
+
+            def hydrate(self, _path):
+                return None
+
+            def needs_run(self, _options, force=False):
+                return not self.finished or force
+
+            def run(self, *_args):
+                time.sleep(0.1)
+                self.finished = True
+
+            def cached_result(self, _inputs, _options):
+                return StrategyPlan([], COMMAND_IDLE, 0, "cached"), {}
+
+        class Hass:
+            @staticmethod
+            def async_create_task(coro):
+                return asyncio.create_task(coro)
+
+            @staticmethod
+            async def async_add_executor_job(target, *args):
+                return await asyncio.get_running_loop().run_in_executor(
+                    None, target, *args
+                )
+
+        async def scenario():
+            planner = BackgroundPlanner(Hass(), Adapter(), Path("unused"))
+            inputs = StrategyInputs(0, 0, 0, 0)
+            options = StrategyOptions()
+            started = time.monotonic()
+            self.assertTrue(planner.maybe_schedule(inputs, options, {}))
+            plan, _ = planner.current(inputs, options)
+            self.assertEqual(plan.reason, "cached")
+            self.assertLess(time.monotonic() - started, 0.05)
+            await asyncio.sleep(0.15)
+            self.assertFalse(planner.running)
+            await planner.async_shutdown()
+
+        asyncio.run(scenario())
+
     def test_runtime_file_migration_compacts_legacy_trace(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             legacy = root / "battery_strategy_hacs_command_trace.json"
-            legacy.write_text(json.dumps([{"ts": 1, "mode": "idle"}, {"ts": 2, "mode": "input"}]))
+            legacy.write_text(
+                json.dumps([{"ts": 1, "mode": "idle"}, {"ts": 2, "mode": "input"}])
+            )
             _migrate_runtime_files(tmp)
             current = root / "battery_strategy_command_trace.jsonl"
             lines = [json.loads(line) for line in current.read_text().splitlines()]
-            self.assertEqual(lines, [{"ts": 1, "mode": "idle"}, {"ts": 2, "mode": "input"}])
+            self.assertEqual(
+                lines, [{"ts": 1, "mode": "idle"}, {"ts": 2, "mode": "input"}]
+            )
             self.assertFalse(legacy.exists())
 
     def test_profile_attrs_prefer_raw_unfiltered_optimizer_profiles(self):
@@ -94,7 +229,9 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertEqual(attrs["pv_actual_power"], [[1_800_000_000_000, 120.0]])
         self.assertEqual(attrs["house_actual_power"], [[1_800_000_000_000, 230.0]])
 
-    def test_optimizer_discharge_budget_sensor_is_separate_from_live_remaining_budget(self):
+    def test_optimizer_discharge_budget_sensor_is_separate_from_live_remaining_budget(
+        self,
+    ):
         today = dt.datetime.now().date().isoformat()
         data = {
             "plan": StrategyPlan(
@@ -139,7 +276,9 @@ class HacsStrategyTests(unittest.TestCase):
 
     def _coordinator_for_strategy_enabled(self, strategy_enabled=True):
         coordinator = object.__new__(BatteryStrategyCoordinator)
-        coordinator.entry = SimpleNamespace(options={"strategy_enabled": strategy_enabled})
+        coordinator.entry = SimpleNamespace(
+            options={"strategy_enabled": strategy_enabled}
+        )
         return coordinator
 
     def test_strategy_disabled_live_display_is_idle_with_external_source(self):
@@ -162,8 +301,9 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertEqual(display.mode, COMMAND_IDLE)
         self.assertEqual(display.power_w, 0)
         self.assertEqual(display.reason, "strategy_disabled_external_control")
-        self.assertEqual(battery_sensor._command_source(data), "external_control_strategy_disabled")
-
+        self.assertEqual(
+            battery_sensor._command_source(data), "external_control_strategy_disabled"
+        )
 
     def test_strategy_disabled_zeroes_once_then_stays_hands_off(self):
         async def run_case():
@@ -172,7 +312,9 @@ class HacsStrategyTests(unittest.TestCase):
             class FakeState:
                 def __init__(self, state):
                     self.state = state
-                    self.last_changed = dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=60)
+                    self.last_changed = dt.datetime.now(dt.timezone.utc) - dt.timedelta(
+                        seconds=60
+                    )
 
             class FakeStates:
                 def __init__(self):
@@ -189,7 +331,9 @@ class HacsStrategyTests(unittest.TestCase):
                     calls.append((domain, service, data, blocking))
 
             coordinator = object.__new__(BatteryStrategyCoordinator)
-            coordinator.hass = SimpleNamespace(states=FakeStates(), services=FakeServices())
+            coordinator.hass = SimpleNamespace(
+                states=FakeStates(), services=FakeServices()
+            )
             coordinator.entry = SimpleNamespace(
                 data={
                     CONF_ZENDURE_INPUT_LIMIT_ENTITY: "number.battery_input_limit",
@@ -206,8 +350,12 @@ class HacsStrategyTests(unittest.TestCase):
             coordinator._disabled_zeroed = True
 
             self.assertEqual(len(calls), 2)
-            self.assertEqual(calls[0][2], {"entity_id": "number.battery_input_limit", "value": 0})
-            self.assertEqual(calls[1][2], {"entity_id": "number.battery_output_limit", "value": 0})
+            self.assertEqual(
+                calls[0][2], {"entity_id": "number.battery_input_limit", "value": 0}
+            )
+            self.assertEqual(
+                calls[1][2], {"entity_id": "number.battery_output_limit", "value": 0}
+            )
             self.assertEqual(coordinator.last_actuation["status"], "disabled_zeroed")
 
             calls.clear()
@@ -294,7 +442,9 @@ class HacsStrategyTests(unittest.TestCase):
         )
         diagnostics = calculate_command(inputs, options)
         cmd = live_command_from_plan(
-            StrategyPlan(points=[], current_mode=COMMAND_IDLE, current_power_w=0, reason="test"),
+            StrategyPlan(
+                points=[], current_mode=COMMAND_IDLE, current_power_w=0, reason="test"
+            ),
             diagnostics,
             inputs,
             options,
@@ -321,7 +471,9 @@ class HacsStrategyTests(unittest.TestCase):
         )
         diagnostics = calculate_command(inputs, options)
         cmd = live_command_from_plan(
-            StrategyPlan(points=[], current_mode=COMMAND_IDLE, current_power_w=0, reason="test"),
+            StrategyPlan(
+                points=[], current_mode=COMMAND_IDLE, current_power_w=0, reason="test"
+            ),
             diagnostics,
             inputs,
             options,
@@ -557,7 +709,9 @@ class HacsStrategyTests(unittest.TestCase):
             min_soc_pct=5,
         )
         diagnostics = calculate_command(inputs, options)
-        plan = StrategyPlan([point], COMMAND_IDLE, 0, "reserved for later higher-value slots")
+        plan = StrategyPlan(
+            [point], COMMAND_IDLE, 0, "reserved for later higher-value slots"
+        )
         directive = plan_live_directive_from_plan(plan, options)
         cmd = live_command_from_plan(plan, diagnostics, inputs, options)
         self.assertEqual(directive.discharge_budget_kwh, 0.0)
@@ -643,7 +797,9 @@ class HacsStrategyTests(unittest.TestCase):
             80.0,
             discharge_budget_kwh=0.0,
         )
-        plan = StrategyPlan([point], COMMAND_OUTPUT, 1200, "planned discharge but no budget")
+        plan = StrategyPlan(
+            [point], COMMAND_OUTPUT, 1200, "planned discharge but no budget"
+        )
         options = StrategyOptions(discharge=DISCHARGE_PRICE_SENSITIVE, min_soc_pct=10)
         inputs = StrategyInputs(
             grid_import_w=1200,
@@ -1165,7 +1321,12 @@ class HacsStrategyTests(unittest.TestCase):
             85.0,
         )
         directive = plan_live_directive_from_plan(
-            StrategyPlan([current, future], COMMAND_IDLE, 0, "export caused by discharge must not count"),
+            StrategyPlan(
+                [current, future],
+                COMMAND_IDLE,
+                0,
+                "export caused by discharge must not count",
+            ),
             StrategyOptions(
                 pv_charging=PV_CHARGING_ON,
                 grid_charging=GRID_CHARGING_PRICE_SENSITIVE,
@@ -1201,7 +1362,9 @@ class HacsStrategyTests(unittest.TestCase):
             ev_power_w=0,
             soc_pct=95,
         )
-        options = StrategyOptions(discharge=DISCHARGE_PRICE_SENSITIVE, max_discharge_power_w=2400)
+        options = StrategyOptions(
+            discharge=DISCHARGE_PRICE_SENSITIVE, max_discharge_power_w=2400
+        )
         diagnostics = calculate_command(inputs, options)
         plan = StrategyPlan(
             [point],
@@ -1244,7 +1407,11 @@ class HacsStrategyTests(unittest.TestCase):
                 "highest value block",
                 price_stats={"p_high": 40.0, "discharge_floor_ct": 36.0},
             ),
-            StrategyOptions(discharge=DISCHARGE_PRICE_SENSITIVE, min_soc_pct=10, max_discharge_power_w=2400),
+            StrategyOptions(
+                discharge=DISCHARGE_PRICE_SENSITIVE,
+                min_soc_pct=10,
+                max_discharge_power_w=2400,
+            ),
         )
         self.assertEqual(directive.discharge_budget_kwh, 4.8)
 
@@ -1278,7 +1445,11 @@ class HacsStrategyTests(unittest.TestCase):
                 "reserve for later higher value",
                 price_stats={"p_high": 40.0, "discharge_floor_ct": 36.0},
             ),
-            StrategyOptions(discharge=DISCHARGE_PRICE_SENSITIVE, min_soc_pct=10, max_discharge_power_w=2400),
+            StrategyOptions(
+                discharge=DISCHARGE_PRICE_SENSITIVE,
+                min_soc_pct=10,
+                max_discharge_power_w=2400,
+            ),
         )
         self.assertEqual(directive.discharge_budget_kwh, 2.4)
 
@@ -1406,7 +1577,7 @@ class HacsStrategyTests(unittest.TestCase):
                 ev_power_w=4000,
                 soc_pct=60,
             ),
-            StrategyOptions(pv_charging=PV_CHARGING_ON, discharge=DISCHARGE_OFF, pv_to_ev_first=True),
+            StrategyOptions(pv_charging=PV_CHARGING_ON, discharge=DISCHARGE_OFF),
         )
         self.assertEqual(cmd.mode, COMMAND_INPUT)
         self.assertEqual(cmd.power_w, 1000)
@@ -1422,7 +1593,7 @@ class HacsStrategyTests(unittest.TestCase):
                 ev_power_w=4000,
                 soc_pct=60,
             ),
-            StrategyOptions(pv_charging=PV_CHARGING_ON, discharge=DISCHARGE_OFF, pv_to_ev_first=False),
+            StrategyOptions(pv_charging=PV_CHARGING_ON, discharge=DISCHARGE_OFF),
         )
         self.assertEqual(cmd.mode, COMMAND_INPUT)
         self.assertEqual(cmd.power_w, 1000)
@@ -1508,7 +1679,9 @@ class HacsStrategyTests(unittest.TestCase):
 
     def test_coordinator_uses_last_known_soc_while_entity_is_unavailable(self):
         coordinator = object.__new__(BatteryStrategyCoordinator)
-        coordinator.entry = SimpleNamespace(data={"battery_soc_entity": "sensor.battery_soc"})
+        coordinator.entry = SimpleNamespace(
+            data={"battery_soc_entity": "sensor.battery_soc"}
+        )
         coordinator.hass = SimpleNamespace(
             states=SimpleNamespace(
                 get=lambda _entity_id: SimpleNamespace(state="unavailable")
@@ -1548,7 +1721,9 @@ class HacsStrategyTests(unittest.TestCase):
                 battery_power_w=0,
                 soc_pct=100,
             ),
-            StrategyOptions(manual_mode=MANUAL_CHARGE, manual_power_w=1000, max_soc_pct=100),
+            StrategyOptions(
+                manual_mode=MANUAL_CHARGE, manual_power_w=1000, max_soc_pct=100
+            ),
         )
         self.assertEqual(cmd.mode, COMMAND_IDLE)
         self.assertEqual(cmd.reason, "max_soc")
@@ -1583,14 +1758,22 @@ class HacsStrategyTests(unittest.TestCase):
                 battery_power_w=0,
                 soc_pct=10,
             ),
-            StrategyOptions(manual_mode=MANUAL_DISCHARGE, manual_power_w=1000, min_soc_pct=10),
+            StrategyOptions(
+                manual_mode=MANUAL_DISCHARGE, manual_power_w=1000, min_soc_pct=10
+            ),
         )
         self.assertEqual(cmd.mode, COMMAND_IDLE)
         self.assertEqual(cmd.reason, "min_soc")
 
     def test_zendure_targets_clear_opposite_limit(self):
         charge = calculate_command(
-            StrategyInputs(grid_import_w=0, grid_export_w=500, pv_w=500, battery_power_w=0, soc_pct=80),
+            StrategyInputs(
+                grid_import_w=0,
+                grid_export_w=500,
+                pv_w=500,
+                battery_power_w=0,
+                soc_pct=80,
+            ),
             StrategyOptions(discharge=DISCHARGE_OFF),
         )
         targets = zendure_targets(charge)
@@ -1622,8 +1805,14 @@ class HacsStrategyTests(unittest.TestCase):
                             "fetch_groups": [
                                 {
                                     "intervals": [
-                                        {"startsAt": "2026-05-26T10:00:00+00:00", "total": 0.31},
-                                        {"start": "2026-05-26T11:00:00+00:00", "total": 28.0},
+                                        {
+                                            "startsAt": "2026-05-26T10:00:00+00:00",
+                                            "total": 0.31,
+                                        },
+                                        {
+                                            "start": "2026-05-26T11:00:00+00:00",
+                                            "total": 28.0,
+                                        },
                                     ]
                                 }
                             ]
@@ -1632,7 +1821,9 @@ class HacsStrategyTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            points = read_tibber_price_points(str(Path(tmp) / "tibber_prices.interval_pool.*"), now, 3)
+            points = read_tibber_price_points(
+                str(Path(tmp) / "tibber_prices.interval_pool.*"), now, 3
+            )
         self.assertEqual([round(p.price_ct, 1) for p in points], [31.0, 28.0])
 
     def test_eex_proxy_fills_missing_tomorrow_prices(self):
@@ -1643,10 +1834,19 @@ class HacsStrategyTests(unittest.TestCase):
         for day_offset, avg in ((-2, 30.0), (-1, 32.0), (0, 31.0)):
             day = today + dt.timedelta(days=day_offset)
             for slot in range(96):
-                ts = dt.datetime.combine(day, dt.time.min, tzinfo=tz) + dt.timedelta(minutes=15 * slot)
+                ts = dt.datetime.combine(day, dt.time.min, tzinfo=tz) + dt.timedelta(
+                    minutes=15 * slot
+                )
                 hour = slot // 4
                 shape = 7.0 if 18 <= hour < 21 else -6.0 if 12 <= hour < 15 else 0.0
-                intervals.append({"dt": ts, "ts": ts.isoformat(), "price_eur": (avg + shape) / 100.0, "source": "tibber"})
+                intervals.append(
+                    {
+                        "dt": ts,
+                        "ts": ts.isoformat(),
+                        "price_eur": (avg + shape) / 100.0,
+                        "source": "tibber",
+                    }
+                )
         eex_days = {
             today.isoformat(): {
                 "base": {"settl_ct_kwh": 11.0},
@@ -1658,14 +1858,20 @@ class HacsStrategyTests(unittest.TestCase):
             },
         }
 
-        filled, source = optimizer_engine.apply_eex_proxy_prices(intervals, eex_days, today, tomorrow)
+        filled, source = optimizer_engine.apply_eex_proxy_prices(
+            intervals, eex_days, today, tomorrow
+        )
 
         tomorrow_prices = [it for it in filled if it["dt"].date() == tomorrow]
         self.assertEqual(source, "eex_proxy")
         self.assertEqual(len(tomorrow_prices), 96)
         self.assertTrue(all(it["source"] == "eex_proxy" for it in tomorrow_prices))
-        noon = [it["price_eur"] * 100 for it in tomorrow_prices if 12 <= it["dt"].hour < 15]
-        evening = [it["price_eur"] * 100 for it in tomorrow_prices if 18 <= it["dt"].hour < 21]
+        noon = [
+            it["price_eur"] * 100 for it in tomorrow_prices if 12 <= it["dt"].hour < 15
+        ]
+        evening = [
+            it["price_eur"] * 100 for it in tomorrow_prices if 18 <= it["dt"].hour < 21
+        ]
         self.assertLess(sum(noon) / len(noon), sum(evening) / len(evening))
 
     def test_eex_proxy_does_not_replace_real_tomorrow_prices(self):
@@ -1674,10 +1880,16 @@ class HacsStrategyTests(unittest.TestCase):
         tomorrow = today + dt.timedelta(days=1)
         intervals = []
         for slot in range(96):
-            ts = dt.datetime.combine(tomorrow, dt.time.min, tzinfo=tz) + dt.timedelta(minutes=15 * slot)
-            intervals.append({"dt": ts, "ts": ts.isoformat(), "price_eur": 0.25, "source": "tibber"})
+            ts = dt.datetime.combine(tomorrow, dt.time.min, tzinfo=tz) + dt.timedelta(
+                minutes=15 * slot
+            )
+            intervals.append(
+                {"dt": ts, "ts": ts.isoformat(), "price_eur": 0.25, "source": "tibber"}
+            )
 
-        filled, source = optimizer_engine.apply_eex_proxy_prices(intervals, {}, today, tomorrow)
+        filled, source = optimizer_engine.apply_eex_proxy_prices(
+            intervals, {}, today, tomorrow
+        )
 
         self.assertEqual(source, "tibber")
         self.assertEqual(len([it for it in filled if it["dt"].date() == tomorrow]), 96)
@@ -1688,86 +1900,21 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertGreater(fallback_weather_factor(None, None), 0.0)
         self.assertLessEqual(fallback_weather_factor(100, None), 1.0)
 
-    def test_optimizer_does_not_grid_charge_when_grid_charging_off(self):
-        now = dt.datetime(2026, 5, 26, 0, tzinfo=dt.timezone.utc)
-        forecast = [
-            ForecastPoint(int((now + dt.timedelta(minutes=15 * i)).timestamp() * 1000), 500, 0, 5.0)
-            for i in range(8)
-        ]
-        plan = build_optimizer_plan(
-            StrategyInputs(0, 0, 0, 0, 0, 50),
-            StrategyOptions(grid_charging=GRID_CHARGING_OFF, discharge=DISCHARGE_OFF),
-            now,
-            [PricePoint(p.ts_ms, p.price_ct) for p in forecast],
-            forecast,
-        )
-        self.assertFalse(any(p.mode == COMMAND_INPUT for p in plan.points))
-
-    def test_optimizer_uses_price_sensitive_grid_charging_and_discharging(self):
-        now = dt.datetime(2026, 5, 26, 0, tzinfo=dt.timezone.utc)
-        prices = [8.0] * 4 + [45.0] * 4
-        forecast = [
-            ForecastPoint(int((now + dt.timedelta(minutes=15 * i)).timestamp() * 1000), 800, 0, prices[i])
-            for i in range(8)
-        ]
-        plan = build_optimizer_plan(
-            StrategyInputs(0, 0, 0, 0, 0, 50),
-            StrategyOptions(
-                grid_charging=GRID_CHARGING_PRICE_SENSITIVE,
-                discharge=DISCHARGE_PRICE_SENSITIVE,
-                min_margin_ct_per_kwh=2,
-            ),
-            now,
-            [PricePoint(p.ts_ms, p.price_ct) for p in forecast],
-            forecast,
-        )
-        self.assertEqual(plan.points[0].mode, COMMAND_INPUT)
-        self.assertTrue(any(p.mode == COMMAND_OUTPUT for p in plan.points[4:]))
-        self.assertLess(plan.daily_costs[now.date().isoformat()].with_bat_eur, plan.daily_costs[now.date().isoformat()].base_eur)
-
-    def test_optimizer_pv_charges_before_export_with_feed_in_opportunity_cost(self):
-        now = dt.datetime(2026, 5, 26, 12, tzinfo=dt.timezone.utc)
-        forecast = [
-            ForecastPoint(int((now + dt.timedelta(minutes=15 * i)).timestamp() * 1000), 300, 1300, 30.0)
-            for i in range(4)
-        ]
-        plan = build_optimizer_plan(
-            StrategyInputs(0, 1000, 1300, 0, 0, 50),
-            StrategyOptions(feed_in_tariff_ct_per_kwh=7.0, discharge=DISCHARGE_OFF),
-            now,
-            [PricePoint(p.ts_ms, p.price_ct) for p in forecast],
-            forecast,
-        )
-        self.assertEqual(plan.points[0].mode, COMMAND_INPUT)
-        self.assertEqual(plan.points[0].power_w, 1000)
-
-    def test_optimizer_manual_override_only_changes_current_slot(self):
-        now = dt.datetime(2026, 5, 26, 12, tzinfo=dt.timezone.utc)
-        forecast = [
-            ForecastPoint(int((now + dt.timedelta(minutes=15 * i)).timestamp() * 1000), 300, 0, 30.0)
-            for i in range(4)
-        ]
-        plan = build_optimizer_plan(
-            StrategyInputs(0, 0, 0, 0, 0, 50),
-            StrategyOptions(manual_mode=MANUAL_CHARGE, manual_power_w=1200),
-            now,
-            [PricePoint(p.ts_ms, p.price_ct) for p in forecast],
-            forecast,
-        )
-        self.assertTrue(plan.override_active)
-        self.assertEqual(plan.current_mode, COMMAND_INPUT)
-        self.assertEqual(plan.current_power_w, 1200)
-
     def test_full_optimizer_does_not_plan_discharge_export_when_feed_in_is_zero(self):
         tz = dt.timezone.utc
         start = dt.datetime(2026, 5, 26, 18, tzinfo=tz)
         intervals = [
-            {"dt": start + dt.timedelta(minutes=15 * i), "price_eur": (80.0 if i < 4 else 20.0) / 100.0}
+            {
+                "dt": start + dt.timedelta(minutes=15 * i),
+                "price_eur": (80.0 if i < 4 else 20.0) / 100.0,
+            }
             for i in range(8)
         ]
         samples = [
             {
-                "ts": (start - dt.timedelta(days=7) + dt.timedelta(minutes=15 * i)).timestamp(),
+                "ts": (
+                    start - dt.timedelta(days=7) + dt.timedelta(minutes=15 * i)
+                ).timestamp(),
                 "load_w": 500.0,
                 "house_w": 500.0,
                 "house_total_w": 500.0,
@@ -1806,7 +1953,10 @@ class HacsStrategyTests(unittest.TestCase):
         tz = dt.timezone.utc
         start = dt.datetime(2026, 5, 29, 10, tzinfo=tz)
         intervals = [
-            {"dt": start + dt.timedelta(minutes=15 * i), "price_eur": (25.0 if i == 0 else 40.0) / 100.0}
+            {
+                "dt": start + dt.timedelta(minutes=15 * i),
+                "price_eur": (25.0 if i == 0 else 40.0) / 100.0,
+            }
             for i in range(8)
         ]
         samples = []
@@ -1891,11 +2041,16 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertGreater(sum(p["grid_export_fc_w"] for p in plan["points"][1:4]), 0.0)
         self.assertGreater(plan["points"][0]["discharge_budget_kwh"], 0.0)
 
-    def test_optimizer_discharge_budget_reserves_scarce_energy_for_later_high_prices(self):
+    def test_optimizer_discharge_budget_reserves_scarce_energy_for_later_high_prices(
+        self,
+    ):
         tz = dt.timezone.utc
         start = dt.datetime(2026, 5, 29, 10, tzinfo=tz)
         intervals = [
-            {"dt": start + dt.timedelta(minutes=15 * i), "price_eur": (25.0 if i == 0 else 40.0) / 100.0}
+            {
+                "dt": start + dt.timedelta(minutes=15 * i),
+                "price_eur": (25.0 if i == 0 else 40.0) / 100.0,
+            }
             for i in range(8)
         ]
         samples = []
@@ -1933,9 +2088,13 @@ class HacsStrategyTests(unittest.TestCase):
             eex_days={},
         )
         self.assertEqual(plan["points"][0]["discharge_budget_kwh"], 0.0)
-        self.assertGreater(max(p["discharge_budget_kwh"] for p in plan["points"][1:]), 0.0)
+        self.assertGreater(
+            max(p["discharge_budget_kwh"] for p in plan["points"][1:]), 0.0
+        )
 
-    def test_optimizer_discharge_budget_does_not_reserve_across_future_charge_window(self):
+    def test_optimizer_discharge_budget_does_not_reserve_across_future_charge_window(
+        self,
+    ):
         tz = dt.timezone.utc
         start = dt.datetime(2026, 7, 13, 19, tzinfo=tz)
         prices = [36.0, 36.4, 38.0, 41.0, 40.0, 39.0, 20.0] + [41.0] * 16
@@ -2051,7 +2210,9 @@ class HacsStrategyTests(unittest.TestCase):
         )
         self.assertGreater(plan["points"][3]["discharge_budget_kwh"], 0.0)
 
-    def test_optimizer_discharge_budget_opens_when_no_later_higher_price_reserve_is_needed(self):
+    def test_optimizer_discharge_budget_opens_when_no_later_higher_price_reserve_is_needed(
+        self,
+    ):
         tz = dt.timezone.utc
         start = dt.datetime(2026, 5, 29, 21, tzinfo=tz)
         prices = [35.0, 32.0, 29.0, 26.0, 23.0, 20.0]
@@ -2098,7 +2259,9 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertGreater(budgets[1], 0.0)
         self.assertGreater(budgets[2], 0.0)
 
-    def test_optimizer_discharge_budget_does_not_reserve_for_equal_value_later_slots(self):
+    def test_optimizer_discharge_budget_does_not_reserve_for_equal_value_later_slots(
+        self,
+    ):
         tz = dt.timezone.utc
         start = dt.datetime(2026, 5, 29, 21, tzinfo=tz)
         prices = [35.0, 35.0, 35.0, 35.0]
@@ -2144,7 +2307,9 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertGreater(budgets[0], 0.0)
         self.assertGreater(budgets[1], 0.0)
 
-    def test_optimizer_discharge_budget_peak_slot_is_not_capped_by_current_forecast_load(self):
+    def test_optimizer_discharge_budget_peak_slot_is_not_capped_by_current_forecast_load(
+        self,
+    ):
         tz = dt.timezone.utc
         start = dt.datetime(2026, 7, 16, 20, 30, tzinfo=tz)
         prices = [58.0, 54.0, 50.0, 45.0]
@@ -2187,11 +2352,16 @@ class HacsStrategyTests(unittest.TestCase):
             eex_days={},
         )
 
-        self.assertEqual(plan["points"][0]["discharge_budget_kwh"], round(optimizer_engine.MAX_E_SLOT_KWH, 3))
+        self.assertEqual(
+            plan["points"][0]["discharge_budget_kwh"],
+            round(optimizer_engine.MAX_E_SLOT_KWH, 3),
+        )
 
     def test_optimizer_discharge_budget_has_no_current_charge_path_hard_block(self):
         source = Path(optimizer_engine.__file__).read_text(encoding="utf-8")
-        budget_fn = source.split("def explicit_discharge_budget_kwh", 1)[1].split("for idx, point in enumerate(points)", 1)[0]
+        budget_fn = source.split("def explicit_discharge_budget_kwh", 1)[1].split(
+            "for idx, point in enumerate(points)", 1
+        )[0]
         self.assertNotIn("path_charge_in[t]", budget_fn)
 
     def test_optimizer_adapter_filters_expired_cached_slots(self):
@@ -2215,7 +2385,9 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertEqual([point.ts_ms for point in points], [current_ts])
 
     def test_optimizer_adapter_assigns_dates_in_home_assistant_timezone(self):
-        ts = int(dt.datetime(2026, 5, 29, 22, 0, tzinfo=dt.timezone.utc).timestamp() * 1000)
+        ts = int(
+            dt.datetime(2026, 5, 29, 22, 0, tzinfo=dt.timezone.utc).timestamp() * 1000
+        )
         output = {
             "profile_48h_price": [[ts, 30.0]],
             "profile_48h_house_fc_power": [[ts, 200.0]],
@@ -2252,6 +2424,7 @@ class HacsStrategyTests(unittest.TestCase):
         )
         self.assertEqual(out[0]["discharge_fc_w"], 200.0)
         self.assertEqual(out[0]["grid_export_fc_w"], 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

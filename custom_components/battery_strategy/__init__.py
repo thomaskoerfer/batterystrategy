@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
 import json
+from datetime import timedelta
 from pathlib import Path
 
 try:
@@ -18,15 +18,25 @@ except ImportError:  # pragma: no cover - unit tests run without Home Assistant.
     er = None
 
 from .const import DOMAIN
+
 try:
-    from .coordinator import BatteryStrategyCoordinator, COMMAND_TRACE_FILE, OPTIMIZER_STATE_FILE, _load_last_known_soc_pct
+    from .coordinator import (
+        COMMAND_TRACE_FILE,
+        OPTIMIZER_STATE_FILE,
+        BatteryStrategyCoordinator,
+        _load_last_known_soc_pct,
+    )
 except ImportError:  # pragma: no cover - unit tests run without Home Assistant.
     BatteryStrategyCoordinator = None
     COMMAND_TRACE_FILE = "battery_strategy_command_trace.jsonl"
     OPTIMIZER_STATE_FILE = "battery_strategy_optimizer_state.json"
     _load_last_known_soc_pct = None
 
-PLATFORMS = [] if Platform is None else [Platform.SENSOR, Platform.SELECT, Platform.SWITCH, Platform.NUMBER]
+PLATFORMS = (
+    []
+    if Platform is None
+    else [Platform.SENSOR, Platform.SELECT, Platform.SWITCH, Platform.NUMBER]
+)
 CONFIG_SCHEMA = None if cv is None else cv.config_entry_only_config_schema(DOMAIN)
 
 
@@ -49,6 +59,7 @@ async def async_setup_entry(hass, entry) -> bool:
     """Set up Battery Strategy from a config entry."""
     if BatteryStrategyCoordinator is None:
         return False
+    _async_clean_deprecated_options(hass, entry)
     _async_remove_deprecated_entities(hass, entry)
     await hass.async_add_executor_job(_migrate_runtime_files, hass.config.config_dir)
     last_known_soc_pct = await hass.async_add_executor_job(
@@ -78,7 +89,10 @@ def _migrate_runtime_files(config_dir: str) -> None:
     trace = Path(config_dir) / COMMAND_TRACE_FILE
     if trace.exists():
         return
-    for legacy_name in ("battery_strategy_command_trace.json", "battery_strategy_hacs_command_trace.json"):
+    for legacy_name in (
+        "battery_strategy_command_trace.json",
+        "battery_strategy_hacs_command_trace.json",
+    ):
         legacy_trace = Path(config_dir) / legacy_name
         if not legacy_trace.exists():
             continue
@@ -96,6 +110,9 @@ def _migrate_runtime_files(config_dir: str) -> None:
 
 async def async_unload_entry(hass, entry) -> bool:
     """Unload Battery Strategy."""
+    coordinator = hass.data.get(DOMAIN, {}).get(entry.entry_id)
+    if coordinator is not None:
+        await coordinator.async_shutdown()
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if not unload_ok:
         return False
@@ -148,30 +165,49 @@ def _async_remove_deprecated_entities(hass, entry) -> None:
     deprecated = {
         f"{entry.entry_id}_control_send_commands",
         "switch.battery_strategy_hacs_befehle_an_batterie_senden",
-        *(f"{entry.entry_id}_{key}" for key in (
-            "parallel_samples",
-            "parallel_mode_match",
-            "parallel_max_power_delta",
-            "parallel_passed",
-            "parallel_input_samples",
-            "parallel_command_passed",
-            "parallel_max_house_load_no_ev_delta",
-            "parallel_max_house_load_total_delta",
-            "parallel_max_pv_delta",
-            "parallel_max_residual_no_ev_delta",
-            "parallel_max_residual_with_ev_delta",
-            "plan_input_passed",
-            "tomorrow_strategy_passed",
-            "forty8h_strategy_passed",
-            "live_command_passed",
-            "override_active",
-            "plan_max_tomorrow_power_delta",
-            "plan_max_48h_power_delta",
-        )),
+        *(
+            f"{entry.entry_id}_{key}"
+            for key in (
+                "parallel_samples",
+                "parallel_mode_match",
+                "parallel_max_power_delta",
+                "parallel_passed",
+                "parallel_input_samples",
+                "parallel_command_passed",
+                "parallel_max_house_load_no_ev_delta",
+                "parallel_max_house_load_total_delta",
+                "parallel_max_pv_delta",
+                "parallel_max_residual_no_ev_delta",
+                "parallel_max_residual_with_ev_delta",
+                "plan_input_passed",
+                "tomorrow_strategy_passed",
+                "forty8h_strategy_passed",
+                "live_command_passed",
+                "override_active",
+                "control_pv_to_ev_first",
+                "plan_max_tomorrow_power_delta",
+                "plan_max_48h_power_delta",
+            )
+        ),
     }
     for entity in er.async_entries_for_config_entry(registry, entry.entry_id):
         if entity.unique_id in deprecated or entity.entity_id in deprecated:
             registry.async_remove(entity.entity_id)
     for entity_id in deprecated:
-        if entity_id.startswith("switch.") and registry.async_get(entity_id) is not None:
+        if (
+            entity_id.startswith("switch.")
+            and registry.async_get(entity_id) is not None
+        ):
             registry.async_remove(entity_id)
+
+
+def _async_clean_deprecated_options(hass, entry) -> None:
+    """Drop options that were exposed but never controlled distinct behavior."""
+    options = dict(entry.options)
+    changed = False
+    for key in ("manual_duration_min", "pv_to_ev_first"):
+        if key in options:
+            options.pop(key)
+            changed = True
+    if changed:
+        hass.config_entries.async_update_entry(entry, options=options)

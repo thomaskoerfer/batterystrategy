@@ -14,8 +14,6 @@ from .actuator import should_write_limit, should_write_mode, zendure_targets
 from .const import (
     BATTERY_PROFILE_ZENDURE,
     COMMAND_IDLE,
-    COMMAND_INPUT,
-    COMMAND_OUTPUT,
     CONF_BATTERY_CAPACITY_KWH,
     CONF_BATTERY_POWER_ENTITY,
     CONF_BATTERY_PROFILE,
@@ -49,11 +47,18 @@ from .const import (
 )
 from .models import StrategyCommand, StrategyInputs, StrategyOptions
 from .optimizer_adapter import OptimizerEngineAdapter
-from .plan_models import PlanLiveDirective, StrategyPlan
-from .strategy import calculate_command, live_command_from_directive, plan_live_directive_from_plan
+from .optimizer_state import last_known_soc_pct
+from .plan_models import PlanLiveDirective
+from .planner import BackgroundPlanner
+from .strategy import (
+    calculate_command,
+    live_command_from_directive,
+    plan_live_directive_from_plan,
+)
 
 LOGGER = logging.getLogger(__name__)
 OPTIMIZER_PREFETCH_LEAD_S = 60
+SOC_BRIDGE_MAX_AGE_S = 300
 OPTIMIZER_STATE_FILE = "battery_strategy_optimizer_state.json"
 COMMAND_TRACE_FILE = "battery_strategy_command_trace.jsonl"
 COMMAND_TRACE_MAX_BYTES = 64 * 1024 * 1024
@@ -62,35 +67,15 @@ COMMAND_TRACE_RETAIN_LINES = 50000
 
 def _load_last_known_soc_pct(path: Path) -> float | None:
     """Load the most recent valid real battery SoC from optimizer state."""
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    sample_soc = None
-    for sample in reversed(data.get("samples") or []):
-        candidate = sample.get("soc") if isinstance(sample, dict) else None
-        try:
-            candidate = float(candidate)
-        except (TypeError, ValueError):
-            continue
-        if 0.0 <= candidate <= 100.0:
-            sample_soc = candidate
-            break
-    candidates = [data.get("last_known_soc_pct"), sample_soc]
-    for candidate in candidates:
-        try:
-            value = float(candidate)
-        except (TypeError, ValueError):
-            continue
-        if 0.0 <= value <= 100.0:
-            return value
-    return None
+    return last_known_soc_pct(path)
 
 
 class BatteryStrategyCoordinator(DataUpdateCoordinator):
     """Collect HA states, calculate the strategy, and apply commands."""
 
-    def __init__(self, hass, entry, update_interval, last_known_soc_pct: float | None = None):
+    def __init__(
+        self, hass, entry, update_interval, last_known_soc_pct: float | None = None
+    ):
         """Initialize coordinator."""
         super().__init__(
             hass,
@@ -103,6 +88,11 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         self._manual_power_w = 0.0
         self._manual_until: dt.datetime | None = None
         self._optimizer_engine = OptimizerEngineAdapter(hass, entry)
+        self._planner = BackgroundPlanner(
+            hass,
+            self._optimizer_engine,
+            Path(hass.config.path(OPTIMIZER_STATE_FILE)),
+        )
         self._optimizer_attrs: dict = {}
         self.last_actuation: dict[str, object] = {"status": "not_started"}
         self._active_directive_slot_id: str | None = None
@@ -113,17 +103,26 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         self._active_discharge_budget_base_kwh = 0.0
         self._active_discharge_mode: str | None = None
         self._last_live_accounting_ts: dt.datetime | None = None
-        self._last_live_command: StrategyCommand | None = None
+        self._last_actual_battery_power_w: float | None = None
         self._last_known_soc_pct = last_known_soc_pct
+        self._soc_control_ready = last_known_soc_pct is not None
+        self._last_valid_soc_at = (
+            dt.datetime.now(dt.timezone.utc) if last_known_soc_pct is not None else None
+        )
+        self._failsafe_zeroed_reason: str | None = None
         self._strategy_was_enabled = bool(entry.options.get("strategy_enabled", False))
         self._disabled_zeroed = not self._strategy_was_enabled
 
-    def set_manual_override(self, mode: str, power_w: float, duration_min: int = 0) -> None:
+    def set_manual_override(
+        self, mode: str, power_w: float, duration_min: int = 0
+    ) -> None:
         """Set an in-memory manual override."""
         self._manual_mode = mode
         self._manual_power_w = max(0.0, float(power_w))
         if duration_min > 0:
-            self._manual_until = dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=duration_min)
+            self._manual_until = dt.datetime.now(dt.timezone.utc) + dt.timedelta(
+                minutes=duration_min
+            )
         else:
             self._manual_until = None
 
@@ -133,17 +132,22 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         self._manual_power_w = 0.0
         self._manual_until = None
 
-    def _account_last_live_command(self, now: dt.datetime) -> None:
-        """Account energy used by the last live command inside the active slot."""
-        if self._last_live_accounting_ts is None or self._last_live_command is None:
+    def _account_actual_battery_power(self, now: dt.datetime) -> None:
+        """Account measured battery energy inside the active slot."""
+        if (
+            self._last_live_accounting_ts is None
+            or self._last_actual_battery_power_w is None
+        ):
             return
-        elapsed_h = max(0.0, (now - self._last_live_accounting_ts).total_seconds()) / 3600.0
+        elapsed_h = (
+            max(0.0, (now - self._last_live_accounting_ts).total_seconds()) / 3600.0
+        )
         if elapsed_h <= 0.0 or elapsed_h > 0.25:
             return
-        energy_kwh = float(self._last_live_command.power_w) * elapsed_h / 1000.0
-        if self._last_live_command.mode == COMMAND_INPUT:
-            self._slot_charged_kwh += energy_kwh
-        elif self._last_live_command.mode == COMMAND_OUTPUT:
+        energy_kwh = float(self._last_actual_battery_power_w) * elapsed_h / 1000.0
+        if energy_kwh < 0.0:
+            self._slot_charged_kwh += abs(energy_kwh)
+        elif energy_kwh > 0.0:
             self._slot_discharged_kwh += energy_kwh
 
     def _directive_with_progress(
@@ -164,9 +168,13 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
                 self._slot_charged_kwh = 0.0
                 self._slot_discharged_kwh = 0.0
             self._active_discharge_mode = discharge_mode
-            self._active_discharge_budget_base_kwh = max(0.0, float(directive.discharge_budget_kwh))
+            self._active_discharge_budget_base_kwh = max(
+                0.0, float(directive.discharge_budget_kwh)
+            )
         else:
-            current_base = max(0.0, float(getattr(self, "_active_discharge_budget_base_kwh", 0.0)))
+            current_base = max(
+                0.0, float(getattr(self, "_active_discharge_budget_base_kwh", 0.0))
+            )
             new_base = max(0.0, float(directive.discharge_budget_kwh))
             if allow_discharge_budget_increase:
                 self._active_discharge_budget_base_kwh = max(current_base, new_base)
@@ -174,42 +182,54 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
                 self._active_discharge_budget_base_kwh = min(current_base, new_base)
         return replace(
             directive,
-            must_charge_remaining_kwh=round(max(0.0, directive.must_charge_remaining_kwh - self._slot_charged_kwh), 3),
+            must_charge_remaining_kwh=round(
+                max(0.0, directive.must_charge_remaining_kwh - self._slot_charged_kwh),
+                3,
+            ),
             discharge_budget_kwh=round(
-                max(0.0, self._active_discharge_budget_base_kwh - self._slot_discharged_kwh),
+                max(
+                    0.0,
+                    self._active_discharge_budget_base_kwh - self._slot_discharged_kwh,
+                ),
                 3,
             ),
         )
 
     async def _async_update_data(self):
         """Fetch current states and calculate command."""
-        if self._manual_until is not None and dt.datetime.now(dt.timezone.utc) >= self._manual_until:
+        if (
+            self._manual_until is not None
+            and dt.datetime.now(dt.timezone.utc) >= self._manual_until
+        ):
             self.clear_manual_override()
 
         options = self._strategy_options()
         inputs = self._strategy_inputs()
         now = dt.datetime.now(dt.timezone.utc)
-        self._account_last_live_command(now)
+        self._account_actual_battery_power(now)
         force_optimizer = self._should_force_optimizer(now)
         simple_command = calculate_command(inputs, options)
         runtime_context = self._optimizer_engine.runtime_context(inputs, options)
-        plan, self._optimizer_attrs = await self.hass.async_add_executor_job(
-            self._optimizer_engine.run,
-            inputs,
-            options,
-            force_optimizer,
-            runtime_context,
+        optimizer_scheduled = self._planner.maybe_schedule(
+            inputs, options, runtime_context, force=force_optimizer
         )
+        plan, self._optimizer_attrs = self._planner.current(inputs, options)
         directive = self._directive_with_progress(
-            plan_live_directive_from_plan(plan, options, current_soc_pct=inputs.soc_pct),
+            plan_live_directive_from_plan(
+                plan, options, current_soc_pct=inputs.soc_pct
+            ),
             discharge_mode=options.discharge,
             allow_discharge_budget_increase=options.discharge == DISCHARGE_LOAD,
         )
-        command = live_command_from_directive(directive, simple_command, inputs, options)
+        command = live_command_from_directive(
+            directive, simple_command, inputs, options
+        )
         calculated_command = command
         strategy_enabled = bool(self.entry.options.get("strategy_enabled", False))
-        display_command = command if strategy_enabled else self._disabled_display_command(command)
-        self._last_live_command = display_command
+        display_command = (
+            command if strategy_enabled else self._disabled_display_command(command)
+        )
+        self._last_actual_battery_power_w = inputs.battery_power_w
         self._last_live_accounting_ts = now
         data = {
             "inputs": inputs,
@@ -224,6 +244,9 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             "actuation": self.last_actuation,
             "optimizer_age_s": self._optimizer_engine.age_s(),
             "optimizer_forced": force_optimizer,
+            "optimizer_scheduled": optimizer_scheduled,
+            "optimizer_running": self._planner.running,
+            "optimizer_error": self._planner.last_error,
         }
         if strategy_enabled:
             self._strategy_was_enabled = True
@@ -237,7 +260,10 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             data["actuation"] = self.last_actuation
         else:
             self._strategy_was_enabled = False
-            self.last_actuation = {"status": "disabled_no_write", "reason": "strategy_disabled"}
+            self.last_actuation = {
+                "status": "disabled_no_write",
+                "reason": "strategy_disabled",
+            }
             data["actuation"] = self.last_actuation
         if bool(self.entry.options.get("trace_enabled", False)):
             await self.hass.async_add_executor_job(self._append_command_trace, data)
@@ -251,7 +277,9 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         lead_ms = OPTIMIZER_PREFETCH_LEAD_S * 1000
         if now_ms < self._active_directive_slot_end_ts_ms - lead_ms:
             return False
-        phase = "expired" if now_ms >= self._active_directive_slot_end_ts_ms else "prefetch"
+        phase = (
+            "expired" if now_ms >= self._active_directive_slot_end_ts_ms else "prefetch"
+        )
         key = f"{self._active_directive_slot_id}:{self._active_directive_slot_end_ts_ms}:{phase}"
         if key == self._last_optimizer_force_key:
             return False
@@ -260,14 +288,23 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
 
     def _strategy_options(self) -> StrategyOptions:
         opts = dict(self.entry.options)
-        manual_mode = self._manual_mode if self._manual_mode != MANUAL_OFF else opts.get("manual_mode", MANUAL_OFF)
-        manual_power = self._manual_power_w if self._manual_mode != MANUAL_OFF else float(opts.get("manual_power_w", 0.0))
+        manual_mode = (
+            self._manual_mode
+            if self._manual_mode != MANUAL_OFF
+            else opts.get("manual_mode", MANUAL_OFF)
+        )
+        manual_power = (
+            self._manual_power_w
+            if self._manual_mode != MANUAL_OFF
+            else float(opts.get("manual_power_w", 0.0))
+        )
         return StrategyOptions(
             pv_charging=opts.get("pv_charging", PV_CHARGING_ON),
             grid_charging=opts.get("grid_charging", GRID_CHARGING_OFF),
             discharge=opts.get("discharge", DISCHARGE_LOAD),
-            pv_to_ev_first=bool(opts.get("pv_to_ev_first", True)),
-            discharge_during_ev_charging=bool(opts.get("discharge_during_ev_charging", True)),
+            discharge_during_ev_charging=bool(
+                opts.get("discharge_during_ev_charging", True)
+            ),
             battery_may_feed_ev=bool(opts.get("battery_may_feed_ev", False)),
             ev_active_threshold_w=float(opts.get("ev_active_threshold_w", 300.0)),
             min_soc_pct=float(opts.get("min_soc_pct", 10.0)),
@@ -303,16 +340,32 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         entity_id = self.entry.data.get(CONF_BATTERY_SOC_ENTITY)
         if entity_id:
             state = self.hass.states.get(entity_id)
-            if state is not None and state.state not in ("unknown", "unavailable", "none", ""):
+            if state is not None and state.state not in (
+                "unknown",
+                "unavailable",
+                "none",
+                "",
+            ):
                 try:
                     value = float(state.state)
                 except (TypeError, ValueError):
                     value = None
                 if value is not None and 0.0 <= value <= 100.0:
                     self._last_known_soc_pct = value
+                    self._soc_control_ready = True
+                    self._last_valid_soc_at = dt.datetime.now(dt.timezone.utc)
                     return value
-        if self._last_known_soc_pct is not None:
+        last_valid_soc_at = getattr(
+            self, "_last_valid_soc_at", dt.datetime.now(dt.timezone.utc)
+        )
+        if (
+            self._last_known_soc_pct is not None
+            and last_valid_soc_at is not None
+            and (dt.datetime.now(dt.timezone.utc) - last_valid_soc_at).total_seconds()
+            <= SOC_BRIDGE_MAX_AGE_S
+        ):
             return float(self._last_known_soc_pct)
+        self._soc_control_ready = False
         return 50.0
 
     def _grid_import_export(self) -> tuple[float, float]:
@@ -321,7 +374,9 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             net = self._state_float(CONF_SIGNED_GRID_POWER_ENTITY)
             return max(0.0, net), max(0.0, -net)
         if mode == GRID_MODE_IMPORT_EXPORT:
-            return self._state_float(CONF_GRID_IMPORT_ENTITY), self._state_float(CONF_GRID_EXPORT_ENTITY)
+            return self._state_float(CONF_GRID_IMPORT_ENTITY), self._state_float(
+                CONF_GRID_EXPORT_ENTITY
+            )
         if mode == GRID_MODE_THREE_PHASE:
             net = (
                 self._state_float(CONF_GRID_L1_ENTITY)
@@ -411,12 +466,19 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             or getattr(state, "last_updated", None)
             or state.last_changed
         )
-        return max(0.0, (dt.datetime.now(dt.timezone.utc) - reported_at).total_seconds())
+        return max(
+            0.0, (dt.datetime.now(dt.timezone.utc) - reported_at).total_seconds()
+        )
 
     def _state_available(self, entity_id: str) -> bool:
         """Return whether an entity has a usable state."""
         state = self.hass.states.get(entity_id)
-        return state is not None and state.state not in ("unknown", "unavailable", "none", "")
+        return state is not None and state.state not in (
+            "unknown",
+            "unavailable",
+            "none",
+            "",
+        )
 
     def _grid_inputs_fresh(self) -> bool:
         """Return whether live grid inputs are fresh enough for real actuation."""
@@ -427,15 +489,31 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
                 self.entry.data.get(CONF_GRID_L2_ENTITY),
                 self.entry.data.get(CONF_GRID_L3_ENTITY),
             ]
-            return all(entity and self._state_available(entity) and self._state_age_s(entity) < 180 for entity in entities)
+            return all(
+                entity
+                and self._state_available(entity)
+                and self._state_age_s(entity) < 180
+                for entity in entities
+            )
         if mode == GRID_MODE_SIGNED:
             entity = self.entry.data.get(CONF_SIGNED_GRID_POWER_ENTITY)
-            return bool(entity and self._state_available(entity) and self._state_age_s(entity) < 180)
+            return bool(
+                entity
+                and self._state_available(entity)
+                and self._state_age_s(entity) < 180
+            )
         if mode == GRID_MODE_IMPORT_EXPORT:
-            entities = [self.entry.data.get(CONF_GRID_IMPORT_ENTITY), self.entry.data.get(CONF_GRID_EXPORT_ENTITY)]
-            return all(entity and self._state_available(entity) and self._state_age_s(entity) < 180 for entity in entities)
+            entities = [
+                self.entry.data.get(CONF_GRID_IMPORT_ENTITY),
+                self.entry.data.get(CONF_GRID_EXPORT_ENTITY),
+            ]
+            return all(
+                entity
+                and self._state_available(entity)
+                and self._state_age_s(entity) < 180
+                for entity in entities
+            )
         return False
-
 
     async def _async_zero_limits_once(self) -> None:
         """Stop charging/discharging once when control is disabled, then stay hands-off."""
@@ -443,7 +521,10 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         output_limit_entity = self._entity_id(CONF_ZENDURE_OUTPUT_LIMIT_ENTITY)
         required_entities = [input_limit_entity, output_limit_entity]
         if not all(self._state_available(entity) for entity in required_entities):
-            self.last_actuation = {"status": "skipped", "reason": "control_entity_unavailable"}
+            self.last_actuation = {
+                "status": "skipped",
+                "reason": "control_entity_unavailable",
+            }
             return
 
         current_input = self._raw_state_float(input_limit_entity)
@@ -473,18 +554,28 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             "current_output_limit_w": current_output,
         }
 
-    async def _async_apply_command(self, command: StrategyCommand, options: StrategyOptions) -> None:
+    async def _async_apply_command(
+        self, command: StrategyCommand, options: StrategyOptions
+    ) -> None:
         """Apply the command to Zendure with anti-oscillation guardrails."""
         ac_mode_entity = self._entity_id(CONF_ZENDURE_AC_MODE_ENTITY)
         input_limit_entity = self._entity_id(CONF_ZENDURE_INPUT_LIMIT_ENTITY)
         output_limit_entity = self._entity_id(CONF_ZENDURE_OUTPUT_LIMIT_ENTITY)
         required_entities = [ac_mode_entity, input_limit_entity, output_limit_entity]
         if not all(self._state_available(entity) for entity in required_entities):
-            self.last_actuation = {"status": "skipped", "reason": "control_entity_unavailable"}
+            self.last_actuation = {
+                "status": "skipped",
+                "reason": "control_entity_unavailable",
+            }
+            return
+        if not self._soc_control_ready:
+            await self._async_failsafe_zero_once("battery_soc_unavailable")
             return
         if not self._grid_inputs_fresh():
-            self.last_actuation = {"status": "skipped", "reason": "grid_inputs_stale"}
+            await self._async_failsafe_zero_once("grid_inputs_stale")
             return
+
+        self._failsafe_zeroed_reason = None
 
         targets = zendure_targets(command)
         current_mode = self.hass.states.get(ac_mode_entity).state
@@ -546,6 +637,45 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             "current_output_limit_w": current_output,
         }
 
+    async def _async_failsafe_zero_once(self, reason: str) -> None:
+        """Zero both limits once while a safety-critical input is invalid."""
+        if self._failsafe_zeroed_reason == reason:
+            self.last_actuation = {"status": "failsafe_no_write", "reason": reason}
+            return
+        input_entity = self._entity_id(CONF_ZENDURE_INPUT_LIMIT_ENTITY)
+        output_entity = self._entity_id(CONF_ZENDURE_OUTPUT_LIMIT_ENTITY)
+        if not all(
+            self._state_available(entity) for entity in (input_entity, output_entity)
+        ):
+            self.last_actuation = {
+                "status": "skipped",
+                "reason": "control_entity_unavailable",
+            }
+            return
+        actions = []
+        for entity, label in (
+            (input_entity, "input_limit"),
+            (output_entity, "output_limit"),
+        ):
+            if self._raw_state_float(entity) > 0:
+                await self.hass.services.async_call(
+                    "number",
+                    "set_value",
+                    {"entity_id": entity, "value": 0},
+                    blocking=False,
+                )
+                actions.append(f"{label}=0")
+        self._failsafe_zeroed_reason = reason
+        self.last_actuation = {
+            "status": "failsafe_zeroed",
+            "reason": reason,
+            "actions": actions,
+        }
+
+    async def async_shutdown(self) -> None:
+        """Stop the background optimizer during unload."""
+        await self._planner.async_shutdown()
+
     def _disabled_display_command(self, command: StrategyCommand) -> StrategyCommand:
         """Return the safe UI command while actuation is disabled."""
         return replace(
@@ -566,28 +696,28 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         inputs = data["inputs"]
         directive = data["plan_to_live"]
         item = {
-                "ts": now.timestamp(),
-                "iso": now.isoformat(),
-                "mode": command.mode,
-                "power_w": command.power_w,
-                "reason": command.reason,
-                "calculated_mode": calculated_command.mode,
-                "calculated_power_w": calculated_command.power_w,
-                "calculated_reason": calculated_command.reason,
-                "send_commands": data["send_commands"],
-                "strategy_enabled": data["strategy_enabled"],
-                "grid_import_w": round(inputs.grid_import_w),
-                "grid_export_w": round(inputs.grid_export_w),
-                "pv_w": round(inputs.pv_w),
-                "battery_power_w": round(inputs.battery_power_w),
-                "ev_power_w": round(inputs.ev_power_w),
-                "soc_pct": round(inputs.soc_pct, 1),
-                "current_plan_points": len(plan.points),
-                "optimizer_age_s": data.get("optimizer_age_s"),
-                "plan_mode": plan.current_mode,
-                "plan_power_w": plan.current_power_w,
-                "plan_to_live": asdict(directive),
-            }
+            "ts": now.timestamp(),
+            "iso": now.isoformat(),
+            "mode": command.mode,
+            "power_w": command.power_w,
+            "reason": command.reason,
+            "calculated_mode": calculated_command.mode,
+            "calculated_power_w": calculated_command.power_w,
+            "calculated_reason": calculated_command.reason,
+            "send_commands": data["send_commands"],
+            "strategy_enabled": data["strategy_enabled"],
+            "grid_import_w": round(inputs.grid_import_w),
+            "grid_export_w": round(inputs.grid_export_w),
+            "pv_w": round(inputs.pv_w),
+            "battery_power_w": round(inputs.battery_power_w),
+            "ev_power_w": round(inputs.ev_power_w),
+            "soc_pct": round(inputs.soc_pct, 1),
+            "current_plan_points": len(plan.points),
+            "optimizer_age_s": data.get("optimizer_age_s"),
+            "plan_mode": plan.current_mode,
+            "plan_power_w": plan.current_power_w,
+            "plan_to_live": asdict(directive),
+        }
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(item, separators=(",", ":")) + "\n")

@@ -67,7 +67,6 @@
         "title": "EV policy",
         "description": "Rules for wallbox and EV loads.",
         "data": {
-          "pv_to_ev_first": "Prioritize PV for EV",
           "discharge_during_ev_charging": "Allow household discharge while EV is charging",
           "battery_may_feed_ev": "Battery may supply EV",
           "ev_active_threshold_w": "EV active above"
@@ -97,8 +96,7 @@
         "description": "Manual commands remain limited by battery safety limits.",
         "data": {
           "manual_mode": "Manual mode",
-          "manual_power_w": "Manual power",
-          "manual_duration_min": "Manual duration"
+          "manual_power_w": "Manual power"
         }
       },
       "entities": {

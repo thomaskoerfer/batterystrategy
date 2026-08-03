@@ -67,7 +67,6 @@
         "title": "Strategie - EV Policy",
         "description": "Regeln fuer Wallbox-/EV-Lasten.",
         "data": {
-          "pv_to_ev_first": "PV zuerst ins Auto",
           "discharge_during_ev_charging": "Entladung waehrend EV-Ladung erlauben",
           "battery_may_feed_ev": "Batterie darf Auto versorgen",
           "ev_active_threshold_w": "Auto laedt ab"
@@ -97,8 +96,7 @@
         "description": "Manuelle Befehle gelten hart, begrenzt nur durch Batteriegrenzen.",
         "data": {
           "manual_mode": "Manueller Modus",
-          "manual_power_w": "Manuelle Leistung",
-          "manual_duration_min": "Manuelle Dauer"
+          "manual_power_w": "Manuelle Leistung"
         }
       },
       "entities": {

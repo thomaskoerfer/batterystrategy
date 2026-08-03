@@ -7,11 +7,9 @@ from homeassistant.components.switch import SwitchEntity
 from .const import DOMAIN
 from .entity import BatteryStrategyEntity
 
-
 SWITCHES = (
     ("strategy_enabled", "Battery Strategy Steuerung", False),
     ("trace_enabled", "Debug Trace aufzeichnen", False),
-    ("pv_to_ev_first", "PV zuerst ins Auto", True),
     ("discharge_during_ev_charging", "Entladung waehrend EV-Ladung erlauben", True),
     ("battery_may_feed_ev", "Batterie darf Auto versorgen", False),
 )
@@ -20,7 +18,10 @@ SWITCHES = (
 async def async_setup_entry(hass, entry, async_add_entities) -> None:
     """Set up Battery Strategy switches."""
     coordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities(BatteryStrategySwitch(coordinator, key, name, default) for key, name, default in SWITCHES)
+    async_add_entities(
+        BatteryStrategySwitch(coordinator, key, name, default)
+        for key, name, default in SWITCHES
+    )
 
 
 class BatteryStrategySwitch(BatteryStrategyEntity, SwitchEntity):

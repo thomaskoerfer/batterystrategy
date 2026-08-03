@@ -14,6 +14,8 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy import create_engine, text
 
+from .optimizer_state import load_state_document, save_state_document
+
 DB = "/config/home-assistant_v2.db"
 DEFAULT_DB_URL = "sqlite:////config/home-assistant_v2.db"
 STATE_FILE = "/config/battery_strategy_optimizer_state.json"
@@ -53,6 +55,16 @@ MAX_E_KWH = CAP_KWH * (SOC_MAX / 100.0)
 MAX_P_W = 2400
 SLOT_H = 0.25
 MAX_E_SLOT_KWH = (MAX_P_W / 1000.0) * SLOT_H
+MAX_CHARGE_P_W = 2400
+MAX_DISCHARGE_P_W = 2400
+MAX_CHARGE_E_SLOT_KWH = (MAX_CHARGE_P_W / 1000.0) * SLOT_H
+MAX_DISCHARGE_E_SLOT_KWH = (MAX_DISCHARGE_P_W / 1000.0) * SLOT_H
+PV_CHARGING_ENABLED = True
+# Direct engine callers retain the historical full-optimizer defaults. The HA
+# adapter always supplies the configured policy before a production run.
+GRID_CHARGING_ENABLED = True
+DISCHARGE_ENABLED = True
+PLANNING_HORIZON_H = 48
 ENERGY_STEP_KWH = 0.025
 MIN_MARGIN_CT = 2.0
 HISTORY_DAYS = 60
@@ -114,6 +126,8 @@ def configure_runtime(context):
     global DB, DEFAULT_DB_URL, STATE_FILE, _DB_ENGINE
     global _RUNTIME_STATES, _RUNTIME_PRICE_INTERVALS, _ENTITY_MAP
     global CAP_KWH, SOC_MIN, SOC_MAX, MIN_E_KWH, MAX_E_KWH, MAX_P_W, MAX_E_SLOT_KWH
+    global MAX_CHARGE_P_W, MAX_DISCHARGE_P_W, MAX_CHARGE_E_SLOT_KWH, MAX_DISCHARGE_E_SLOT_KWH
+    global PV_CHARGING_ENABLED, GRID_CHARGING_ENABLED, DISCHARGE_ENABLED, PLANNING_HORIZON_H
     global ETA_RT, ETA_C, ETA_D, MIN_MARGIN_CT, PV_EXPORT_OPPORTUNITY_CT
     global OPEN_METEO_TZ, OPEN_METEO_URL, PV_CAPACITY_EVENTS
 
@@ -131,8 +145,16 @@ def configure_runtime(context):
     SOC_MAX = max(SOC_MIN, min(100.0, float(context.get("max_soc_pct") or 100.0)))
     MIN_E_KWH = CAP_KWH * SOC_MIN / 100.0
     MAX_E_KWH = CAP_KWH * SOC_MAX / 100.0
-    MAX_P_W = max(0.0, float(context.get("max_power_w") or 2400.0))
+    MAX_CHARGE_P_W = max(0.0, float(context.get("max_charge_power_w") or context.get("max_power_w") or 2400.0))
+    MAX_DISCHARGE_P_W = max(0.0, float(context.get("max_discharge_power_w") or context.get("max_power_w") or 2400.0))
+    MAX_P_W = max(MAX_CHARGE_P_W, MAX_DISCHARGE_P_W)
     MAX_E_SLOT_KWH = (MAX_P_W / 1000.0) * SLOT_H
+    MAX_CHARGE_E_SLOT_KWH = (MAX_CHARGE_P_W / 1000.0) * SLOT_H
+    MAX_DISCHARGE_E_SLOT_KWH = (MAX_DISCHARGE_P_W / 1000.0) * SLOT_H
+    PV_CHARGING_ENABLED = str(context.get("pv_charging") or "on") != "off"
+    GRID_CHARGING_ENABLED = str(context.get("grid_charging") or "off") != "off"
+    DISCHARGE_ENABLED = str(context.get("discharge") or "load") != "off"
+    PLANNING_HORIZON_H = max(1, min(48, int(context.get("planning_horizon_h") or 48)))
     ETA_RT = max(0.01, min(1.0, float(context.get("round_trip_efficiency") or 0.8)))
     ETA_C = ETA_RT ** 0.5
     ETA_D = ETA_RT ** 0.5
@@ -783,8 +805,9 @@ def load_state():
     if not os.path.exists(STATE_FILE):
         return default_state
     try:
-        with open(STATE_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        data = load_state_document(STATE_FILE)
+        if data is None:
+            return default_state
         for k, v in default_state.items():
             data.setdefault(k, v)
         if int(data.get("state_schema", 0)) < 4:
@@ -814,10 +837,7 @@ def fallback_output(mode, reason, data, now_iso):
 
 
 def save_state(data):
-    tmp = f"{STATE_FILE}.{os.getpid()}.tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False)
-    os.replace(tmp, STATE_FILE)
+    save_state_document(STATE_FILE, data)
 
 
 def normalize_slot_biases(arr, lo, hi):
@@ -1669,7 +1689,11 @@ def build_virtual_plan(intervals, samples, start_energy_kwh, weather_factor, for
         # The automatic strategy only values serving forecast household load.
         # Battery discharge must not create forecast export unless explicit
         # battery export economics are added later.
-        sl["discharge_eligible_kwh"] = min(float(sl["net_pos_kwh"]), MAX_E_SLOT_KWH)
+        sl["discharge_eligible_kwh"] = (
+            min(float(sl["net_pos_kwh"]), MAX_DISCHARGE_E_SLOT_KWH)
+            if DISCHARGE_ENABLED
+            else 0.0
+        )
 
     # Cost-optimal plan over 48h via dynamic programming on discretized SoC states.
     e_step = ENERGY_STEP_KWH
@@ -1690,8 +1714,8 @@ def build_virtual_plan(intervals, samples, start_energy_kwh, weather_factor, for
     prev = [[[None] * 3 for _ in range(n_states)] for _ in range(n_slots + 1)]
     dp[0][start_idx][mode_to_idx.get(initial_mode, mode_to_idx[0])] = 0.0
 
-    max_charge_delta_e = ETA_C * MAX_E_SLOT_KWH
-    max_discharge_delta_e = MAX_E_SLOT_KWH / ETA_D
+    max_charge_delta_e = ETA_C * MAX_CHARGE_E_SLOT_KWH
+    max_discharge_delta_e = MAX_DISCHARGE_E_SLOT_KWH / ETA_D
     future_peak_price_ct = [0.0] * (n_slots + 1)
     for t in range(n_slots - 1, -1, -1):
         future_peak_price_ct[t] = max(future_peak_price_ct[t + 1], float(slots[t]["price_ct"]))
@@ -1711,13 +1735,21 @@ def build_virtual_plan(intervals, samples, start_energy_kwh, weather_factor, for
         discharge_out = 0.0
         if delta > 1e-9:
             charge_in = delta / ETA_C
-            if charge_in > MAX_E_SLOT_KWH + 1e-9:
+            if charge_in > MAX_CHARGE_E_SLOT_KWH + 1e-9:
+                return None
+            if not PV_CHARGING_ENABLED and not GRID_CHARGING_ENABLED:
+                return None
+            if not GRID_CHARGING_ENABLED and charge_in > surplus + 1e-9:
+                return None
+            if not PV_CHARGING_ENABLED and surplus > 1e-9:
                 return None
         elif delta < -1e-9:
+            if not DISCHARGE_ENABLED:
+                return None
             discharge_out = (-delta) * ETA_D
             if discharge_out > discharge_eligible + 1e-9:
                 return None
-            if discharge_out > MAX_E_SLOT_KWH + 1e-9:
+            if discharge_out > MAX_DISCHARGE_E_SLOT_KWH + 1e-9:
                 return None
             if discharge_floor_ct is not None and price_ct < discharge_floor_ct:
                 return None
@@ -1742,13 +1774,13 @@ def build_virtual_plan(intervals, samples, start_energy_kwh, weather_factor, for
             if future_value_ct < (price_ct + MIN_MARGIN_CT):
                 return None
             later_cheaper_charge_capacity_kwh = sum(
-                MAX_E_SLOT_KWH
+                MAX_CHARGE_E_SLOT_KWH
                 for future_sl in slots[t + 1 :]
                 if float(future_sl["price_ct"]) + CHARGE_DEFERRAL_MARGIN_CT < price_ct
             )
             if later_cheaper_charge_capacity_kwh > 1e-9:
                 profitable_discharge_need_ac_kwh = sum(
-                    min(MAX_E_SLOT_KWH, float(future_sl["net_pos_kwh"]))
+                    min(MAX_DISCHARGE_E_SLOT_KWH, float(future_sl["net_pos_kwh"]))
                     for future_sl in slots[t + 1 :]
                     if float(future_sl["price_ct"]) >= ((price_ct / ETA_RT) + MIN_MARGIN_CT)
                 )
@@ -1901,7 +1933,7 @@ def build_virtual_plan(intervals, samples, start_energy_kwh, weather_factor, for
             if float(slots[future_idx]["price_ct"]) <= current_price_ct + 1e-9:
                 continue
             reserved_kwh += min(
-                MAX_E_SLOT_KWH,
+                MAX_DISCHARGE_E_SLOT_KWH,
                 float(
                     slots[future_idx].get(
                         "discharge_eligible_kwh",
@@ -1916,7 +1948,7 @@ def build_virtual_plan(intervals, samples, start_energy_kwh, weather_factor, for
             return 0.0
         slot_energy_kwh = pre_slot_energy_kwh(t)
         available_ac_kwh = max(0.0, (slot_energy_kwh - MIN_E_KWH) * ETA_D)
-        max_total_discharge_kwh = min(MAX_E_SLOT_KWH, available_ac_kwh)
+        max_total_discharge_kwh = min(MAX_DISCHARGE_E_SLOT_KWH, available_ac_kwh)
         if max_total_discharge_kwh <= 1e-6:
             return 0.0
 
@@ -2084,10 +2116,16 @@ def suppress_uneconomic_micro_cycles(points, start_energy_kwh):
         req_discharge_out = max(0.0, float(p.get("discharge_fc_w", 0.0)) / 1000.0 * SLOT_H)
 
         max_charge_in = max(0.0, (MAX_E_KWH - energy) / ETA_C)
-        charge_in = min(req_charge_in, MAX_E_SLOT_KWH, max_charge_in)
+        charge_in = min(req_charge_in, MAX_CHARGE_E_SLOT_KWH, max_charge_in)
+        if not GRID_CHARGING_ENABLED:
+            charge_in = min(charge_in, surplus_kwh if PV_CHARGING_ENABLED else 0.0)
+        elif not PV_CHARGING_ENABLED and charge_in <= surplus_kwh:
+            charge_in = 0.0
 
         max_discharge_out = max(0.0, (energy - MIN_E_KWH) * ETA_D)
-        discharge_out = min(req_discharge_out, MAX_E_SLOT_KWH, discharge_eligible_kwh, max_discharge_out)
+        discharge_out = min(req_discharge_out, MAX_DISCHARGE_E_SLOT_KWH, discharge_eligible_kwh, max_discharge_out)
+        if not DISCHARGE_ENABLED:
+            discharge_out = 0.0
 
         p["soc_pct"] = round((energy / CAP_KWH) * 100.0, 2)
         p_bat_w = ((charge_in - discharge_out) / SLOT_H) * 1000.0
@@ -2158,7 +2196,7 @@ def classify_discharge_mode(future_points, current_price_ct, usable_energy_ac_kw
     expected_net_load_until_charge_kwh = 0.0
     for idx, p in enumerate(horizon):
         absorbable_kwh = min(
-            MAX_E_SLOT_KWH,
+            MAX_DISCHARGE_E_SLOT_KWH,
             max(0.0, float(p.get("grid_import_fc_w", 0.0)) + float(p.get("discharge_fc_w", 0.0))) / 1000.0 * SLOT_H,
         )
         expected_net_load_until_charge_kwh += absorbable_kwh
@@ -2774,6 +2812,7 @@ def main():
     now_floor = floor_to_quarter(local_now)
     now_ts_ms = int(now_ts * 1000)
     intervals = [it for it in intervals_all if it["dt"] >= now_floor]
+    intervals = intervals[: int(math.ceil(PLANNING_HORIZON_H / SLOT_H))]
     if soc is not None:
         start_e = clamp(CAP_KWH * soc / 100.0, MIN_E_KWH, MAX_E_KWH)
         initial_plan_mode = 0
@@ -2820,7 +2859,7 @@ def main():
     mode = planned_mode
     rec_w = planned_power_w
     if mode == "discharge_push":
-        rec_w = int(clamp(max(0.0, net_now_w), 0.0, MAX_P_W))
+        rec_w = int(clamp(max(0.0, net_now_w), 0.0, MAX_DISCHARGE_P_W))
         if rec_w <= 0:
             mode = "discharge_blocked"
             rec_w = 0
@@ -2828,7 +2867,7 @@ def main():
         elif rec_w != planned_power_w:
             reason = "push window against live net load"
     elif mode == "discharge_limited":
-        rec_w = int(clamp(min(float(planned_power_w), max(0.0, net_now_w)), 0.0, MAX_P_W))
+        rec_w = int(clamp(min(float(planned_power_w), max(0.0, net_now_w)), 0.0, MAX_DISCHARGE_P_W))
         if rec_w <= 0:
             mode = "discharge_blocked"
             rec_w = 0
@@ -2839,10 +2878,10 @@ def main():
         rec_w = 0
         reason = "battery reserved for later higher-value slots"
     elif mode in ("charge_grid", "charge_pv_surplus"):
-        rec_w = int(clamp(float(planned_power_w), 0.0, MAX_P_W))
+        rec_w = int(clamp(float(planned_power_w), 0.0, MAX_CHARGE_P_W))
         if pv_surplus_stable and pv_surplus_w > 0 and start_e < (MAX_E_KWH - 0.05):
             mode = "charge_follow"
-            rec_w = int(clamp(float(pv_surplus_w), 0.0, MAX_P_W))
+            rec_w = int(clamp(float(pv_surplus_w), 0.0, MAX_CHARGE_P_W))
             reason = "price plan + pv surplus follow"
 
     if (
@@ -2852,7 +2891,7 @@ def main():
         and start_e < (MAX_E_KWH - 0.05)
     ):
         mode = "charge_follow"
-        rec_w = int(clamp(float(pv_surplus_w), 0.0, MAX_P_W))
+        rec_w = int(clamp(float(pv_surplus_w), 0.0, MAX_CHARGE_P_W))
         reason = "stable pv surplus follow"
 
     if soc is None:

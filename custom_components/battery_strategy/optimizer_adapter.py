@@ -7,6 +7,7 @@ import datetime as dt
 import io
 import json
 import time
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from .const import (
@@ -21,6 +22,7 @@ from .const import (
     CONF_PV_POWER_ENTITY,
 )
 from .models import StrategyInputs, StrategyOptions
+from .optimizer_state import last_optimizer_output
 from .plan_models import DailyCost, PlanPoint, StrategyPlan
 
 CACHE_TTL_S = 240
@@ -38,6 +40,28 @@ class OptimizerEngineAdapter:
         self._last_output: dict | None = None
         self._last_options: StrategyOptions | None = None
         self._timezone = dt.timezone.utc
+
+    def hydrate(self, state_path: str | Path) -> None:
+        """Hydrate the cache from the last persisted valid optimizer output."""
+        output = last_optimizer_output(state_path)
+        if output:
+            self._last_output = output
+
+    def cached_result(
+        self, inputs: StrategyInputs, options: StrategyOptions
+    ) -> tuple[StrategyPlan, dict]:
+        """Return the cached plan without running the optimizer."""
+        output = self._last_output or {}
+        return _plan_from_output(output, inputs, options, self._timezone), output
+
+    def needs_run(self, options: StrategyOptions, *, force: bool = False) -> bool:
+        """Return whether the background planner should refresh."""
+        return bool(
+            force
+            or self._last_output is None
+            or self._last_options != options
+            or time.time() - self._last_run_ts >= CACHE_TTL_S
+        )
 
     def run(
         self,
@@ -59,7 +83,9 @@ class OptimizerEngineAdapter:
             and self._last_options == options
             and now - self._last_run_ts < CACHE_TTL_S
         ):
-            return _plan_from_output(self._last_output, inputs, options, self._timezone), self._last_output
+            return _plan_from_output(
+                self._last_output, inputs, options, self._timezone
+            ), self._last_output
 
         from . import optimizer_engine as engine
 
@@ -82,7 +108,9 @@ class OptimizerEngineAdapter:
         data = self._entry.data
         price_entity = data.get(CONF_PRICE_ENTITY)
         price_state = self._hass.states.get(price_entity) if price_entity else None
-        price_intervals = list((price_state.attributes.get("data") or [])) if price_state else []
+        price_intervals = (
+            list(price_state.attributes.get("data") or []) if price_state else []
+        )
         db_engine = None
         try:
             from homeassistant.components.recorder import get_instance
@@ -98,7 +126,9 @@ class OptimizerEngineAdapter:
             "battery_min_soc": options.min_soc_pct,
             "battery_power": inputs.battery_power_w,
             "ev_power": inputs.ev_power_w,
-            "ev_status": "charging" if inputs.ev_power_w >= options.ev_active_threshold_w else "idle",
+            "ev_status": "charging"
+            if inputs.ev_power_w >= options.ev_active_threshold_w
+            else "idle",
         }
         if price_state is not None:
             states["price_current"] = price_state.state
@@ -122,13 +152,23 @@ class OptimizerEngineAdapter:
             "battery_capacity_kwh": options.battery_capacity_kwh,
             "min_soc_pct": options.min_soc_pct,
             "max_soc_pct": options.max_soc_pct,
-            "max_power_w": max(options.max_charge_power_w, options.max_discharge_power_w),
+            "max_power_w": max(
+                options.max_charge_power_w, options.max_discharge_power_w
+            ),
+            "max_charge_power_w": options.max_charge_power_w,
+            "max_discharge_power_w": options.max_discharge_power_w,
             "round_trip_efficiency": options.round_trip_efficiency,
             "min_margin_ct_per_kwh": options.min_margin_ct_per_kwh,
             "feed_in_tariff_ct_per_kwh": options.feed_in_tariff_ct_per_kwh,
             "pv_capacity_kwp": options.pv_capacity_kwp,
             "pv_inverter_power_kw": options.pv_inverter_power_kw,
-            "pv_capacity_events": list(self._entry.options.get("pv_capacity_events") or []),
+            "pv_capacity_events": list(
+                self._entry.options.get("pv_capacity_events") or []
+            ),
+            "pv_charging": options.pv_charging,
+            "grid_charging": options.grid_charging,
+            "discharge": options.discharge,
+            "planning_horizon_h": options.planning_horizon_h,
         }
 
     def age_s(self) -> float | None:
@@ -158,11 +198,19 @@ def _plan_from_output(
             _float(output.get("baseline_cost_tomorrow_eur")),
             _float(output.get("optimized_cost_tomorrow_eur")),
         )
-    mode = _mode_to_command(str(output.get("mode") or output.get("planned_mode") or "idle"))
+    mode = _mode_to_command(
+        str(output.get("mode") or output.get("planned_mode") or "idle")
+    )
     return StrategyPlan(
         points=points,
         current_mode=mode,
-        current_power_w=int(round(_float(output.get("recommended_power_w", output.get("planned_power_w", 0))))),
+        current_power_w=int(
+            round(
+                _float(
+                    output.get("recommended_power_w", output.get("planned_power_w", 0))
+                )
+            )
+        ),
         reason=str(output.get("reason") or "optimizer_engine"),
         daily_costs=daily_costs,
         price_stats={
@@ -175,10 +223,18 @@ def _plan_from_output(
             "discharge_floor_ct": _maybe_float(output.get("discharge_floor_ct")),
         },
         load_forecast_next_1h_kwh=_float(output.get("load_forecast_next_1h_kwh")),
-        pv_forecast_corrected_next_1h_kwh=_float(output.get("pv_forecast_corrected_next_1h_kwh")),
-        net_load_forecast_next_1h_kwh=_float(output.get("net_load_forecast_next_1h_kwh")),
-        grid_import_forecast_next_1h_kwh=_float(output.get("grid_import_forecast_next_1h_kwh")),
-        grid_export_forecast_next_1h_kwh=_float(output.get("grid_export_forecast_next_1h_kwh")),
+        pv_forecast_corrected_next_1h_kwh=_float(
+            output.get("pv_forecast_corrected_next_1h_kwh")
+        ),
+        net_load_forecast_next_1h_kwh=_float(
+            output.get("net_load_forecast_next_1h_kwh")
+        ),
+        grid_import_forecast_next_1h_kwh=_float(
+            output.get("grid_import_forecast_next_1h_kwh")
+        ),
+        grid_export_forecast_next_1h_kwh=_float(
+            output.get("grid_export_forecast_next_1h_kwh")
+        ),
         virtual_soc_end_tomorrow_pct=_float(output.get("virtual_soc_end_tomorrow_pct")),
         override_active=options.manual_mode != "off",
     )
@@ -193,8 +249,14 @@ def _points_from_output(
         _series(output.get("profile_today_price")),
         _series(output.get("profile_tomorrow_price")),
     )
-    soc = _merge_series(_series(output.get("profile_today_soc")), _series(output.get("profile_tomorrow_soc")))
-    power = _merge_series(_series(output.get("profile_today_power")), _series(output.get("profile_tomorrow_power")))
+    soc = _merge_series(
+        _series(output.get("profile_today_soc")),
+        _series(output.get("profile_tomorrow_soc")),
+    )
+    power = _merge_series(
+        _series(output.get("profile_today_power")),
+        _series(output.get("profile_tomorrow_power")),
+    )
     charge = _series(output.get("profile_48h_charge_fc_power")) or _merge_series(
         _series(output.get("profile_today_charge_power")),
         _series(output.get("profile_tomorrow_charge_power")),
@@ -203,7 +265,9 @@ def _points_from_output(
         _series(output.get("profile_today_discharge_power")),
         _series(output.get("profile_tomorrow_discharge_power")),
     )
-    discharge_budget = _series(output.get("profile_48h_discharge_budget_kwh")) or _merge_series(
+    discharge_budget = _series(
+        output.get("profile_48h_discharge_budget_kwh")
+    ) or _merge_series(
         _series(output.get("profile_today_discharge_budget_kwh")),
         _series(output.get("profile_tomorrow_discharge_budget_kwh")),
     )
@@ -212,7 +276,19 @@ def _points_from_output(
     grid_import = _series(output.get("profile_48h_grid_import_fc_power"))
     grid_export = _series(output.get("profile_48h_grid_export_fc_power"))
     grid_net = _series(output.get("profile_48h_grid_net_fc_power"))
-    ts_values = sorted({*load, *pv, *grid_import, *grid_export, *grid_net, *charge, *discharge, *soc, *power})
+    ts_values = sorted(
+        {
+            *load,
+            *pv,
+            *grid_import,
+            *grid_export,
+            *grid_net,
+            *charge,
+            *discharge,
+            *soc,
+            *power,
+        }
+    )
     points = []
     for ts_ms in ts_values:
         ch = _at(charge, ts_ms)
