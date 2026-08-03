@@ -33,6 +33,9 @@ class StrategyOptions:
     min_margin_ct_per_kwh: float = 2.0
     planning_horizon_h: int = 48
     feed_in_tariff_ct_per_kwh: float = 0.0
+    battery_capacity_kwh: float = 6.0
+    pv_capacity_kwp: float = 0.0
+    pv_inverter_power_kw: float = 0.0
     manual_mode: str = MANUAL_OFF
     manual_power_w: float = 0.0
 

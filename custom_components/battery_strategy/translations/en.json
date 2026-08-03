@@ -3,31 +3,34 @@
   "config": {
     "step": {
       "user": {
-        "title": "Battery Strategy einrichten",
-        "description": "Ordne die Home-Assistant-Entities zu, die Battery Strategy fuer Messwerte und Batteriesteuerung verwenden soll.",
+        "title": "Set up Battery Strategy",
+        "description": "Map the Home Assistant entities used for measurements, prices and battery control.",
         "data": {
-          "grid_mode": "Netzzaehler-Modus",
-          "battery_profile": "Batterie-Profil",
-          "signed_grid_power_entity": "Netzleistung saldiert",
-          "grid_l1_entity": "Netzleistung L1",
-          "grid_l2_entity": "Netzleistung L2",
-          "grid_l3_entity": "Netzleistung L3",
-          "grid_import_entity": "Netzbezug",
-          "grid_export_entity": "Netzeinspeisung",
-          "pv_power_entity": "PV-Leistung",
-          "battery_soc_entity": "Batterie-SoC",
-          "ev_power_entity": "EV-Ladeleistung",
-          "battery_power_entity": "Batterieleistung",
-          "zendure_ac_mode_entity": "Zendure AC-Modus",
-          "zendure_output_pack_power_entity": "Zendure Batterie-Ausgangsleistung",
-          "zendure_pack_input_power_entity": "Zendure Batterie-Eingangsleistung",
-          "zendure_output_home_power_entity": "Zendure Haus-Ausgangsleistung",
-          "zendure_grid_input_power_entity": "Zendure Netz-Eingangsleistung",
-          "zendure_input_limit_entity": "Zendure Eingangslimit",
-          "zendure_output_limit_entity": "Zendure Ausgangslimit",
-          "reference_mode_entity": "Referenz: Modus",
-          "reference_power_entity": "Referenz: Leistung",
-          "reference_output_entity": "Referenz: Optimizer-Ausgabe"
+          "grid_mode": "Grid meter mode",
+          "battery_profile": "Battery profile",
+          "signed_grid_power_entity": "Signed grid power",
+          "grid_l1_entity": "Grid power L1",
+          "grid_l2_entity": "Grid power L2",
+          "grid_l3_entity": "Grid power L3",
+          "grid_import_entity": "Grid import",
+          "grid_export_entity": "Grid export",
+          "pv_power_entity": "PV power",
+          "price_entity": "Quarter-hour price data",
+          "battery_soc_entity": "Battery SoC",
+          "ev_power_entity": "EV charging power",
+          "battery_power_entity": "Battery power",
+          "zendure_ac_mode_entity": "Zendure AC mode",
+          "zendure_output_pack_power_entity": "Zendure battery output power",
+          "zendure_pack_input_power_entity": "Zendure battery input power",
+          "zendure_output_home_power_entity": "Zendure home output power",
+          "zendure_grid_input_power_entity": "Zendure grid input power",
+          "zendure_input_limit_entity": "Zendure input limit",
+          "zendure_output_limit_entity": "Zendure output limit",
+          "reference_mode_entity": "Reference mode",
+          "reference_power_entity": "Reference power",
+          "reference_output_entity": "Reference optimizer output",
+          "battery_input_energy_entity": "Battery charged energy",
+          "battery_output_energy_entity": "Battery discharged energy"
         }
       }
     }
@@ -35,102 +38,108 @@
   "options": {
     "step": {
       "init": {
-        "title": "Battery Strategy konfigurieren",
+        "title": "Configure Battery Strategy",
         "description": "{hint}",
         "data": {
-          "section": "Bereich"
+          "section": "Section"
         },
         "menu_options": {
-          "strategy": "Strategie",
+          "strategy": "Strategy",
           "entities": "Entities",
-          "reference": "Parallelvergleich"
+          "reference": "Reference comparison"
         }
       },
       "strategy": {
-        "title": "Strategie",
-        "description": "Waehle den Strategiebereich.",
+        "title": "Strategy",
+        "description": "Select the strategy section.",
         "data": {
-          "strategy_section": "Bereich"
+          "strategy_section": "Section"
         }
       },
       "strategy_mode": {
-        "title": "Strategie - Modus",
-        "description": "Grundlegende Betriebsarten fuer Simulation und optionale Steuerung.",
+        "title": "Strategy mode",
+        "description": "Select automatic operating modes and enable real battery control.",
         "data": {
-          "strategy_enabled": "Battery Strategy Steuerung",
-          "trace_enabled": "Debug Trace aufzeichnen",
-          "pv_charging": "PV-Ueberschussladen",
-          "grid_charging": "Netzladen",
-          "discharge": "Entladen"
+          "strategy_enabled": "Enable battery control",
+          "trace_enabled": "Record debug trace",
+          "pv_charging": "PV surplus charging",
+          "grid_charging": "Grid charging",
+          "discharge": "Discharge"
         }
       },
       "strategy_ev": {
-        "title": "Strategie - EV Policy",
-        "description": "Regeln fuer Wallbox-/EV-Lasten.",
+        "title": "EV policy",
+        "description": "Rules for wallbox and EV loads.",
         "data": {
-          "pv_to_ev_first": "PV zuerst ins Auto",
-          "discharge_during_ev_charging": "Entladung waehrend EV-Ladung erlauben",
-          "battery_may_feed_ev": "Batterie darf Auto versorgen",
-          "ev_active_threshold_w": "Auto laedt ab"
+          "pv_to_ev_first": "Prioritize PV for EV",
+          "discharge_during_ev_charging": "Allow household discharge while EV is charging",
+          "battery_may_feed_ev": "Battery may supply EV",
+          "ev_active_threshold_w": "EV active above"
         }
       },
       "strategy_battery": {
-        "title": "Strategie - Batterie und Preise",
-        "description": "Grenzen, Leistungslimits und Preisparameter.",
+        "title": "Battery and prices",
+        "description": "Battery limits, efficiency, PV capacity and price parameters.",
         "data": {
-          "min_soc_pct": "Minimaler SoC",
-          "max_soc_pct": "Maximaler SoC",
-          "max_charge_power_w": "Max. Ladeleistung",
-          "max_discharge_power_w": "Max. Entladeleistung",
-          "min_command_power_w": "Min. Befehlsleistung",
-          "min_command_delta_w": "Min. Befehlsaenderung",
-          "round_trip_efficiency": "Roundtrip-Wirkungsgrad",
-          "min_margin_ct_per_kwh": "Mindestmarge",
-          "planning_horizon_h": "Planungshorizont",
-          "feed_in_tariff_ct_per_kwh": "Einspeiseverguetung"
+          "min_soc_pct": "Minimum SoC",
+          "max_soc_pct": "Maximum SoC",
+          "max_charge_power_w": "Maximum charge power",
+          "max_discharge_power_w": "Maximum discharge power",
+          "min_command_power_w": "Minimum command power",
+          "min_command_delta_w": "Minimum command change",
+          "round_trip_efficiency": "Round-trip efficiency",
+          "min_margin_ct_per_kwh": "Minimum margin",
+          "planning_horizon_h": "Planning horizon",
+          "feed_in_tariff_ct_per_kwh": "Feed-in tariff",
+          "battery_capacity_kwh": "Usable battery capacity",
+          "pv_capacity_kwp": "PV generator capacity",
+          "pv_inverter_power_kw": "PV inverter capacity"
         }
       },
       "strategy_manual": {
-        "title": "Strategie - Manueller Override",
-        "description": "Manuelle Befehle gelten hart, begrenzt nur durch Batteriegrenzen.",
+        "title": "Manual override",
+        "description": "Manual commands remain limited by battery safety limits.",
         "data": {
-          "manual_mode": "Manueller Modus",
-          "manual_power_w": "Manuelle Leistung",
-          "manual_duration_min": "Manuelle Dauer"
+          "manual_mode": "Manual mode",
+          "manual_power_w": "Manual power",
+          "manual_duration_min": "Manual duration"
         }
       },
       "entities": {
         "title": "Entities",
-        "description": "Ordne Messwerte und Batterie-Controls zu. Aenderungen laden die Integration neu.",
+        "description": "Map measurement, price and battery-control entities. Changes reload the integration.",
         "data": {
-          "grid_mode": "Netzzaehler-Modus",
-          "battery_profile": "Batterie-Profil",
-          "signed_grid_power_entity": "Netzleistung saldiert",
-          "grid_l1_entity": "Netzleistung L1",
-          "grid_l2_entity": "Netzleistung L2",
-          "grid_l3_entity": "Netzleistung L3",
-          "grid_import_entity": "Netzbezug",
-          "grid_export_entity": "Netzeinspeisung",
-          "pv_power_entity": "PV-Leistung",
-          "battery_soc_entity": "Batterie-SoC",
-          "ev_power_entity": "EV-Ladeleistung",
-          "battery_power_entity": "Batterieleistung",
-          "zendure_ac_mode_entity": "Zendure AC-Modus",
-          "zendure_output_pack_power_entity": "Zendure Batterie-Ausgangsleistung",
-          "zendure_pack_input_power_entity": "Zendure Batterie-Eingangsleistung",
-          "zendure_output_home_power_entity": "Zendure Haus-Ausgangsleistung",
-          "zendure_grid_input_power_entity": "Zendure Netz-Eingangsleistung",
-          "zendure_input_limit_entity": "Zendure Eingangslimit",
-          "zendure_output_limit_entity": "Zendure Ausgangslimit"
+          "grid_mode": "Grid meter mode",
+          "battery_profile": "Battery profile",
+          "signed_grid_power_entity": "Signed grid power",
+          "grid_l1_entity": "Grid power L1",
+          "grid_l2_entity": "Grid power L2",
+          "grid_l3_entity": "Grid power L3",
+          "grid_import_entity": "Grid import",
+          "grid_export_entity": "Grid export",
+          "pv_power_entity": "PV power",
+          "price_entity": "Quarter-hour price data",
+          "battery_soc_entity": "Battery SoC",
+          "ev_power_entity": "EV charging power",
+          "battery_power_entity": "Battery power",
+          "zendure_ac_mode_entity": "Zendure AC mode",
+          "zendure_output_pack_power_entity": "Zendure battery output power",
+          "zendure_pack_input_power_entity": "Zendure battery input power",
+          "zendure_output_home_power_entity": "Zendure home output power",
+          "zendure_grid_input_power_entity": "Zendure grid input power",
+          "zendure_input_limit_entity": "Zendure input limit",
+          "zendure_output_limit_entity": "Zendure output limit",
+          "battery_input_energy_entity": "Battery charged energy",
+          "battery_output_energy_entity": "Battery discharged energy"
         }
       },
       "reference": {
-        "title": "Parallelvergleich",
-        "description": "Optionale Referenz-Entities fuer den Vergleich zwischen frueherer Referenz und Battery Strategy.",
+        "title": "Reference comparison",
+        "description": "Optional diagnostic reference entities.",
         "data": {
-          "reference_mode_entity": "Referenz: Modus",
-          "reference_power_entity": "Referenz: Leistung",
-          "reference_output_entity": "Referenz: Optimizer-Ausgabe"
+          "reference_mode_entity": "Reference mode",
+          "reference_power_entity": "Reference power",
+          "reference_output_entity": "Reference optimizer output"
         }
       }
     }

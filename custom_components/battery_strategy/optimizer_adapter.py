@@ -9,7 +9,17 @@ import json
 import time
 from dataclasses import asdict
 
-from .const import COMMAND_IDLE, COMMAND_INPUT, COMMAND_OUTPUT
+from .const import (
+    COMMAND_IDLE,
+    COMMAND_INPUT,
+    COMMAND_OUTPUT,
+    CONF_BATTERY_INPUT_ENERGY_ENTITY,
+    CONF_BATTERY_OUTPUT_ENERGY_ENTITY,
+    CONF_BATTERY_SOC_ENTITY,
+    CONF_EV_POWER_ENTITY,
+    CONF_PRICE_ENTITY,
+    CONF_PV_POWER_ENTITY,
+)
 from .models import StrategyInputs, StrategyOptions
 from .plan_models import DailyCost, PlanPoint, StrategyPlan
 
@@ -20,12 +30,20 @@ SLOT_MS = 15 * 60 * 1000
 class OptimizerEngineAdapter:
     """Run the high-quality optimizer inside the HACS integration."""
 
-    def __init__(self) -> None:
+    def __init__(self, hass=None, entry=None) -> None:
         """Initialize adapter cache."""
+        self._hass = hass
+        self._entry = entry
         self._last_run_ts = 0.0
         self._last_output: dict | None = None
 
-    def run(self, inputs: StrategyInputs, options: StrategyOptions, force: bool = False) -> tuple[StrategyPlan, dict]:
+    def run(
+        self,
+        inputs: StrategyInputs,
+        options: StrategyOptions,
+        force: bool = False,
+        runtime_context: dict | None = None,
+    ) -> tuple[StrategyPlan, dict]:
         """Return a high-quality plan and raw optimizer attributes."""
         now = time.time()
         if not force and self._last_output is not None and now - self._last_run_ts < CACHE_TTL_S:
@@ -33,6 +51,8 @@ class OptimizerEngineAdapter:
 
         from . import optimizer_engine as engine
 
+        if runtime_context:
+            engine.configure_runtime(runtime_context)
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             engine.main()
@@ -41,6 +61,60 @@ class OptimizerEngineAdapter:
         self._last_output = output
         self._last_run_ts = now
         return _plan_from_output(output, inputs, options), output
+
+    def runtime_context(self, inputs: StrategyInputs, options: StrategyOptions) -> dict:
+        """Snapshot HA-owned runtime data before entering the executor thread."""
+        if self._hass is None or self._entry is None:
+            return {}
+        data = self._entry.data
+        price_entity = data.get(CONF_PRICE_ENTITY)
+        price_state = self._hass.states.get(price_entity) if price_entity else None
+        price_intervals = list((price_state.attributes.get("data") or [])) if price_state else []
+        db_engine = None
+        try:
+            from homeassistant.components.recorder import get_instance
+
+            db_engine = get_instance(self._hass).engine
+        except (ImportError, RuntimeError, AttributeError):
+            pass
+        states = {
+            "grid_import": inputs.grid_import_w,
+            "grid_export": inputs.grid_export_w,
+            "pv_power": inputs.pv_w,
+            "battery_soc": inputs.soc_pct,
+            "battery_min_soc": options.min_soc_pct,
+            "battery_power": inputs.battery_power_w,
+            "ev_power": inputs.ev_power_w,
+            "ev_status": "charging" if inputs.ev_power_w >= options.ev_active_threshold_w else "idle",
+        }
+        if price_state is not None:
+            states["price_current"] = price_state.state
+        return {
+            "config_dir": self._hass.config.config_dir,
+            "db_engine": db_engine,
+            "latitude": self._hass.config.latitude,
+            "longitude": self._hass.config.longitude,
+            "timezone": self._hass.config.time_zone,
+            "states": states,
+            "price_intervals": price_intervals,
+            "entity_map": {
+                "price_current": price_entity,
+                "price_eur": price_entity,
+                "pv_power": data.get(CONF_PV_POWER_ENTITY),
+                "battery_soc": data.get(CONF_BATTERY_SOC_ENTITY),
+                "battery_input_energy": data.get(CONF_BATTERY_INPUT_ENERGY_ENTITY),
+                "battery_output_energy": data.get(CONF_BATTERY_OUTPUT_ENERGY_ENTITY),
+                "ev_power": data.get(CONF_EV_POWER_ENTITY),
+            },
+            "battery_capacity_kwh": options.battery_capacity_kwh,
+            "min_soc_pct": options.min_soc_pct,
+            "max_soc_pct": options.max_soc_pct,
+            "max_power_w": max(options.max_charge_power_w, options.max_discharge_power_w),
+            "round_trip_efficiency": options.round_trip_efficiency,
+            "pv_capacity_kwp": options.pv_capacity_kwp,
+            "pv_inverter_power_kw": options.pv_inverter_power_kw,
+            "pv_capacity_events": list(self._entry.options.get("pv_capacity_events") or []),
+        }
 
     def age_s(self) -> float | None:
         """Return seconds since the last optimizer run."""

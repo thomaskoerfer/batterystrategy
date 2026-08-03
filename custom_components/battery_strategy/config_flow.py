@@ -14,6 +14,9 @@ except ImportError:  # pragma: no cover - allows importing constants in unit tes
 from .const import (
     BATTERY_PROFILE_GENERIC,
     BATTERY_PROFILE_ZENDURE,
+    CONF_BATTERY_CAPACITY_KWH,
+    CONF_BATTERY_INPUT_ENERGY_ENTITY,
+    CONF_BATTERY_OUTPUT_ENERGY_ENTITY,
     CONF_BATTERY_POWER_ENTITY,
     CONF_BATTERY_PROFILE,
     CONF_BATTERY_SOC_ENTITY,
@@ -27,6 +30,9 @@ from .const import (
     CONF_REFERENCE_MODE_ENTITY,
     CONF_REFERENCE_OUTPUT_ENTITY,
     CONF_REFERENCE_POWER_ENTITY,
+    CONF_PRICE_ENTITY,
+    CONF_PV_CAPACITY_KWP,
+    CONF_PV_INVERTER_POWER_KW,
     CONF_PV_POWER_ENTITY,
     CONF_SIGNED_GRID_POWER_ENTITY,
     CONF_ZENDURE_AC_MODE_ENTITY,
@@ -82,23 +88,26 @@ if config_entries is not None:
         )
 
     def _default_entry_data() -> dict[str, str]:
-        """Return the known entity defaults for the current parallel rollout."""
+        """Return safe, portable defaults for a new installation."""
         return {
             CONF_GRID_MODE: GRID_MODE_THREE_PHASE,
             CONF_BATTERY_PROFILE: BATTERY_PROFILE_ZENDURE,
-            CONF_GRID_L1_ENTITY: "sensor.te31njn2n154582_l1_p",
-            CONF_GRID_L2_ENTITY: "sensor.te31njn2n154582_l2_p",
-            CONF_GRID_L3_ENTITY: "sensor.te31njn2n154582_l3_p",
-            CONF_PV_POWER_ENTITY: "sensor.solarmanpv_station_generationpower",
-            CONF_BATTERY_SOC_ENTITY: "sensor.hoa1nan7n331666_electriclevel",
-            CONF_EV_POWER_ENTITY: "sensor.wallbox_leistung",
-            CONF_ZENDURE_AC_MODE_ENTITY: "select.hoa1nan7n331666_acmode",
-            CONF_ZENDURE_OUTPUT_PACK_POWER_ENTITY: "sensor.hoa1nan7n331666_outputpackpower",
-            CONF_ZENDURE_PACK_INPUT_POWER_ENTITY: "sensor.hoa1nan7n331666_packinputpower",
-            CONF_ZENDURE_OUTPUT_HOME_POWER_ENTITY: "sensor.hoa1nan7n331666_outputhomepower",
-            CONF_ZENDURE_GRID_INPUT_POWER_ENTITY: "sensor.hoa1nan7n331666_gridinputpower",
-            CONF_ZENDURE_INPUT_LIMIT_ENTITY: "number.hoa1nan7n331666_inputlimit",
-            CONF_ZENDURE_OUTPUT_LIMIT_ENTITY: "number.hoa1nan7n331666_outputlimit",
+            CONF_GRID_L1_ENTITY: "",
+            CONF_GRID_L2_ENTITY: "",
+            CONF_GRID_L3_ENTITY: "",
+            CONF_PV_POWER_ENTITY: "",
+            CONF_PRICE_ENTITY: "",
+            CONF_BATTERY_SOC_ENTITY: "",
+            CONF_BATTERY_INPUT_ENERGY_ENTITY: "",
+            CONF_BATTERY_OUTPUT_ENERGY_ENTITY: "",
+            CONF_EV_POWER_ENTITY: "",
+            CONF_ZENDURE_AC_MODE_ENTITY: "",
+            CONF_ZENDURE_OUTPUT_PACK_POWER_ENTITY: "",
+            CONF_ZENDURE_PACK_INPUT_POWER_ENTITY: "",
+            CONF_ZENDURE_OUTPUT_HOME_POWER_ENTITY: "",
+            CONF_ZENDURE_GRID_INPUT_POWER_ENTITY: "",
+            CONF_ZENDURE_INPUT_LIMIT_ENTITY: "",
+            CONF_ZENDURE_OUTPUT_LIMIT_ENTITY: "",
             CONF_REFERENCE_MODE_ENTITY: "",
             CONF_REFERENCE_OUTPUT_ENTITY: "",
             CONF_REFERENCE_POWER_ENTITY: "",
@@ -236,7 +245,7 @@ if config_entries is not None:
             options = self._config_entry.options
             schema = vol.Schema(
                 {
-                    vol.Required("strategy_enabled", default=options.get("strategy_enabled", True)): bool,
+                    vol.Required("strategy_enabled", default=options.get("strategy_enabled", False)): bool,
                     vol.Required("trace_enabled", default=options.get("trace_enabled", False)): bool,
                     vol.Required("pv_charging", default=options.get("pv_charging", PV_CHARGING_ON)): _select_selector(
                         [PV_CHARGING_OFF, PV_CHARGING_ON]
@@ -315,6 +324,18 @@ if config_entries is not None:
                         "feed_in_tariff_ct_per_kwh",
                         default=options.get("feed_in_tariff_ct_per_kwh", 0.0),
                     ): _number_selector(0, 50, 0.1, "ct/kWh"),
+                    vol.Required(
+                        CONF_BATTERY_CAPACITY_KWH,
+                        default=options.get(CONF_BATTERY_CAPACITY_KWH, 6.0),
+                    ): _number_selector(0.5, 100, 0.1, "kWh"),
+                    vol.Required(
+                        CONF_PV_CAPACITY_KWP,
+                        default=options.get(CONF_PV_CAPACITY_KWP, 0.0),
+                    ): _number_selector(0, 100, 0.1, "kWp"),
+                    vol.Required(
+                        CONF_PV_INVERTER_POWER_KW,
+                        default=options.get(CONF_PV_INVERTER_POWER_KW, 0.0),
+                    ): _number_selector(0, 100, 0.1, "kW"),
                 }
             )
             return self.async_show_form(step_id="strategy_battery", data_schema=schema)
@@ -359,7 +380,16 @@ if config_entries is not None:
             vol.Optional(CONF_GRID_IMPORT_ENTITY, default=data.get(CONF_GRID_IMPORT_ENTITY, "")): _entity_selector(["sensor"]),
             vol.Optional(CONF_GRID_EXPORT_ENTITY, default=data.get(CONF_GRID_EXPORT_ENTITY, "")): _entity_selector(["sensor"]),
             vol.Required(CONF_PV_POWER_ENTITY, default=data.get(CONF_PV_POWER_ENTITY, "")): _entity_selector(["sensor"]),
+            vol.Required(CONF_PRICE_ENTITY, default=data.get(CONF_PRICE_ENTITY, "")): _entity_selector(["sensor"]),
             vol.Required(CONF_BATTERY_SOC_ENTITY, default=data.get(CONF_BATTERY_SOC_ENTITY, "")): _entity_selector(["sensor"]),
+            vol.Optional(
+                CONF_BATTERY_INPUT_ENERGY_ENTITY,
+                default=data.get(CONF_BATTERY_INPUT_ENERGY_ENTITY, ""),
+            ): _entity_selector(["sensor"]),
+            vol.Optional(
+                CONF_BATTERY_OUTPUT_ENERGY_ENTITY,
+                default=data.get(CONF_BATTERY_OUTPUT_ENERGY_ENTITY, ""),
+            ): _entity_selector(["sensor"]),
             vol.Optional(CONF_EV_POWER_ENTITY, default=data.get(CONF_EV_POWER_ENTITY, "")): _entity_selector(["sensor"]),
             vol.Optional(CONF_BATTERY_POWER_ENTITY, default=data.get(CONF_BATTERY_POWER_ENTITY, "")): _entity_selector(["sensor"]),
             vol.Optional(CONF_ZENDURE_AC_MODE_ENTITY, default=data.get(CONF_ZENDURE_AC_MODE_ENTITY, "")): _entity_selector(["select"]),

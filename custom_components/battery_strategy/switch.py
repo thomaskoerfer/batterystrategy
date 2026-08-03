@@ -9,7 +9,7 @@ from .entity import BatteryStrategyEntity
 
 
 SWITCHES = (
-    ("strategy_enabled", "Battery Strategy Steuerung", True),
+    ("strategy_enabled", "Battery Strategy Steuerung", False),
     ("trace_enabled", "Debug Trace aufzeichnen", False),
     ("pv_to_ev_first", "PV zuerst ins Auto", True),
     ("discharge_during_ev_charging", "Entladung waehrend EV-Ladung erlauben", True),

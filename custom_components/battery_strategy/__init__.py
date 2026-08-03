@@ -19,7 +19,7 @@ try:
     from .coordinator import BatteryStrategyCoordinator, OPTIMIZER_STATE_FILE, _load_last_known_soc_pct
 except ImportError:  # pragma: no cover - unit tests run without Home Assistant.
     BatteryStrategyCoordinator = None
-    OPTIMIZER_STATE_FILE = "battery_strategy_hacs_optimizer_state.json"
+    OPTIMIZER_STATE_FILE = "battery_strategy_optimizer_state.json"
     _load_last_known_soc_pct = None
 
 PLATFORMS = [] if Platform is None else [Platform.SENSOR, Platform.SELECT, Platform.SWITCH, Platform.NUMBER]
@@ -45,6 +45,7 @@ async def async_setup_entry(hass, entry) -> bool:
     if BatteryStrategyCoordinator is None:
         return False
     _async_remove_deprecated_entities(hass, entry)
+    await hass.async_add_executor_job(_migrate_optimizer_state, hass.config.config_dir)
     last_known_soc_pct = await hass.async_add_executor_job(
         _load_last_known_soc_pct,
         Path(hass.config.path(OPTIMIZER_STATE_FILE)),
@@ -60,6 +61,14 @@ async def async_setup_entry(hass, entry) -> bool:
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     _async_register_services(hass)
     return True
+
+
+def _migrate_optimizer_state(config_dir: str) -> None:
+    """Preserve learned state from versions that used the rollout filename."""
+    current = Path(config_dir) / OPTIMIZER_STATE_FILE
+    legacy = Path(config_dir) / "battery_strategy_hacs_optimizer_state.json"
+    if not current.exists() and legacy.exists():
+        current.write_bytes(legacy.read_bytes())
 
 
 async def async_unload_entry(hass, entry) -> bool:

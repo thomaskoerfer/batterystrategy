@@ -13,6 +13,8 @@ from custom_components.battery_strategy.const import (
     DISCHARGE_LOAD,
     DISCHARGE_OFF,
     DISCHARGE_PRICE_SENSITIVE,
+    CONF_ZENDURE_INPUT_LIMIT_ENTITY,
+    CONF_ZENDURE_OUTPUT_LIMIT_ENTITY,
     GRID_CHARGING_OFF,
     GRID_CHARGING_PRICE_SENSITIVE,
     MANUAL_CHARGE,
@@ -40,7 +42,7 @@ from custom_components.battery_strategy.strategy import (
 
 class HacsStrategyTests(unittest.TestCase):
     def test_profile_attrs_prefer_raw_unfiltered_optimizer_profiles(self):
-        today = dt.datetime.now(battery_sensor.LOCAL_TZ).date().isoformat()
+        today = dt.datetime.now().date().isoformat()
         raw_price = [[1_800_000_000_000, 31.2], [1_800_000_900_000, 32.4]]
         data = {
             "optimizer_attrs": {
@@ -81,7 +83,7 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertEqual(attrs["house_actual_power"], [[1_800_000_000_000, 230.0]])
 
     def test_optimizer_discharge_budget_sensor_is_separate_from_live_remaining_budget(self):
-        today = dt.datetime.now(battery_sensor.LOCAL_TZ).date().isoformat()
+        today = dt.datetime.now().date().isoformat()
         data = {
             "plan": StrategyPlan(
                 points=[
@@ -167,8 +169,8 @@ class HacsStrategyTests(unittest.TestCase):
             class FakeStates:
                 def __init__(self):
                     self.values = {
-                        "number.hoa1nan7n331666_inputlimit": FakeState("400"),
-                        "number.hoa1nan7n331666_outputlimit": FakeState("300"),
+                        "number.battery_input_limit": FakeState("400"),
+                        "number.battery_output_limit": FakeState("300"),
                     }
 
                 def get(self, entity_id):
@@ -180,7 +182,13 @@ class HacsStrategyTests(unittest.TestCase):
 
             coordinator = object.__new__(BatteryStrategyCoordinator)
             coordinator.hass = SimpleNamespace(states=FakeStates(), services=FakeServices())
-            coordinator.entry = SimpleNamespace(data={}, options={"strategy_enabled": False})
+            coordinator.entry = SimpleNamespace(
+                data={
+                    CONF_ZENDURE_INPUT_LIMIT_ENTITY: "number.battery_input_limit",
+                    CONF_ZENDURE_OUTPUT_LIMIT_ENTITY: "number.battery_output_limit",
+                },
+                options={"strategy_enabled": False},
+            )
             coordinator.last_actuation = {"status": "not_started"}
             coordinator._strategy_was_enabled = True
             coordinator._disabled_zeroed = False
@@ -190,8 +198,8 @@ class HacsStrategyTests(unittest.TestCase):
             coordinator._disabled_zeroed = True
 
             self.assertEqual(len(calls), 2)
-            self.assertEqual(calls[0][2], {"entity_id": "number.hoa1nan7n331666_inputlimit", "value": 0})
-            self.assertEqual(calls[1][2], {"entity_id": "number.hoa1nan7n331666_outputlimit", "value": 0})
+            self.assertEqual(calls[0][2], {"entity_id": "number.battery_input_limit", "value": 0})
+            self.assertEqual(calls[1][2], {"entity_id": "number.battery_output_limit", "value": 0})
             self.assertEqual(coordinator.last_actuation["status"], "disabled_zeroed")
 
             calls.clear()

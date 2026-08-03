@@ -3,11 +3,12 @@
   "name": "Battery Strategy",
   "codeowners": ["@thomaskoerfer"],
   "config_flow": true,
-  "documentation": "https://github.com/thomaskoerfer/homeserver",
-  "integration_type": "hub",
+  "single_config_entry": true,
+  "documentation": "https://github.com/thomaskoerfer/batterystrategy",
+  "integration_type": "service",
   "iot_class": "local_polling",
-  "issue_tracker": "https://github.com/thomaskoerfer/homeserver/issues",
+  "issue_tracker": "https://github.com/thomaskoerfer/batterystrategy/issues",
   "requirements": [],
-  "version": "0.1.0",
-  "after_dependencies": ["tibber_prices"]
+  "version": "0.2.0-beta.1",
+  "after_dependencies": ["recorder", "tibber_prices"]
 }

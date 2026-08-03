@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 import datetime as dt
 from typing import Callable
-from zoneinfo import ZoneInfo
 
 from homeassistant.components.sensor import SensorEntity, SensorEntityDescription
 try:
@@ -13,6 +12,7 @@ try:
 except ImportError:  # pragma: no cover - compatibility with older HA versions.
     SensorStateClass = None
 from homeassistant.const import UnitOfPower
+from homeassistant.util import dt as dt_util
 try:
     from homeassistant.const import PERCENTAGE
 except ImportError:  # pragma: no cover - compatibility with older HA versions.
@@ -21,7 +21,6 @@ except ImportError:  # pragma: no cover - compatibility with older HA versions.
 from .const import DOMAIN
 from .entity import BatteryStrategyEntity
 
-LOCAL_TZ = ZoneInfo("Europe/Berlin")
 STATE_CLASS_MEASUREMENT = SensorStateClass.MEASUREMENT if SensorStateClass is not None else "measurement"
 
 
@@ -38,7 +37,7 @@ def _command(data):
 
 
 def _command_source(data):
-    if not data.get("strategy_enabled", True):
+    if not data.get("strategy_enabled", False):
         return "external_control_strategy_disabled"
     if not data.get("send_commands", True):
         return "strategy_not_sending"
@@ -99,11 +98,11 @@ def _actual_avg_discharge_price_ct(data) -> float:
     return round((_raw_float(data, "actual_battery_discharge_credit_today_eur") / kwh) * 100.0, 1)
 
 def _today(data):
-    return dt.datetime.now(LOCAL_TZ).date().isoformat()
+    return dt_util.now().date().isoformat()
 
 
 def _tomorrow(data):
-    return (dt.datetime.now(LOCAL_TZ).date() + dt.timedelta(days=1)).isoformat()
+    return (dt_util.now().date() + dt.timedelta(days=1)).isoformat()
 
 
 SENSORS: tuple[BatteryStrategySensorDescription, ...] = (
@@ -518,29 +517,30 @@ def _raw_profile_attrs(raw: dict, date):
         return None
     if date is None:
         prefix = "profile_48h"
-    elif date == dt.datetime.now(LOCAL_TZ).date().isoformat():
+    elif date == dt_util.now().date().isoformat():
         prefix = "profile_today"
-    elif date == (dt.datetime.now(LOCAL_TZ).date() + dt.timedelta(days=1)).isoformat():
+    elif date == (dt_util.now().date() + dt.timedelta(days=1)).isoformat():
         prefix = "profile_tomorrow"
     else:
         return None
 
-    key_map = {
-        "price": "price",
-        "soc": "soc",
-        "power": "power",
-        "charge_power": "charge_power",
-        "discharge_power": "discharge_power",
-        "discharge_budget_kwh": "discharge_budget_kwh",
-        "pv_fc_power": "pv_fc_power",
-        "house_fc_power": "house_fc_power",
-        "grid_import_fc_power": "grid_import_fc_power",
-        "grid_export_fc_power": "grid_export_fc_power",
-        "grid_net_fc_power": "grid_net_fc_power",
-        "pv_actual_power": "pv_actual_power",
-        "house_actual_power": "house_actual_power",
-        "grid_net_actual_power": "grid_net_actual_power",
-    }
+    if date is None:
+        key_map = {
+            "pv_fc_power": "pv_fc_power",
+            "house_fc_power": "house_fc_power",
+            "pv_actual_power": "pv_actual_power",
+            "house_actual_power": "house_actual_power",
+            "grid_net_actual_power": "grid_net_actual_power",
+        }
+    elif date == dt_util.now().date().isoformat():
+        key_map = {
+            "price": "price",
+            "soc": "soc",
+            "pv_actual_power": "pv_actual_power",
+            "house_actual_power": "house_actual_power",
+        }
+    else:
+        key_map = {"price": "price", "soc": "soc"}
     attrs = {name: _profile(raw.get(f"{prefix}_{raw_key}")) for name, raw_key in key_map.items()}
     if any(attrs.values()):
         return attrs
@@ -562,7 +562,8 @@ def _profile(raw):
 def _format_ts_ms(ts_ms: int) -> str:
     if not ts_ms:
         return ""
-    return dt.datetime.fromtimestamp(ts_ms / 1000.0, LOCAL_TZ).strftime("%Y-%m-%d %H:%M")
+    value = dt.datetime.fromtimestamp(ts_ms / 1000.0, dt.timezone.utc)
+    return dt_util.as_local(value).strftime("%Y-%m-%d %H:%M")
 
 
 async def async_setup_entry(hass, entry, async_add_entities) -> None:

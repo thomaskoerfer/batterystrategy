@@ -27,7 +27,10 @@
           "zendure_output_limit_entity": "Zendure Ausgangslimit",
           "reference_mode_entity": "Referenz: Modus",
           "reference_power_entity": "Referenz: Leistung",
-          "reference_output_entity": "Referenz: Optimizer-Ausgabe"
+          "reference_output_entity": "Referenz: Optimizer-Ausgabe",
+          "price_entity": "Viertelstunden-Preisdaten",
+          "battery_input_energy_entity": "Batterie-Ladeenergie",
+          "battery_output_energy_entity": "Batterie-Entladeenergie"
         }
       }
     }
@@ -87,7 +90,10 @@
           "round_trip_efficiency": "Roundtrip-Wirkungsgrad",
           "min_margin_ct_per_kwh": "Mindestmarge",
           "planning_horizon_h": "Planungshorizont",
-          "feed_in_tariff_ct_per_kwh": "Einspeiseverguetung"
+          "feed_in_tariff_ct_per_kwh": "Einspeiseverguetung",
+          "battery_capacity_kwh": "Nutzbare Batteriekapazitaet",
+          "pv_capacity_kwp": "PV-Generatorleistung",
+          "pv_inverter_power_kw": "PV-Wechselrichterleistung"
         }
       },
       "strategy_manual": {
@@ -121,7 +127,10 @@
           "zendure_output_home_power_entity": "Zendure Haus-Ausgangsleistung",
           "zendure_grid_input_power_entity": "Zendure Netz-Eingangsleistung",
           "zendure_input_limit_entity": "Zendure Eingangslimit",
-          "zendure_output_limit_entity": "Zendure Ausgangslimit"
+          "zendure_output_limit_entity": "Zendure Ausgangslimit",
+          "price_entity": "Viertelstunden-Preisdaten",
+          "battery_input_energy_entity": "Batterie-Ladeenergie",
+          "battery_output_energy_entity": "Batterie-Entladeenergie"
         }
       },
       "reference": {

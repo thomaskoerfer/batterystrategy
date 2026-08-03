@@ -2,7 +2,6 @@
 import base64
 import bisect
 import datetime as dt
-import glob
 import json
 import math
 import os
@@ -17,11 +16,31 @@ from sqlalchemy import create_engine, text
 
 DB = "/config/home-assistant_v2.db"
 DEFAULT_DB_URL = "sqlite:////config/home-assistant_v2.db"
-STATE_FILE = "/config/battery_strategy_hacs_optimizer_state.json"
-TIBBER_POOL_FILE = "/config/.storage/tibber_prices.interval_pool.01KE9K39QKKGE5VHHJBHNEW8RD"
-TIBBER_POOL_GLOB = "/config/.storage/tibber_prices.interval_pool.*"
+STATE_FILE = "/config/battery_strategy_optimizer_state.json"
 SCRIPT_VERSION = "1.8.7-hacs-internal"
 _DB_ENGINE = None
+_RUNTIME_STATES = {}
+_RUNTIME_PRICE_INTERVALS = []
+_ENTITY_MAP = {}
+
+E_PRICE_CURRENT = "price_current"
+E_PRICE_EUR = "price_eur"
+E_GRID_IMPORT = "grid_import"
+E_GRID_EXPORT = "grid_export"
+E_PV_POWER = "pv_power"
+E_BATTERY_SOC = "battery_soc"
+E_BATTERY_MIN_SOC = "battery_min_soc"
+E_BATTERY_POWER = "battery_power"
+E_BATTERY_INPUT_ENERGY = "battery_input_energy"
+E_BATTERY_OUTPUT_ENERGY = "battery_output_energy"
+E_PV_NEXT_HOUR_ENERGY = "pv_next_hour_energy"
+E_PV_NEXT_HOUR_POWER = "pv_next_hour_power"
+E_PV_TOMORROW_ENERGY = "pv_tomorrow_energy"
+E_WEATHER_CLOUD = "weather_cloud"
+E_WEATHER_RADIATION = "weather_radiation"
+E_HEAT_PUMP_POWER = "heat_pump_power"
+E_EV_POWER = "ev_power"
+E_EV_STATUS = "ev_status"
 
 ETA_RT = 0.80
 ETA_C = ETA_RT ** 0.5
@@ -72,8 +91,7 @@ EEX_PROXY_MAX_PEAK_RETAIL_MARKUP_CT = 32.0
 EEX_PROXY_MIN_PRICE_CT = 12.0
 EEX_PROXY_MAX_PRICE_CT = 70.0
 PV_CAPACITY_EVENTS = [
-    ("2000-01-01T00:00:00+01:00", 1.4, 1.2),
-    ("2026-05-09T12:00:00+02:00", 2.3, 2.0),
+    ("2000-01-01T00:00:00+00:00", 1.0, 1.0),
 ]
 
 # PV surplus anti-cycling thresholds
@@ -84,51 +102,65 @@ PV_SURPLUS_WINDOW_SAMPLES = 1
 
 OPEN_METEO_URL = (
     "https://api.open-meteo.com/v1/forecast"
-    "?latitude=50.93396673835345&longitude=6.079473495483399"
+    "?latitude=0&longitude=0"
     "&current=cloud_cover,shortwave_radiation"
     "&hourly=cloud_cover,shortwave_radiation"
     "&forecast_days=3&timezone=Europe%2FBerlin"
 )
 
 
-def _read_secret(secret_name, secrets_path="/config/secrets.yaml"):
-    try:
-        with open(secrets_path, "r", encoding="utf-8") as fh:
-            for line in fh:
-                stripped = line.strip()
-                if not stripped or stripped.startswith("#") or ":" not in stripped:
-                    continue
-                key, value = stripped.split(":", 1)
-                if key.strip() == secret_name:
-                    return value.strip().strip("\"'")
-    except OSError:
-        return None
-    return None
+def configure_runtime(context):
+    """Apply one config-entry runtime context before an optimizer run."""
+    global DB, DEFAULT_DB_URL, STATE_FILE, _DB_ENGINE
+    global _RUNTIME_STATES, _RUNTIME_PRICE_INTERVALS, _ENTITY_MAP
+    global CAP_KWH, SOC_MIN, SOC_MAX, MIN_E_KWH, MAX_E_KWH, MAX_P_W, MAX_E_SLOT_KWH
+    global ETA_RT, ETA_C, ETA_D, OPEN_METEO_TZ, OPEN_METEO_URL, PV_CAPACITY_EVENTS
+
+    config_dir = str(context.get("config_dir") or "/config")
+    DB = os.path.join(config_dir, "home-assistant_v2.db")
+    DEFAULT_DB_URL = f"sqlite:///{DB}"
+    STATE_FILE = os.path.join(config_dir, "battery_strategy_optimizer_state.json")
+    _DB_ENGINE = context.get("db_engine")
+    _RUNTIME_STATES = dict(context.get("states") or {})
+    _RUNTIME_PRICE_INTERVALS = list(context.get("price_intervals") or [])
+    _ENTITY_MAP = {key: value for key, value in (context.get("entity_map") or {}).items() if value}
+
+    CAP_KWH = max(0.5, float(context.get("battery_capacity_kwh") or 6.0))
+    SOC_MIN = max(0.0, min(100.0, float(context.get("min_soc_pct") or 0.0)))
+    SOC_MAX = max(SOC_MIN, min(100.0, float(context.get("max_soc_pct") or 100.0)))
+    MIN_E_KWH = CAP_KWH * SOC_MIN / 100.0
+    MAX_E_KWH = CAP_KWH * SOC_MAX / 100.0
+    MAX_P_W = max(0.0, float(context.get("max_power_w") or 2400.0))
+    MAX_E_SLOT_KWH = (MAX_P_W / 1000.0) * SLOT_H
+    ETA_RT = max(0.01, min(1.0, float(context.get("round_trip_efficiency") or 0.8)))
+    ETA_C = ETA_RT ** 0.5
+    ETA_D = ETA_RT ** 0.5
+
+    timezone = str(context.get("timezone") or "UTC")
+    OPEN_METEO_TZ = ZoneInfo(timezone)
+    latitude = float(context.get("latitude") or 0.0)
+    longitude = float(context.get("longitude") or 0.0)
+    OPEN_METEO_URL = (
+        "https://api.open-meteo.com/v1/forecast"
+        f"?latitude={latitude}&longitude={longitude}"
+        "&current=cloud_cover,shortwave_radiation"
+        "&hourly=cloud_cover,shortwave_radiation"
+        f"&forecast_days=3&timezone={urllib.parse.quote(timezone)}"
+    )
+    capacity_events = context.get("pv_capacity_events") or []
+    if capacity_events:
+        PV_CAPACITY_EVENTS = [tuple(item) for item in capacity_events]
+    else:
+        pv_kwp = max(0.1, float(context.get("pv_capacity_kwp") or 1.0))
+        inverter_kw = max(0.1, float(context.get("pv_inverter_power_kw") or pv_kwp))
+        PV_CAPACITY_EVENTS = [("2000-01-01T00:00:00+00:00", pv_kwp, inverter_kw)]
+
+
+def _entity_id(key):
+    return _ENTITY_MAP.get(key, key)
 
 
 def _load_db_url():
-    env_url = os.environ.get("BATTERY_STRATEGY_DB_URL")
-    if env_url:
-        return env_url
-
-    for candidate in ("/config/packages/codex_energy_strategy.yaml",):
-        try:
-            with open(candidate, "r", encoding="utf-8") as fh:
-                for line in fh:
-                    stripped = line.strip()
-                    if not stripped.startswith("db_url:"):
-                        continue
-                    value = stripped.split(":", 1)[1].strip().strip("\"'")
-                    if value.startswith("!secret"):
-                        parts = value.split()
-                        if len(parts) >= 2:
-                            secret_value = _read_secret(parts[1])
-                            if secret_value:
-                                return secret_value
-                    elif value:
-                        return value
-        except OSError:
-            continue
     return DEFAULT_DB_URL
 
 
@@ -140,6 +172,7 @@ def _get_db_engine():
 
 
 def _query_latest_state_sql(entity_id):
+    entity_id = _entity_id(entity_id)
     q = text(
         """
         SELECT s.state
@@ -168,7 +201,9 @@ def _build_in_params(values, prefix):
 def _query_latest_states_sql(entity_ids):
     if not entity_ids:
         return {}
-    in_sql, params = _build_in_params(entity_ids, "eid")
+    requested = list(entity_ids)
+    actual = [_entity_id(entity_id) for entity_id in requested]
+    in_sql, params = _build_in_params(actual, "eid")
     q = text(
         f"""
         SELECT sm.entity_id, s.state
@@ -185,10 +220,12 @@ def _query_latest_states_sql(entity_ids):
     )
     with _get_db_engine().connect() as conn:
         rows = conn.execute(q, params).fetchall()
-    return {row[0]: row[1] for row in rows}
+    by_actual = {row[0]: row[1] for row in rows}
+    return {key: by_actual.get(value) for key, value in zip(requested, actual) if value in by_actual}
 
 
 def _query_series_sql(entity_id, cutoff_ts):
+    entity_id = _entity_id(entity_id)
     q = text(
         """
         SELECT s.last_updated_ts, s.state
@@ -206,7 +243,9 @@ def _query_series_sql(entity_id, cutoff_ts):
 def _query_series_many_sql(entity_ids, cutoff_ts):
     if not entity_ids:
         return {}
-    in_sql, params = _build_in_params(entity_ids, "eid")
+    requested = list(entity_ids)
+    actual = [_entity_id(entity_id) for entity_id in requested]
+    in_sql, params = _build_in_params(actual, "eid")
     params["cutoff_ts"] = float(cutoff_ts)
     q = text(
         f"""
@@ -219,10 +258,10 @@ def _query_series_many_sql(entity_ids, cutoff_ts):
     )
     with _get_db_engine().connect() as conn:
         rows = conn.execute(q, params).fetchall()
-    grouped = {eid: [] for eid in entity_ids}
+    grouped_actual = {eid: [] for eid in actual}
     for entity_id, ts, state in rows:
-        grouped.setdefault(entity_id, []).append((ts, state))
-    return grouped
+        grouped_actual.setdefault(entity_id, []).append((ts, state))
+    return {key: grouped_actual.get(value, []) for key, value in zip(requested, actual)}
 
 
 def get_latest_states(entity_ids):
@@ -231,6 +270,7 @@ def get_latest_states(entity_ids):
         out.update(_query_latest_states_sql(entity_ids))
     except Exception:
         pass
+    out.update({key: _RUNTIME_STATES[key] for key in entity_ids if key in _RUNTIME_STATES})
     for eid in entity_ids:
         if eid in out:
             continue
@@ -240,6 +280,7 @@ def get_latest_states(entity_ids):
         except Exception:
             pass
 
+        actual_eid = _entity_id(eid)
         conn = sqlite3.connect(DB)
         cur = conn.cursor()
         q = """
@@ -250,7 +291,7 @@ def get_latest_states(entity_ids):
         ORDER BY s.state_id DESC
         LIMIT 1
         """
-        row = cur.execute(q, (eid,)).fetchone()
+        row = cur.execute(q, (actual_eid,)).fetchone()
         out[eid] = row[0] if row else None
         conn.close()
     return out
@@ -291,7 +332,7 @@ def fetch_sensor_series(entity_id, cutoff_ts):
         WHERE sm.entity_id=? AND s.last_updated_ts>=?
         ORDER BY s.last_updated_ts
         """
-        rows = cur.execute(q, (entity_id, cutoff_ts)).fetchall()
+        rows = cur.execute(q, (_entity_id(entity_id), cutoff_ts)).fetchall()
         conn.close()
     out = []
     for ts, st in rows:
@@ -308,18 +349,18 @@ def fetch_net_actual_profile(hours=48):
     series_map = fetch_sensor_series_many(
         [
             "sensor.battery_strategy_grid_import_live_power_now",
-            "sensor.power_heerlener_strasse_300",
+            E_GRID_IMPORT,
             "sensor.battery_strategy_grid_export_live_power_now",
-            "sensor.power_production_heerlener_strasse_300",
+            E_GRID_EXPORT,
         ],
         cutoff_ts,
     )
     imp = series_map["sensor.battery_strategy_grid_import_live_power_now"]
     if len(imp) < 8:
-        imp = series_map["sensor.power_heerlener_strasse_300"]
+        imp = series_map[E_GRID_IMPORT]
     exp = series_map["sensor.battery_strategy_grid_export_live_power_now"]
     if len(exp) < 8:
-        exp = series_map["sensor.power_production_heerlener_strasse_300"]
+        exp = series_map[E_GRID_EXPORT]
     buckets = {}
     for ts, v in imp:
         h = int(ts // 3600) * 3600
@@ -338,7 +379,7 @@ def fetch_net_actual_profile(hours=48):
 
 def fetch_pv_actual_profile(hours=48):
     cutoff_ts = dt.datetime.now(dt.timezone.utc).timestamp() - hours * 3600
-    pv = fetch_sensor_series_many(["sensor.solarmanpv_station_generationpower"], cutoff_ts)["sensor.solarmanpv_station_generationpower"]
+    pv = fetch_sensor_series_many([E_PV_POWER], cutoff_ts)[E_PV_POWER]
     buckets = {}
     for ts, v in pv:
         h = int(ts // 3600) * 3600
@@ -385,24 +426,24 @@ def fetch_house_actual_profile(hours=48, samples=None):
     series_map = fetch_sensor_series_many(
         [
             "sensor.battery_strategy_grid_import_live_power_now",
-            "sensor.power_heerlener_strasse_300",
+            E_GRID_IMPORT,
             "sensor.battery_strategy_grid_export_live_power_now",
-            "sensor.power_production_heerlener_strasse_300",
-            "sensor.solarmanpv_station_generationpower",
-            "sensor.wallbox_leistung",
-            "sensor.battery_strategy_battery_in_out_live_power",
+            E_GRID_EXPORT,
+            E_PV_POWER,
+            E_EV_POWER,
+            E_BATTERY_POWER,
         ],
         cutoff_ts,
     )
     imp = series_map["sensor.battery_strategy_grid_import_live_power_now"]
     if len(imp) < 8:
-        imp = series_map["sensor.power_heerlener_strasse_300"]
+        imp = series_map[E_GRID_IMPORT]
     exp = series_map["sensor.battery_strategy_grid_export_live_power_now"]
     if len(exp) < 8:
-        exp = series_map["sensor.power_production_heerlener_strasse_300"]
-    pv = series_map["sensor.solarmanpv_station_generationpower"]
-    wallbox = series_map["sensor.wallbox_leistung"]
-    bat = series_map["sensor.battery_strategy_battery_in_out_live_power"]
+        exp = series_map[E_GRID_EXPORT]
+    pv = series_map[E_PV_POWER]
+    wallbox = series_map[E_EV_POWER]
+    bat = series_map[E_BATTERY_POWER]
     buckets = {}
     for ts, v in imp:
         b = int(ts // 900) * 900
@@ -835,28 +876,28 @@ def bootstrap_samples_from_db(now_ts, days=21):
     series_map = fetch_sensor_series_many(
         [
             "sensor.battery_strategy_grid_import_live_power_now",
-            "sensor.power_heerlener_strasse_300",
+            E_GRID_IMPORT,
             "sensor.battery_strategy_grid_export_live_power_now",
-            "sensor.power_production_heerlener_strasse_300",
-            "sensor.solarmanpv_station_generationpower",
-            "sensor.wallbox_leistung",
-            "sensor.battery_strategy_battery_in_out_live_power",
-            "sensor.boiler_compressor_current_power",
-            "sensor.heerlener_strasse_300_aktueller_strompreis",
+            E_GRID_EXPORT,
+            E_PV_POWER,
+            E_EV_POWER,
+            E_BATTERY_POWER,
+            E_HEAT_PUMP_POWER,
+            E_PRICE_CURRENT,
         ],
         cutoff,
     )
     grid_import = series_map["sensor.battery_strategy_grid_import_live_power_now"]
     if len(grid_import) < 8:
-        grid_import = series_map["sensor.power_heerlener_strasse_300"]
+        grid_import = series_map[E_GRID_IMPORT]
     grid_export = series_map["sensor.battery_strategy_grid_export_live_power_now"]
     if len(grid_export) < 8:
-        grid_export = series_map["sensor.power_production_heerlener_strasse_300"]
-    pv = series_map["sensor.solarmanpv_station_generationpower"]
-    wallbox = series_map["sensor.wallbox_leistung"]
-    bat = series_map["sensor.battery_strategy_battery_in_out_live_power"]
-    hp = series_map["sensor.boiler_compressor_current_power"]
-    price = series_map["sensor.heerlener_strasse_300_aktueller_strompreis"]
+        grid_export = series_map[E_GRID_EXPORT]
+    pv = series_map[E_PV_POWER]
+    wallbox = series_map[E_EV_POWER]
+    bat = series_map[E_BATTERY_POWER]
+    hp = series_map[E_HEAT_PUMP_POWER]
+    price = series_map[E_PRICE_CURRENT]
 
     buckets = {}
     for ts, val in grid_import:
@@ -1053,15 +1094,6 @@ def open_meteo_weather():
         return None
 
 
-def resolve_tibber_pool_file():
-    if os.path.exists(TIBBER_POOL_FILE):
-        return TIBBER_POOL_FILE
-    candidates = [p for p in glob.glob(TIBBER_POOL_GLOB) if os.path.isfile(p)]
-    if not candidates:
-        return TIBBER_POOL_FILE
-    return max(candidates, key=lambda p: os.path.getmtime(p))
-
-
 def read_tibber_future_price_stats(now_local):
     date_set = {
         now_local.date().isoformat(),
@@ -1222,24 +1254,24 @@ def apply_live_override_to_future_points(future_points, effective_mode, rec_w, n
 
 def collect_inputs():
     needed = [
-        "sensor.heerlener_strasse_300_aktueller_strompreis",
-        "sensor.electricity_price_heerlener_strasse_300",
-        "sensor.power_heerlener_strasse_300",
+        E_PRICE_CURRENT,
+        E_PRICE_EUR,
+        E_GRID_IMPORT,
         "sensor.battery_strategy_grid_import_live_power_now",
         "sensor.battery_strategy_grid_export_live_power_now",
-        "sensor.power_production_heerlener_strasse_300",
-        "sensor.solarmanpv_station_generationpower",
-        "sensor.hoa1nan7n331666_electriclevel",
-        "number.hoa1nan7n331666_minsoc",
-        "sensor.battery_strategy_battery_in_out_live_power",
-        "sensor.energy_next_hour",
-        "sensor.power_production_next_hour",
-        "sensor.energy_production_tomorrow",
-        "sensor.open_meteo_cloud_cover",
-        "sensor.open_meteo_shortwave_radiation",
-        "sensor.boiler_compressor_current_power",
-        "sensor.wallbox_leistung",
-        "sensor.wallbox_status",
+        E_GRID_EXPORT,
+        E_PV_POWER,
+        E_BATTERY_SOC,
+        E_BATTERY_MIN_SOC,
+        E_BATTERY_POWER,
+        E_PV_NEXT_HOUR_ENERGY,
+        E_PV_NEXT_HOUR_POWER,
+        E_PV_TOMORROW_ENERGY,
+        E_WEATHER_CLOUD,
+        E_WEATHER_RADIATION,
+        E_HEAT_PUMP_POWER,
+        E_EV_POWER,
+        E_EV_STATUS,
     ]
     s = get_latest_states(needed)
 
@@ -1249,19 +1281,19 @@ def collect_inputs():
     p_now_eur = tibber_price_eur_at(dt.datetime.now(dt.timezone.utc).timestamp(), price_ts, price_vals)
     p_now = p_now_eur * 100.0 if p_now_eur is not None else None
     if p_now is None:
-        p_now = as_float(s["sensor.heerlener_strasse_300_aktueller_strompreis"], None)
+        p_now = as_float(s[E_PRICE_CURRENT], None)
     if p_now is None:
-        p_now_eur = as_float(s["sensor.electricity_price_heerlener_strasse_300"], None)
+        p_now_eur = as_float(s[E_PRICE_EUR], None)
         p_now = p_now_eur * 100.0 if p_now_eur is not None else None
     if p_now is None:
         return {"error": "No current price available"}
 
-    pv_raw_kwh = as_float(s["sensor.energy_next_hour"], None)
+    pv_raw_kwh = as_float(s[E_PV_NEXT_HOUR_ENERGY], None)
     if pv_raw_kwh is None:
-        pv_raw_kwh = max(0.0, as_float(s["sensor.power_production_next_hour"], 0.0)) / 1000.0
+        pv_raw_kwh = max(0.0, as_float(s[E_PV_NEXT_HOUR_POWER], 0.0)) / 1000.0
 
-    cloud = as_float(s["sensor.open_meteo_cloud_cover"], None)
-    rad = as_float(s["sensor.open_meteo_shortwave_radiation"], None)
+    cloud = as_float(s[E_WEATHER_CLOUD], None)
+    rad = as_float(s[E_WEATHER_RADIATION], None)
     weather = open_meteo_weather()
     if weather:
         cloud = weather["cloud_cover"]
@@ -1270,29 +1302,29 @@ def collect_inputs():
     future_stats = read_tibber_future_price_stats(dt.datetime.now(OPEN_METEO_TZ))
     p_future_max = future_stats["max_ct"] if future_stats else p_now
 
-    wallbox_raw = max(0.0, as_float(s["sensor.wallbox_leistung"], 0.0))
-    wallbox_status = str(s.get("sensor.wallbox_status") or "").lower()
-    wallbox_w = (wallbox_raw * 1000.0) if ("charg" in wallbox_status) else 0.0
+    wallbox_raw = max(0.0, as_float(s[E_EV_POWER], 0.0))
+    wallbox_status = str(s.get(E_EV_STATUS) or "").lower()
+    wallbox_w = wallbox_raw if ("charg" in wallbox_status) else 0.0
 
     return {
         "p_now": p_now,
         "p_future_max": p_future_max,
         "grid_import_w": as_float(
             s["sensor.battery_strategy_grid_import_live_power_now"],
-            as_float(s["sensor.power_heerlener_strasse_300"], 0.0),
+            as_float(s[E_GRID_IMPORT], 0.0),
         ),
         "grid_export_w": as_float(
             s["sensor.battery_strategy_grid_export_live_power_now"],
-            as_float(s["sensor.power_production_heerlener_strasse_300"], 0.0),
+            as_float(s[E_GRID_EXPORT], 0.0),
         ),
-        "pv_w": as_float(s["sensor.solarmanpv_station_generationpower"], 0.0),
+        "pv_w": as_float(s[E_PV_POWER], 0.0),
         "wallbox_w": wallbox_w,
-        "bat_in_out_w": as_float(s["sensor.battery_strategy_battery_in_out_live_power"], 0.0),
-        "soc": as_float(s["sensor.hoa1nan7n331666_electriclevel"], None),
-        "soc_min_pct": as_float(s["number.hoa1nan7n331666_minsoc"], SOC_MIN),
-        "hp_w": as_float(s["sensor.boiler_compressor_current_power"], 0.0),
+        "bat_in_out_w": as_float(s[E_BATTERY_POWER], 0.0),
+        "soc": as_float(s[E_BATTERY_SOC], None),
+        "soc_min_pct": as_float(s[E_BATTERY_MIN_SOC], SOC_MIN),
+        "hp_w": as_float(s[E_HEAT_PUMP_POWER], 0.0),
         "pv_raw_kwh": pv_raw_kwh,
-        "pv_tomorrow_kwh": as_float(s["sensor.energy_production_tomorrow"], None),
+        "pv_tomorrow_kwh": as_float(s[E_PV_TOMORROW_ENERGY], None),
         "cloud": 50.0 if cloud is None else cloud,
         "rad": 0.0 if rad is None else rad,
         "weather": weather,
@@ -1305,27 +1337,21 @@ def read_tibber_intervals_for_dates(date_set):
 
 
 def read_tibber_intervals_all():
-    pool_file = resolve_tibber_pool_file()
-    if not os.path.exists(pool_file):
-        return []
-    with open(pool_file, "r", encoding="utf-8") as f:
-        obj = json.load(f)
-
-    merged = {}
-    for grp in obj.get("data", {}).get("fetch_groups", []):
-        for it in grp.get("intervals", []):
-            ts = it.get("startsAt") or it.get("start") or it.get("starts_at")
-            total = it.get("total")
-            if not ts or total is None:
+    if _RUNTIME_PRICE_INTERVALS:
+        merged = {}
+        for item in _RUNTIME_PRICE_INTERVALS:
+            try:
+                value = float(item.get("price_per_kwh", item.get("price", item.get("total"))))
+                timestamp = item.get("start_time") or item.get("startsAt") or item.get("start")
+                parsed = dt.datetime.fromisoformat(str(timestamp).replace("Z", "+00:00"))
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=OPEN_METEO_TZ)
+                price_eur = value / 100.0 if value >= 2.0 else value
+                merged[parsed.timestamp()] = {"ts": parsed.timestamp(), "dt": parsed, "price_eur": price_eur}
+            except (AttributeError, TypeError, ValueError):
                 continue
-            merged[ts] = it
-
-    out = []
-    for ts in sorted(merged.keys()):
-        rec = merged[ts]
-        dt_obj = dt.datetime.fromisoformat(ts)
-        out.append({"dt": dt_obj, "ts": ts, "price_eur": float(rec["total"]), "source": "tibber"})
-    return out
+        return [merged[key] for key in sorted(merged)]
+    return []
 
 
 def apply_eex_proxy_prices(intervals, eex_days, today_date, tomorrow_date):
@@ -2337,21 +2363,21 @@ def update_actual_savings_incremental(data, now_ts):
 
     series_map = fetch_sensor_series_many(
         [
-            "sensor.electricity_price_heerlener_strasse_300",
-            "sensor.battery_input",
-            "sensor.battery_output",
+            E_PRICE_EUR,
+            E_BATTERY_INPUT_ENERGY,
+            E_BATTERY_OUTPUT_ENERGY,
             "sensor.battery_strategy_grid_import_live_power_now",
             "sensor.battery_strategy_grid_export_live_power_now",
-            "sensor.battery_strategy_battery_in_out_live_power",
+            E_BATTERY_POWER,
         ],
         query_from,
     )
-    price_series         = series_map.get("sensor.electricity_price_heerlener_strasse_300", [])
-    input_series         = series_map.get("sensor.battery_input", [])
-    output_series        = series_map.get("sensor.battery_output", [])
+    price_series         = series_map.get(E_PRICE_EUR, [])
+    input_series         = series_map.get(E_BATTERY_INPUT_ENERGY, [])
+    output_series        = series_map.get(E_BATTERY_OUTPUT_ENERGY, [])
     grid_import_series   = series_map.get("sensor.battery_strategy_grid_import_live_power_now", [])
     grid_export_series   = series_map.get("sensor.battery_strategy_grid_export_live_power_now", [])
-    battery_power_series = series_map.get("sensor.battery_strategy_battery_in_out_live_power", [])
+    battery_power_series = series_map.get(E_BATTERY_POWER, [])
     tibber_price_ts, tibber_price_vals = build_tibber_price_index(local_date_set_between(query_from, now_ts))
 
     # ------------------------------------------------------------------ helpers
