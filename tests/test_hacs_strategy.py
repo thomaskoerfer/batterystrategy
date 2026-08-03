@@ -65,6 +65,56 @@ from custom_components.battery_strategy.strategy import (
 
 
 class HacsStrategyTests(unittest.TestCase):
+    def test_optimizer_runtime_maps_recorded_battery_power_sensor(self):
+        test_case = self
+
+        class Registry:
+            @staticmethod
+            def async_get_entity_id(platform, domain, unique_id):
+                test_case.assertEqual(
+                    (platform, domain), ("sensor", "battery_strategy")
+                )
+                test_case.assertEqual(unique_id, "entry-1_battery_power")
+                return "sensor.renamed_battery_power"
+
+        price_state = SimpleNamespace(state="0.25", attributes={"data": []})
+        hass = SimpleNamespace(
+            config=SimpleNamespace(
+                config_dir="/config",
+                latitude=50.9,
+                longitude=6.1,
+                time_zone="Europe/Berlin",
+            ),
+            states=SimpleNamespace(get=lambda _entity_id: price_state),
+        )
+        entry = SimpleNamespace(
+            entry_id="entry-1",
+            data={"price_entity": "sensor.price"},
+            options={},
+        )
+        adapter = optimizer_adapter.OptimizerEngineAdapter(hass, entry)
+        original_async_get = optimizer_adapter.er.async_get
+        optimizer_adapter.er.async_get = lambda _hass: Registry()
+        try:
+            context = adapter.runtime_context(
+                StrategyInputs(
+                    grid_import_w=0,
+                    grid_export_w=0,
+                    pv_w=0,
+                    battery_power_w=0,
+                    ev_power_w=0,
+                    soc_pct=50,
+                ),
+                StrategyOptions(),
+            )
+        finally:
+            optimizer_adapter.er.async_get = original_async_get
+
+        self.assertEqual(
+            context["entity_map"]["battery_power"],
+            "sensor.renamed_battery_power",
+        )
+
     def test_slot_progress_accounts_measured_battery_power(self):
         coordinator = object.__new__(BatteryStrategyCoordinator)
         now = dt.datetime.now(dt.timezone.utc)

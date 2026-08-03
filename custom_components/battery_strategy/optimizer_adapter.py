@@ -9,6 +9,8 @@ import json
 import time
 from zoneinfo import ZoneInfo
 
+from homeassistant.helpers import entity_registry as er
+
 from .const import (
     COMMAND_IDLE,
     COMMAND_INPUT,
@@ -19,6 +21,7 @@ from .const import (
     CONF_EV_POWER_ENTITY,
     CONF_PRICE_ENTITY,
     CONF_PV_POWER_ENTITY,
+    DOMAIN,
 )
 from .models import StrategyInputs, StrategyOptions
 from .plan_models import DailyCost, PlanPoint, StrategyPlan
@@ -129,6 +132,10 @@ class OptimizerEngineAdapter:
         }
         if price_state is not None:
             states["price_current"] = price_state.state
+        registry = er.async_get(self._hass)
+        battery_power_entity = registry.async_get_entity_id(
+            "sensor", DOMAIN, f"{self._entry.entry_id}_battery_power"
+        )
         return {
             "config_dir": self._hass.config.config_dir,
             "db_engine": db_engine,
@@ -144,6 +151,7 @@ class OptimizerEngineAdapter:
                 "battery_soc": data.get(CONF_BATTERY_SOC_ENTITY),
                 "battery_input_energy": data.get(CONF_BATTERY_INPUT_ENERGY_ENTITY),
                 "battery_output_energy": data.get(CONF_BATTERY_OUTPUT_ENERGY_ENTITY),
+                "battery_power": battery_power_entity,
                 "ev_power": data.get(CONF_EV_POWER_ENTITY),
             },
             "battery_capacity_kwh": options.battery_capacity_kwh,
