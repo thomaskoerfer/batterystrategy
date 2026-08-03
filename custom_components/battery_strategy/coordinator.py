@@ -48,7 +48,6 @@ from .const import (
     PV_CHARGING_ON,
 )
 from .models import StrategyCommand, StrategyInputs, StrategyOptions
-from .optimizer import build_optimizer_plan
 from .optimizer_adapter import OptimizerEngineAdapter
 from .plan_models import PlanLiveDirective, StrategyPlan
 from .strategy import calculate_command, live_command_from_directive, plan_live_directive_from_plan
@@ -288,10 +287,6 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             manual_power_w=manual_power,
         )
 
-    def _effective_send_commands(self) -> bool:
-        """Return whether Battery Strategy is allowed to write commands."""
-        return bool(self.entry.options.get("strategy_enabled", False))
-
     def _strategy_inputs(self) -> StrategyInputs:
         grid_import, grid_export = self._grid_import_export()
         return StrategyInputs(
@@ -356,9 +351,19 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         entity_id = self.entry.data.get(CONF_EV_POWER_ENTITY)
         if not entity_id:
             return 0.0
-        raw = self._raw_state_float(entity_id)
-        # Current wallbox source reports kW. Treat small values as kW for compatibility.
-        return raw * 1000.0 if 0.0 < raw < 50.0 else raw
+        state = self.hass.states.get(entity_id)
+        if state is None or state.state in ("unknown", "unavailable", "none", ""):
+            return 0.0
+        try:
+            raw = max(0.0, float(state.state))
+        except (TypeError, ValueError):
+            return 0.0
+        unit = str(state.attributes.get("unit_of_measurement") or "W").strip().lower()
+        if unit == "kw":
+            return raw * 1000.0
+        if unit == "mw":
+            return raw * 1_000_000.0
+        return raw
 
     def _state_float(self, config_key: str, default: float = 0.0) -> float:
         entity_id = self.entry.data.get(config_key)
@@ -401,7 +406,12 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         state = self.hass.states.get(entity_id)
         if state is None:
             return 1e9
-        return max(0.0, (dt.datetime.now(dt.timezone.utc) - state.last_changed).total_seconds())
+        reported_at = (
+            getattr(state, "last_reported", None)
+            or getattr(state, "last_updated", None)
+            or state.last_changed
+        )
+        return max(0.0, (dt.datetime.now(dt.timezone.utc) - reported_at).total_seconds())
 
     def _state_available(self, entity_id: str) -> bool:
         """Return whether an entity has a usable state."""

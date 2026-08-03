@@ -20,7 +20,6 @@ from .models import StrategyInputs, StrategyOptions
 from .plan_models import DailyCost, ForecastPoint, PlanPoint, PricePoint, StrategyPlan
 from .pricing import price_stats
 
-CAPACITY_KWH = 6.0
 SLOT_H = 0.25
 
 
@@ -39,9 +38,10 @@ def build_optimizer_plan(
     high = _num(stats.get("p_high"), 35.0)
     charge_threshold = low
     discharge_threshold = max(high, charge_threshold + float(options.min_margin_ct_per_kwh))
-    min_e = CAPACITY_KWH * max(0.0, float(options.min_soc_pct)) / 100.0
-    max_e = CAPACITY_KWH * max(0.0, float(options.max_soc_pct)) / 100.0
-    energy = min(max(CAPACITY_KWH * float(inputs.soc_pct) / 100.0, min_e), max_e)
+    capacity_kwh = max(0.5, float(options.battery_capacity_kwh))
+    min_e = capacity_kwh * max(0.0, float(options.min_soc_pct)) / 100.0
+    max_e = capacity_kwh * max(0.0, float(options.max_soc_pct)) / 100.0
+    energy = min(max(capacity_kwh * float(inputs.soc_pct) / 100.0, min_e), max_e)
     points: list[PlanPoint] = []
 
     for fc in forecast:
@@ -69,7 +69,7 @@ def build_optimizer_plan(
                 power_w=int(round(power)),
                 charge_fc_w=int(round(power if mode == COMMAND_INPUT else 0)),
                 discharge_fc_w=int(round(power if mode == COMMAND_OUTPUT else 0)),
-                soc_pct=round((energy / CAPACITY_KWH) * 100.0, 2),
+                soc_pct=round((energy / capacity_kwh) * 100.0, 2),
             )
         )
 

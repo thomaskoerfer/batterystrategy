@@ -62,9 +62,6 @@ def _optimizer_discharge_budget_kwh(data) -> float:
         return 0.0
     return round(max(0.0, float(getattr(points[0], "discharge_budget_kwh", 0.0))), 3)
 
-
-
-
 def _raw_float(data, key: str, default: float = 0.0) -> float:
     try:
         return float((data.get("optimizer_attrs") or {}).get(key, default))
@@ -88,6 +85,7 @@ def _actual_avg_discharge_price_ct(data) -> float:
     if kwh <= 0.01:
         return 0.0
     return round((_raw_float(data, "actual_battery_discharge_credit_today_eur") / kwh) * 100.0, 1)
+
 
 def _today(data):
     return dt_util.now().date().isoformat()
@@ -463,7 +461,7 @@ async def async_setup_entry(hass, entry, async_add_entities) -> None:
     """Set up Battery Strategy sensors."""
     coordinator = hass.data[DOMAIN][entry.entry_id]
     async_add_entities(
-        BatteryStrategySensor(coordinator, entry.entry_id, description)
+        BatteryStrategySensor(coordinator, description)
         for description in SENSORS
     )
 
@@ -471,7 +469,7 @@ async def async_setup_entry(hass, entry, async_add_entities) -> None:
 class BatteryStrategySensor(BatteryStrategyEntity, SensorEntity):
     """Battery Strategy sensor backed by the coordinator."""
 
-    def __init__(self, coordinator, entry_id: str, description: BatteryStrategySensorDescription):
+    def __init__(self, coordinator, description: BatteryStrategySensorDescription):
         """Initialize sensor."""
         super().__init__(coordinator, description.key, description.name)
         self.entity_description = description

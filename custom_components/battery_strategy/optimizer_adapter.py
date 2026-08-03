@@ -7,7 +7,7 @@ import datetime as dt
 import io
 import json
 import time
-from dataclasses import asdict
+from zoneinfo import ZoneInfo
 
 from .const import (
     COMMAND_IDLE,
@@ -36,6 +36,8 @@ class OptimizerEngineAdapter:
         self._entry = entry
         self._last_run_ts = 0.0
         self._last_output: dict | None = None
+        self._last_options: StrategyOptions | None = None
+        self._timezone = dt.timezone.utc
 
     def run(
         self,
@@ -45,9 +47,19 @@ class OptimizerEngineAdapter:
         runtime_context: dict | None = None,
     ) -> tuple[StrategyPlan, dict]:
         """Return a high-quality plan and raw optimizer attributes."""
+        if runtime_context and runtime_context.get("timezone"):
+            try:
+                self._timezone = ZoneInfo(str(runtime_context["timezone"]))
+            except (KeyError, ValueError):
+                self._timezone = dt.timezone.utc
         now = time.time()
-        if not force and self._last_output is not None and now - self._last_run_ts < CACHE_TTL_S:
-            return _plan_from_output(self._last_output, inputs, options), self._last_output
+        if (
+            not force
+            and self._last_output is not None
+            and self._last_options == options
+            and now - self._last_run_ts < CACHE_TTL_S
+        ):
+            return _plan_from_output(self._last_output, inputs, options, self._timezone), self._last_output
 
         from . import optimizer_engine as engine
 
@@ -59,8 +71,9 @@ class OptimizerEngineAdapter:
         raw = buf.getvalue().strip().splitlines()
         output = json.loads(raw[-1]) if raw else {}
         self._last_output = output
+        self._last_options = options
         self._last_run_ts = now
-        return _plan_from_output(output, inputs, options), output
+        return _plan_from_output(output, inputs, options, self._timezone), output
 
     def runtime_context(self, inputs: StrategyInputs, options: StrategyOptions) -> dict:
         """Snapshot HA-owned runtime data before entering the executor thread."""
@@ -111,6 +124,8 @@ class OptimizerEngineAdapter:
             "max_soc_pct": options.max_soc_pct,
             "max_power_w": max(options.max_charge_power_w, options.max_discharge_power_w),
             "round_trip_efficiency": options.round_trip_efficiency,
+            "min_margin_ct_per_kwh": options.min_margin_ct_per_kwh,
+            "feed_in_tariff_ct_per_kwh": options.feed_in_tariff_ct_per_kwh,
             "pv_capacity_kwp": options.pv_capacity_kwp,
             "pv_inverter_power_kw": options.pv_inverter_power_kw,
             "pv_capacity_events": list(self._entry.options.get("pv_capacity_events") or []),
@@ -123,13 +138,13 @@ class OptimizerEngineAdapter:
         return max(0.0, time.time() - self._last_run_ts)
 
 
-def raw_attrs_from_plan(plan: StrategyPlan) -> dict:
-    """Return an attribute dict compatible with existing comparison helpers."""
-    return asdict(plan)
-
-
-def _plan_from_output(output: dict, inputs: StrategyInputs, options: StrategyOptions) -> StrategyPlan:
-    points = _points_from_output(output)
+def _plan_from_output(
+    output: dict,
+    inputs: StrategyInputs,
+    options: StrategyOptions,
+    timezone: dt.tzinfo = dt.timezone.utc,
+) -> StrategyPlan:
+    points = _points_from_output(output, timezone=timezone)
     today = _date_from_points(points, 0)
     tomorrow = _date_from_points(points, 1)
     daily_costs = {}
@@ -169,7 +184,11 @@ def _plan_from_output(output: dict, inputs: StrategyInputs, options: StrategyOpt
     )
 
 
-def _points_from_output(output: dict, now_ms: int | None = None) -> list[PlanPoint]:
+def _points_from_output(
+    output: dict,
+    now_ms: int | None = None,
+    timezone: dt.tzinfo = dt.timezone.utc,
+) -> list[PlanPoint]:
     price = _series(output.get("profile_48h_price")) or _merge_series(
         _series(output.get("profile_today_price")),
         _series(output.get("profile_tomorrow_price")),
@@ -200,7 +219,7 @@ def _points_from_output(output: dict, now_ms: int | None = None) -> list[PlanPoi
         dis = _at(discharge, ts_ms)
         pow_w = _at(power, ts_ms) or max(ch, dis)
         mode = COMMAND_INPUT if ch > 0 else COMMAND_OUTPUT if dis > 0 else COMMAND_IDLE
-        slot_dt = dt.datetime.fromtimestamp(ts_ms / 1000.0).astimezone()
+        slot_dt = dt.datetime.fromtimestamp(ts_ms / 1000.0, tz=timezone)
         points.append(
             PlanPoint(
                 ts_ms=ts_ms,

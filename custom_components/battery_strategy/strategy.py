@@ -22,7 +22,6 @@ from .const import (
 from .models import StrategyCommand, StrategyInputs, StrategyOptions
 from .plan_models import PlanLiveDirective, StrategyPlan
 
-BATTERY_CAPACITY_KWH = 6.0
 SLOT_H = 0.25
 PRICE_VALUE_TIE_CT = 0.5
 
@@ -298,13 +297,6 @@ def _planned_charge_w(plan: StrategyPlan) -> float:
     return float(plan.current_power_w) if plan.current_mode == COMMAND_INPUT else 0.0
 
 
-def _planned_discharge_w(plan: StrategyPlan) -> float:
-    point = plan.points[0] if plan.points else None
-    if point is not None:
-        return max(0.0, float(point.discharge_fc_w))
-    return float(plan.current_power_w) if plan.current_mode == COMMAND_OUTPUT else 0.0
-
-
 def _planned_discharge_budget_kwh(
     plan: StrategyPlan,
     options: StrategyOptions,
@@ -368,4 +360,5 @@ def _power_w_to_slot_kwh(power_w: float) -> float:
 
 
 def _available_above_min_kwh(soc_pct: float, options: StrategyOptions) -> float:
-    return BATTERY_CAPACITY_KWH * max(0.0, float(soc_pct) - float(options.min_soc_pct)) / 100.0
+    capacity_kwh = max(0.5, float(options.battery_capacity_kwh))
+    return capacity_kwh * max(0.0, float(soc_pct) - float(options.min_soc_pct)) / 100.0

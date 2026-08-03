@@ -5,6 +5,7 @@ import json
 import asyncio
 from pathlib import Path
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 from custom_components.battery_strategy.const import (
     COMMAND_IDLE,
@@ -140,10 +141,6 @@ class HacsStrategyTests(unittest.TestCase):
         coordinator = object.__new__(BatteryStrategyCoordinator)
         coordinator.entry = SimpleNamespace(options={"strategy_enabled": strategy_enabled})
         return coordinator
-
-    def test_strategy_enabled_controls_hacs_actuation(self):
-        self.assertTrue(self._coordinator_for_strategy_enabled(True)._effective_send_commands())
-        self.assertFalse(self._coordinator_for_strategy_enabled(False)._effective_send_commands())
 
     def test_strategy_disabled_live_display_is_idle_with_external_source(self):
         coordinator = self._coordinator_for_strategy_enabled(False)
@@ -1456,6 +1453,44 @@ class HacsStrategyTests(unittest.TestCase):
         )
         self.assertEqual(directive.discharge_budget_kwh, 0.6)
 
+    def test_live_discharge_budget_uses_configured_battery_capacity(self):
+        now = dt.datetime(2026, 7, 21, 20, tzinfo=dt.timezone.utc)
+        point = PlanPoint(
+            int(now.timestamp() * 1000),
+            now.date().isoformat(),
+            40.0,
+            500,
+            0,
+            500,
+            0,
+            500,
+            COMMAND_IDLE,
+            0,
+            0,
+            0,
+            50.0,
+            discharge_budget_kwh=5.0,
+        )
+        directive = plan_live_directive_from_plan(
+            StrategyPlan([point], COMMAND_IDLE, 0, "capacity test"),
+            StrategyOptions(
+                discharge=DISCHARGE_PRICE_SENSITIVE,
+                min_soc_pct=10,
+                battery_capacity_kwh=10.0,
+            ),
+            current_soc_pct=50.0,
+        )
+        self.assertEqual(directive.discharge_budget_kwh, 4.0)
+
+    def test_ev_power_uses_sensor_unit_instead_of_value_heuristic(self):
+        coordinator = object.__new__(BatteryStrategyCoordinator)
+        coordinator.entry = SimpleNamespace(data={"ev_power_entity": "sensor.ev_power"})
+        state = SimpleNamespace(state="11", attributes={"unit_of_measurement": "kW"})
+        coordinator.hass = SimpleNamespace(states=SimpleNamespace(get=lambda _: state))
+        self.assertEqual(coordinator._ev_power_w(), 11000.0)
+        state.attributes["unit_of_measurement"] = "W"
+        self.assertEqual(coordinator._ev_power_w(), 11.0)
+
     def test_last_known_soc_is_loaded_for_restart_bridge(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "optimizer-state.json"
@@ -2178,6 +2213,19 @@ class HacsStrategyTests(unittest.TestCase):
         }
         points = optimizer_adapter._points_from_output(output, now_ms=current_ts)
         self.assertEqual([point.ts_ms for point in points], [current_ts])
+
+    def test_optimizer_adapter_assigns_dates_in_home_assistant_timezone(self):
+        ts = int(dt.datetime(2026, 5, 29, 22, 0, tzinfo=dt.timezone.utc).timestamp() * 1000)
+        output = {
+            "profile_48h_price": [[ts, 30.0]],
+            "profile_48h_house_fc_power": [[ts, 200.0]],
+        }
+        points = optimizer_adapter._points_from_output(
+            output,
+            now_ms=ts,
+            timezone=ZoneInfo("Europe/Berlin"),
+        )
+        self.assertEqual(points[0].date, "2026-05-30")
 
     def test_live_overlay_does_not_turn_display_plan_into_battery_export(self):
         now = dt.datetime(2026, 5, 26, 18, tzinfo=dt.timezone.utc)

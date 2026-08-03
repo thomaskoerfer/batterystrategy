@@ -114,7 +114,8 @@ def configure_runtime(context):
     global DB, DEFAULT_DB_URL, STATE_FILE, _DB_ENGINE
     global _RUNTIME_STATES, _RUNTIME_PRICE_INTERVALS, _ENTITY_MAP
     global CAP_KWH, SOC_MIN, SOC_MAX, MIN_E_KWH, MAX_E_KWH, MAX_P_W, MAX_E_SLOT_KWH
-    global ETA_RT, ETA_C, ETA_D, OPEN_METEO_TZ, OPEN_METEO_URL, PV_CAPACITY_EVENTS
+    global ETA_RT, ETA_C, ETA_D, MIN_MARGIN_CT, PV_EXPORT_OPPORTUNITY_CT
+    global OPEN_METEO_TZ, OPEN_METEO_URL, PV_CAPACITY_EVENTS
 
     config_dir = str(context.get("config_dir") or "/config")
     DB = os.path.join(config_dir, "home-assistant_v2.db")
@@ -135,6 +136,8 @@ def configure_runtime(context):
     ETA_RT = max(0.01, min(1.0, float(context.get("round_trip_efficiency") or 0.8)))
     ETA_C = ETA_RT ** 0.5
     ETA_D = ETA_RT ** 0.5
+    MIN_MARGIN_CT = max(0.0, float(context.get("min_margin_ct_per_kwh", 2.0)))
+    PV_EXPORT_OPPORTUNITY_CT = max(0.0, float(context.get("feed_in_tariff_ct_per_kwh", 0.0)))
 
     timezone = str(context.get("timezone") or "UTC")
     OPEN_METEO_TZ = ZoneInfo(timezone)
