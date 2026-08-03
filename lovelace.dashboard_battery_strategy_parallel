@@ -426,6 +426,7 @@
             {
               "entities": [
                 "switch.battery_strategy_hacs_pv_zuerst_ins_auto",
+                "switch.battery_strategy_entladung_waehrend_ev_ladung_erlauben",
                 "switch.battery_strategy_hacs_batterie_darf_auto_versorgen",
                 "number.battery_strategy_hacs_auto_laedt_ab"
               ],

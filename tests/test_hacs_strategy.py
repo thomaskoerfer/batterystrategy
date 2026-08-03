@@ -240,6 +240,80 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertEqual(cmd.mode, COMMAND_IDLE)
         self.assertEqual(cmd.power_w, 0)
 
+    def test_ev_policy_can_block_all_automatic_discharge_while_ev_is_active(self):
+        cmd = calculate_command(
+            StrategyInputs(
+                grid_import_w=5000,
+                grid_export_w=0,
+                pv_w=0,
+                battery_power_w=0,
+                ev_power_w=4200,
+                soc_pct=80,
+            ),
+            StrategyOptions(
+                discharge=DISCHARGE_LOAD,
+                discharge_during_ev_charging=False,
+                battery_may_feed_ev=True,
+                ev_active_threshold_w=300,
+            ),
+        )
+        self.assertEqual(cmd.mode, COMMAND_IDLE)
+        self.assertEqual(cmd.power_w, 0)
+        self.assertEqual(cmd.allowed_discharge_load_w, 0)
+
+    def test_ev_discharge_block_is_visible_for_an_open_live_budget(self):
+        inputs = StrategyInputs(
+            grid_import_w=5000,
+            grid_export_w=0,
+            pv_w=0,
+            battery_power_w=0,
+            ev_power_w=4200,
+            soc_pct=80,
+        )
+        options = StrategyOptions(
+            discharge=DISCHARGE_LOAD,
+            discharge_during_ev_charging=False,
+            battery_may_feed_ev=False,
+            ev_active_threshold_w=300,
+        )
+        diagnostics = calculate_command(inputs, options)
+        cmd = live_command_from_plan(
+            StrategyPlan(points=[], current_mode=COMMAND_IDLE, current_power_w=0, reason="test"),
+            diagnostics,
+            inputs,
+            options,
+        )
+        self.assertEqual(cmd.mode, COMMAND_IDLE)
+        self.assertEqual(cmd.power_w, 0)
+        self.assertEqual(cmd.reason, "ev_discharge_blocked")
+
+    def test_ev_discharge_block_does_not_block_live_pv_surplus_charging(self):
+        inputs = StrategyInputs(
+            grid_import_w=0,
+            grid_export_w=500,
+            pv_w=1500,
+            battery_power_w=0,
+            ev_power_w=1000,
+            soc_pct=50,
+        )
+        options = StrategyOptions(
+            pv_charging=PV_CHARGING_ON,
+            discharge=DISCHARGE_LOAD,
+            discharge_during_ev_charging=False,
+            battery_may_feed_ev=False,
+            ev_active_threshold_w=300,
+        )
+        diagnostics = calculate_command(inputs, options)
+        cmd = live_command_from_plan(
+            StrategyPlan(points=[], current_mode=COMMAND_IDLE, current_power_w=0, reason="test"),
+            diagnostics,
+            inputs,
+            options,
+        )
+        self.assertEqual(cmd.mode, COMMAND_INPUT)
+        self.assertEqual(cmd.power_w, 500)
+        self.assertEqual(cmd.reason, "live_pv_surplus")
+
     def test_live_command_clamps_stale_plan_discharge_to_current_load(self):
         inputs = StrategyInputs(
             grid_import_w=180,

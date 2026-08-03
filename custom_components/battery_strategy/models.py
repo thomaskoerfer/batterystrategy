@@ -20,6 +20,7 @@ class StrategyOptions:
     grid_charging: str = GRID_CHARGING_OFF
     discharge: str = DISCHARGE_LOAD
     pv_to_ev_first: bool = True
+    discharge_during_ev_charging: bool = True
     battery_may_feed_ev: bool = False
     ev_active_threshold_w: float = 300.0
     min_soc_pct: float = 10.0

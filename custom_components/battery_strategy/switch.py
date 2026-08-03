@@ -12,6 +12,7 @@ SWITCHES = (
     ("strategy_enabled", "Battery Strategy Steuerung", True),
     ("trace_enabled", "Debug Trace aufzeichnen", False),
     ("pv_to_ev_first", "PV zuerst ins Auto", True),
+    ("discharge_during_ev_charging", "Entladung waehrend EV-Ladung erlauben", True),
     ("battery_may_feed_ev", "Batterie darf Auto versorgen", False),
 )
 

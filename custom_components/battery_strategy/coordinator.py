@@ -291,6 +291,7 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             grid_charging=opts.get("grid_charging", GRID_CHARGING_OFF),
             discharge=opts.get("discharge", DISCHARGE_LOAD),
             pv_to_ev_first=bool(opts.get("pv_to_ev_first", True)),
+            discharge_during_ev_charging=bool(opts.get("discharge_during_ev_charging", True)),
             battery_may_feed_ev=bool(opts.get("battery_may_feed_ev", False)),
             ev_active_threshold_w=float(opts.get("ev_active_threshold_w", 300.0)),
             min_soc_pct=float(opts.get("min_soc_pct", 10.0)),

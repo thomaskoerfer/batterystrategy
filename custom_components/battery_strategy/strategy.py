@@ -59,8 +59,11 @@ def real_pv_surplus_w(inputs: StrategyInputs, options: StrategyOptions) -> float
 def allowed_discharge_load_w(inputs: StrategyInputs, options: StrategyOptions) -> float:
     """Load that automatic discharge may serve."""
     residual = net_no_battery_with_ev_w(inputs)
+    ev_power = active_ev_power_w(inputs, options)
+    if ev_power > 0.0 and not options.discharge_during_ev_charging:
+        return 0.0
     if not options.battery_may_feed_ev:
-        residual -= active_ev_power_w(inputs, options)
+        residual -= ev_power
     return max(0.0, residual)
 
 
@@ -241,6 +244,13 @@ def live_command_from_directive(
     ):
         power = min(float(live_command.pv_surplus_w), float(options.max_charge_power_w))
         return _command_like(live_command, COMMAND_INPUT, power, "live_pv_surplus")
+
+    if (
+        directive.discharge_budget_kwh > 0.0
+        and active_ev_power_w(inputs, options) > 0.0
+        and not options.discharge_during_ev_charging
+    ):
+        return _idle_like(live_command, "ev_discharge_blocked")
 
     if (
         directive.discharge_budget_kwh > 0.0
