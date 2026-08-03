@@ -78,15 +78,16 @@ class HacsStrategyTests(unittest.TestCase):
                 return "sensor.renamed_battery_power"
 
         price_state = SimpleNamespace(state="0.25", attributes={"data": []})
-        hass = SimpleNamespace(
-            config=SimpleNamespace(
+        class FakeHass:
+            config = SimpleNamespace(
                 config_dir="/config",
                 latitude=50.9,
                 longitude=6.1,
                 time_zone="Europe/Berlin",
-            ),
-            states=SimpleNamespace(get=lambda _entity_id: price_state),
-        )
+            )
+            states = SimpleNamespace(get=lambda _entity_id: price_state)
+
+        hass = FakeHass()
         entry = SimpleNamespace(
             entry_id="entry-1",
             data={"price_entity": "sensor.price"},

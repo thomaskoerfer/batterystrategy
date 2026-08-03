@@ -2,6 +2,15 @@
 
 All notable changes to Battery Strategy are documented here.
 
+## [0.2.0-beta.3] - 2026-08-03
+
+### Fixed
+
+- Actual-savings accounting now resolves the integration's recorded battery-power
+  entity through Home Assistant's entity registry. This restores the correct
+  split between PV and grid charging after the HACS runtime refactor, including
+  installations where users renamed the generated sensor.
+
 ## [0.2.0-beta.2] - 2026-08-03
 
 ### Added
