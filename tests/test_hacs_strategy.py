@@ -149,14 +149,8 @@ class HacsStrategyTests(unittest.TestCase):
 
         class Hass:
             @staticmethod
-            def async_create_task(coro):
-                return asyncio.create_task(coro)
-
-            @staticmethod
-            async def async_add_executor_job(target, *args):
-                return await asyncio.get_running_loop().run_in_executor(
-                    None, target, *args
-                )
+            def async_add_executor_job(target, *args):
+                return asyncio.get_running_loop().run_in_executor(None, target, *args)
 
         async def scenario():
             planner = BackgroundPlanner(Hass(), Adapter(), Path("unused"))

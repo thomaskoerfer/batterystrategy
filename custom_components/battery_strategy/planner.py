@@ -19,7 +19,7 @@ class BackgroundPlanner:
     def __init__(self, hass, adapter: OptimizerEngineAdapter, state_path: Path) -> None:
         self._hass = hass
         self._adapter = adapter
-        self._task: asyncio.Task | None = None
+        self._task: asyncio.Future | None = None
         self._closing = False
         self._pending_force = False
         self._last_error: str | None = None
@@ -52,14 +52,12 @@ class BackgroundPlanner:
         if not self._adapter.needs_run(options, force=effective_force):
             return False
         self._pending_force = False
-        self._task = self._hass.async_create_task(
-            self._hass.async_add_executor_job(
-                self._adapter.run,
-                inputs,
-                options,
-                True,
-                runtime_context,
-            )
+        self._task = self._hass.async_add_executor_job(
+            self._adapter.run,
+            inputs,
+            options,
+            True,
+            runtime_context,
         )
         return True
 
