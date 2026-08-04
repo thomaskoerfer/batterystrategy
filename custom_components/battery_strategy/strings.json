@@ -29,6 +29,34 @@
           "battery_input_energy_entity": "Battery charged energy",
           "battery_output_energy_entity": "Battery discharged energy"
         }
+      },
+      "reconfigure": {
+        "title": "Reconfigure Battery Strategy",
+        "description": "Update measurement, price and battery-control entities. The integration safely stops active battery output and reloads once.",
+        "data": {
+          "grid_mode": "Grid meter mode",
+          "battery_profile": "Battery profile",
+          "signed_grid_power_entity": "Signed grid power",
+          "grid_l1_entity": "Grid power L1",
+          "grid_l2_entity": "Grid power L2",
+          "grid_l3_entity": "Grid power L3",
+          "grid_import_entity": "Grid import",
+          "grid_export_entity": "Grid export",
+          "pv_power_entity": "PV power",
+          "price_entity": "Quarter-hour price data",
+          "battery_soc_entity": "Battery SoC",
+          "ev_power_entity": "EV charging power",
+          "battery_power_entity": "Battery power",
+          "zendure_ac_mode_entity": "Zendure AC mode",
+          "zendure_output_pack_power_entity": "Zendure battery output power",
+          "zendure_pack_input_power_entity": "Zendure battery input power",
+          "zendure_output_home_power_entity": "Zendure home output power",
+          "zendure_grid_input_power_entity": "Zendure grid input power",
+          "zendure_input_limit_entity": "Zendure input limit",
+          "zendure_output_limit_entity": "Zendure output limit",
+          "battery_input_energy_entity": "Battery charged energy",
+          "battery_output_energy_entity": "Battery discharged energy"
+        }
       }
     },
     "error": {
@@ -36,22 +64,15 @@
       "invalid_power_unit": "This entity must report power in W, kW or MW.",
       "invalid_energy_unit": "This counter must report energy in kWh.",
       "invalid_soc_unit": "This entity must report state of charge in percent.",
-      "invalid_price_entity": "This entity must provide quarter-hour prices in its data attribute."
+      "invalid_price_entity": "This entity must provide quarter-hour prices in its data attribute.",
+      "entity_not_found": "This entity does not exist in Home Assistant."
+    },
+    "abort": {
+      "reconfigure_successful": "Reconfiguration successful."
     }
   },
   "options": {
     "step": {
-      "init": {
-        "title": "Configure Battery Strategy",
-        "description": "{hint}",
-        "data": {
-          "section": "Section"
-        },
-        "menu_options": {
-          "strategy": "Strategy",
-          "entities": "Entities"
-        }
-      },
       "strategy": {
         "title": "Strategy",
         "description": "Select the strategy section.",
@@ -105,34 +126,6 @@
         "data": {
           "manual_mode": "Manual mode",
           "manual_power_w": "Manual power"
-        }
-      },
-      "entities": {
-        "title": "Entities",
-        "description": "Map measurement, price and battery-control entities. Changes reload the integration.",
-        "data": {
-          "grid_mode": "Grid meter mode",
-          "battery_profile": "Battery profile",
-          "signed_grid_power_entity": "Signed grid power",
-          "grid_l1_entity": "Grid power L1",
-          "grid_l2_entity": "Grid power L2",
-          "grid_l3_entity": "Grid power L3",
-          "grid_import_entity": "Grid import",
-          "grid_export_entity": "Grid export",
-          "pv_power_entity": "PV power",
-          "price_entity": "Quarter-hour price data",
-          "battery_soc_entity": "Battery SoC",
-          "ev_power_entity": "EV charging power",
-          "battery_power_entity": "Battery power",
-          "zendure_ac_mode_entity": "Zendure AC mode",
-          "zendure_output_pack_power_entity": "Zendure battery output power",
-          "zendure_pack_input_power_entity": "Zendure battery input power",
-          "zendure_output_home_power_entity": "Zendure home output power",
-          "zendure_grid_input_power_entity": "Zendure grid input power",
-          "zendure_input_limit_entity": "Zendure input limit",
-          "zendure_output_limit_entity": "Zendure output limit",
-          "battery_input_energy_entity": "Battery charged energy",
-          "battery_output_energy_entity": "Battery discharged energy"
         }
       }
     },

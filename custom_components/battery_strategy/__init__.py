@@ -13,7 +13,7 @@ except ImportError:  # pragma: no cover - unit tests run without Home Assistant.
     Platform = None
     er = None
 
-from .const import DOMAIN
+from .const import CONFIG_ENTRY_VERSION, DOMAIN
 from .optimizer_state import runtime_snapshot
 
 try:
@@ -40,7 +40,6 @@ async def async_setup_entry(hass, entry) -> bool:
     """Set up Battery Strategy from a config entry."""
     if BatteryStrategyCoordinator is None:
         return False
-    _async_clean_deprecated_options(hass, entry)
     _async_remove_deprecated_entities(hass, entry)
     await hass.async_add_executor_job(_migrate_runtime_files, hass.config.config_dir)
     last_known_soc_pct, last_optimizer_output = await hass.async_add_executor_job(
@@ -94,11 +93,31 @@ async def async_unload_entry(hass, entry) -> bool:
     """Unload Battery Strategy."""
     coordinator = hass.data.get(DOMAIN, {}).get(entry.entry_id)
     if coordinator is not None:
-        await coordinator.async_shutdown()
+        await coordinator.async_prepare_unload()
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if not unload_ok:
         return False
     hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
+    return True
+
+
+async def async_migrate_entry(hass, entry) -> bool:
+    """Migrate stored options without changing active strategy semantics."""
+    if entry.version > CONFIG_ENTRY_VERSION:
+        return False
+    if entry.version == CONFIG_ENTRY_VERSION:
+        return True
+
+    options = dict(entry.options)
+    options.pop("manual_duration_min", None)
+    # beta.4 accidentally removed this policy. Persist the safe historic default
+    # so future defaults cannot silently change an upgraded installation.
+    options.setdefault("pv_to_ev_first", True)
+    hass.config_entries.async_update_entry(
+        entry,
+        options=options,
+        version=CONFIG_ENTRY_VERSION,
+    )
     return True
 
 
@@ -180,15 +199,3 @@ def _async_remove_deprecated_entities(hass, entry) -> None:
             and registry.async_get(entity_id) is not None
         ):
             registry.async_remove(entity_id)
-
-
-def _async_clean_deprecated_options(hass, entry) -> None:
-    """Drop options that were exposed but never controlled distinct behavior."""
-    options = dict(entry.options)
-    changed = False
-    for key in ("manual_duration_min",):
-        if key in options:
-            options.pop(key)
-            changed = True
-    if changed:
-        hass.config_entries.async_update_entry(entry, options=options)

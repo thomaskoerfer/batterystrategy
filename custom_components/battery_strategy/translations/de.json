@@ -29,6 +29,34 @@
           "battery_input_energy_entity": "Batterie-Ladeenergie",
           "battery_output_energy_entity": "Batterie-Entladeenergie"
         }
+      },
+      "reconfigure": {
+        "title": "Battery Strategy neu konfigurieren",
+        "description": "Mess-, Preis- und Batterie-Entities aktualisieren. Die Integration stoppt aktive Batterieleistung sicher und laedt danach einmal neu.",
+        "data": {
+          "grid_mode": "Netzzaehler-Modus",
+          "battery_profile": "Batterie-Profil",
+          "signed_grid_power_entity": "Netzleistung saldiert",
+          "grid_l1_entity": "Netzleistung L1",
+          "grid_l2_entity": "Netzleistung L2",
+          "grid_l3_entity": "Netzleistung L3",
+          "grid_import_entity": "Netzbezug",
+          "grid_export_entity": "Netzeinspeisung",
+          "pv_power_entity": "PV-Leistung",
+          "battery_soc_entity": "Batterie-SoC",
+          "ev_power_entity": "EV-Ladeleistung",
+          "battery_power_entity": "Batterieleistung",
+          "zendure_ac_mode_entity": "Zendure AC-Modus",
+          "zendure_output_pack_power_entity": "Zendure Batterie-Ausgangsleistung",
+          "zendure_pack_input_power_entity": "Zendure Batterie-Eingangsleistung",
+          "zendure_output_home_power_entity": "Zendure Haus-Ausgangsleistung",
+          "zendure_grid_input_power_entity": "Zendure Netz-Eingangsleistung",
+          "zendure_input_limit_entity": "Zendure Eingangslimit",
+          "zendure_output_limit_entity": "Zendure Ausgangslimit",
+          "price_entity": "Viertelstunden-Preisdaten",
+          "battery_input_energy_entity": "Batterie-Ladeenergie",
+          "battery_output_energy_entity": "Batterie-Entladeenergie"
+        }
       }
     },
     "error": {
@@ -36,22 +64,15 @@
       "invalid_power_unit": "Diese Entity muss Leistung in W, kW oder MW liefern.",
       "invalid_energy_unit": "Dieser Zaehler muss Energie in kWh liefern.",
       "invalid_soc_unit": "Diese Entity muss den Ladezustand in Prozent liefern.",
-      "invalid_price_entity": "Diese Entity muss Viertelstundenpreise im Attribut data bereitstellen."
+      "invalid_price_entity": "Diese Entity muss Viertelstundenpreise im Attribut data bereitstellen.",
+      "entity_not_found": "Diese Entity existiert nicht in Home Assistant."
+    },
+    "abort": {
+      "reconfigure_successful": "Neukonfiguration erfolgreich."
     }
   },
   "options": {
     "step": {
-      "init": {
-        "title": "Battery Strategy konfigurieren",
-        "description": "{hint}",
-        "data": {
-          "section": "Bereich"
-        },
-        "menu_options": {
-          "strategy": "Strategie",
-          "entities": "Entities"
-        }
-      },
       "strategy": {
         "title": "Strategie",
         "description": "Waehle den Strategiebereich.",
@@ -105,34 +126,6 @@
         "data": {
           "manual_mode": "Manueller Modus",
           "manual_power_w": "Manuelle Leistung"
-        }
-      },
-      "entities": {
-        "title": "Entities",
-        "description": "Ordne Messwerte und Batterie-Controls zu. Aenderungen laden die Integration neu.",
-        "data": {
-          "grid_mode": "Netzzaehler-Modus",
-          "battery_profile": "Batterie-Profil",
-          "signed_grid_power_entity": "Netzleistung saldiert",
-          "grid_l1_entity": "Netzleistung L1",
-          "grid_l2_entity": "Netzleistung L2",
-          "grid_l3_entity": "Netzleistung L3",
-          "grid_import_entity": "Netzbezug",
-          "grid_export_entity": "Netzeinspeisung",
-          "pv_power_entity": "PV-Leistung",
-          "battery_soc_entity": "Batterie-SoC",
-          "ev_power_entity": "EV-Ladeleistung",
-          "battery_power_entity": "Batterieleistung",
-          "zendure_ac_mode_entity": "Zendure AC-Modus",
-          "zendure_output_pack_power_entity": "Zendure Batterie-Ausgangsleistung",
-          "zendure_pack_input_power_entity": "Zendure Batterie-Eingangsleistung",
-          "zendure_output_home_power_entity": "Zendure Haus-Ausgangsleistung",
-          "zendure_grid_input_power_entity": "Zendure Netz-Eingangsleistung",
-          "zendure_input_limit_entity": "Zendure Eingangslimit",
-          "zendure_output_limit_entity": "Zendure Ausgangslimit",
-          "price_entity": "Viertelstunden-Preisdaten",
-          "battery_input_energy_entity": "Batterie-Ladeenergie",
-          "battery_output_energy_entity": "Batterie-Entladeenergie"
         }
       }
     },

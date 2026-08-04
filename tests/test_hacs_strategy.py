@@ -18,6 +18,7 @@ from custom_components.battery_strategy.const import (
     DISCHARGE_PRICE_SENSITIVE,
     CONF_ZENDURE_INPUT_LIMIT_ENTITY,
     CONF_ZENDURE_OUTPUT_LIMIT_ENTITY,
+    CONFIG_ENTRY_VERSION,
     GRID_MODE_SIGNED,
     GRID_CHARGING_OFF,
     GRID_CHARGING_PRICE_SENSITIVE,
@@ -62,7 +63,11 @@ from custom_components.battery_strategy.coordinator import (
     BatteryStrategyCoordinator,
     _load_last_known_soc_pct,
 )
-from custom_components.battery_strategy import _migrate_runtime_files
+from custom_components.battery_strategy import (
+    _migrate_runtime_files,
+    async_migrate_entry,
+    async_unload_entry,
+)
 from custom_components.battery_strategy.strategy import (
     calculate_command,
     live_command_from_plan,
@@ -197,6 +202,138 @@ class HacsStrategyTests(unittest.TestCase):
         errors = config_flow._validate_entity_mapping(hass, data)
         self.assertEqual(errors["signed_grid_power_entity"], "required")
 
+    def test_config_mapping_rejects_unknown_entity(self):
+        states = {
+            "sensor.grid": SimpleNamespace(attributes={"unit_of_measurement": "W"}),
+            "sensor.soc": SimpleNamespace(attributes={"unit_of_measurement": "%"}),
+            "sensor.battery": SimpleNamespace(attributes={"unit_of_measurement": "W"}),
+            "sensor.price": SimpleNamespace(attributes={"data": []}),
+        }
+        hass = SimpleNamespace(states=SimpleNamespace(get=states.get))
+        data = {
+            "grid_mode": GRID_MODE_SIGNED,
+            "battery_profile": BATTERY_PROFILE_GENERIC,
+            "signed_grid_power_entity": "sensor.grid",
+            "pv_power_entity": "sensor.missing",
+            "battery_soc_entity": "sensor.soc",
+            "battery_power_entity": "sensor.battery",
+            "price_entity": "sensor.price",
+        }
+        self.assertEqual(
+            config_flow._validate_entity_mapping(hass, data)["pv_power_entity"],
+            "entity_not_found",
+        )
+
+    def test_config_flow_uses_versioned_reconfigure_and_reload_contract(self):
+        self.assertEqual(
+            config_flow.BatteryStrategyConfigFlow.VERSION,
+            CONFIG_ENTRY_VERSION,
+        )
+        self.assertTrue(
+            issubclass(
+                config_flow.BatteryStrategyOptionsFlow,
+                config_flow.config_entries.OptionsFlowWithReload,
+            )
+        )
+        self.assertTrue(
+            hasattr(
+                config_flow.BatteryStrategyConfigFlow,
+                "async_step_reconfigure",
+            )
+        )
+        self.assertFalse(
+            hasattr(config_flow.BatteryStrategyOptionsFlow, "async_step_entities")
+        )
+
+    def test_config_entry_migration_restores_ev_policy_and_removes_legacy_option(self):
+        updates = []
+        entry = SimpleNamespace(
+            version=1,
+            data={"grid_mode": GRID_MODE_SIGNED},
+            options={"manual_duration_min": 30, "strategy_enabled": True},
+        )
+        hass = SimpleNamespace(
+            config_entries=SimpleNamespace(
+                async_update_entry=lambda target, **changes: updates.append(
+                    (target, changes)
+                )
+            )
+        )
+
+        self.assertTrue(asyncio.run(async_migrate_entry(hass, entry)))
+        self.assertEqual(len(updates), 1)
+        self.assertIs(updates[0][0], entry)
+        self.assertEqual(updates[0][1]["version"], CONFIG_ENTRY_VERSION)
+        self.assertTrue(updates[0][1]["options"]["pv_to_ev_first"])
+        self.assertNotIn("manual_duration_min", updates[0][1]["options"])
+
+    def test_active_reload_zeros_limits_before_planner_shutdown(self):
+        events = []
+
+        class Planner:
+            @staticmethod
+            async def async_shutdown():
+                events.append("planner_shutdown")
+
+        coordinator = object.__new__(BatteryStrategyCoordinator)
+        coordinator.entry = SimpleNamespace(options={"strategy_enabled": False})
+        coordinator._strategy_was_enabled = True
+        coordinator._planner = Planner()
+
+        async def zero_limits(*, blocking=False):
+            events.append(("zero_limits", blocking))
+            return True
+
+        coordinator._async_zero_limits_once = zero_limits
+        asyncio.run(coordinator.async_prepare_unload())
+        self.assertEqual(
+            events,
+            [("zero_limits", True), "planner_shutdown"],
+        )
+
+    def test_disabled_reload_remains_hands_off(self):
+        events = []
+
+        class Planner:
+            @staticmethod
+            async def async_shutdown():
+                events.append("planner_shutdown")
+
+        coordinator = object.__new__(BatteryStrategyCoordinator)
+        coordinator.entry = SimpleNamespace(options={"strategy_enabled": False})
+        coordinator._strategy_was_enabled = False
+        coordinator._planner = Planner()
+
+        async def unexpected_zero(*, blocking=False):
+            events.append(("zero_limits", blocking))
+            return True
+
+        coordinator._async_zero_limits_once = unexpected_zero
+        asyncio.run(coordinator.async_prepare_unload())
+        self.assertEqual(events, ["planner_shutdown"])
+
+    def test_unload_prepares_coordinator_before_platform_removal(self):
+        events = []
+
+        class Coordinator:
+            @staticmethod
+            async def async_prepare_unload():
+                events.append("prepare")
+
+        class ConfigEntries:
+            @staticmethod
+            async def async_unload_platforms(entry, platforms):
+                events.append("platforms")
+                return True
+
+        entry = SimpleNamespace(entry_id="entry-1")
+        hass = SimpleNamespace(
+            data={"battery_strategy": {"entry-1": Coordinator()}},
+            config_entries=ConfigEntries(),
+        )
+        self.assertTrue(asyncio.run(async_unload_entry(hass, entry)))
+        self.assertEqual(events, ["prepare", "platforms"])
+
     def test_slot_progress_accounts_measured_battery_power(self):
         coordinator = object.__new__(BatteryStrategyCoordinator)
         now = dt.datetime.now(dt.timezone.utc)
@@ -259,6 +396,25 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertTrue(second)
         self.assertEqual(len(calls), 2)
         self.assertEqual(coordinator.last_actuation["status"], "disabled_zeroed")
+
+    def test_safe_stop_writes_both_zero_limits_even_if_reported_state_is_zero(self):
+        calls = []
+
+        class Services:
+            @staticmethod
+            async def async_call(domain, service, data, blocking=False):
+                calls.append((domain, service, data, blocking))
+
+        coordinator = object.__new__(BatteryStrategyCoordinator)
+        coordinator.hass = SimpleNamespace(services=Services())
+        coordinator._entity_id = lambda key: key
+        coordinator._state_available = lambda _entity: True
+        coordinator._raw_state_float = lambda _entity: 0.0
+
+        self.assertTrue(asyncio.run(coordinator._async_zero_limits_once(blocking=True)))
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(all(call[2]["value"] == 0 for call in calls))
+        self.assertTrue(all(call[3] for call in calls))
 
     def test_ev_power_dropout_bridges_then_marks_discharge_input_unsafe(self):
         now = dt.datetime.now(dt.timezone.utc)

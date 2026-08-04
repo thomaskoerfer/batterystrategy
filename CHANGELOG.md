@@ -2,6 +2,25 @@
 
 All notable changes to Battery Strategy are documented here.
 
+## [0.2.0-beta.6] - 2026-08-04
+
+### Changed
+
+- Entity mappings now use Home Assistant's reconfigure flow and perform one
+  managed integration reload.
+- Strategy options use `OptionsFlowWithReload`.
+
+### Safety
+
+- Active battery limits are synchronously set to zero before an integration
+  reload or unload. Disabled control remains hands-off.
+- Config-entry version 2 persists the restored EV/PV priority policy during
+  upgrades.
+
+### Tests
+
+- Added upgrade, flow-lifecycle and safe-unload regression coverage.
+
 ## [0.2.0-beta.3] - 2026-08-03
 
 ### Fixed

@@ -560,7 +560,7 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             )
         return False
 
-    async def _async_zero_limits_once(self) -> bool:
+    async def _async_zero_limits_once(self, *, blocking: bool = False) -> bool:
         """Stop once when disabled; retry only until the safe stop can be issued."""
         input_limit_entity = self._entity_id(CONF_ZENDURE_INPUT_LIMIT_ENTITY)
         output_limit_entity = self._entity_id(CONF_ZENDURE_OUTPUT_LIMIT_ENTITY)
@@ -574,25 +574,21 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
 
         current_input = self._raw_state_float(input_limit_entity)
         current_output = self._raw_state_float(output_limit_entity)
-        actions: list[str] = []
-        if current_input > 0:
-            await self.hass.services.async_call(
-                "number",
-                "set_value",
-                {"entity_id": input_limit_entity, "value": 0},
-                blocking=False,
-            )
-            actions.append("input_limit=0")
-        if current_output > 0:
-            await self.hass.services.async_call(
-                "number",
-                "set_value",
-                {"entity_id": output_limit_entity, "value": 0},
-                blocking=False,
-            )
-            actions.append("output_limit=0")
+        actions = ["input_limit=0", "output_limit=0"]
+        await self.hass.services.async_call(
+            "number",
+            "set_value",
+            {"entity_id": input_limit_entity, "value": 0},
+            blocking=blocking,
+        )
+        await self.hass.services.async_call(
+            "number",
+            "set_value",
+            {"entity_id": output_limit_entity, "value": 0},
+            blocking=blocking,
+        )
         self.last_actuation = {
-            "status": "disabled_zeroed" if actions else "disabled_already_zero",
+            "status": "disabled_zeroed",
             "reason": "strategy_disabled",
             "actions": actions,
             "current_input_limit_w": current_input,
@@ -729,8 +725,16 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             "actions": actions,
         }
 
-    async def async_shutdown(self) -> None:
-        """Stop the background optimizer during unload."""
+    async def async_prepare_unload(self) -> None:
+        """Stop active output before a reload, then shut down the planner."""
+        if self._strategy_was_enabled or bool(
+            self.entry.options.get("strategy_enabled", False)
+        ):
+            stopped = await self._async_zero_limits_once(blocking=True)
+            if not stopped:
+                LOGGER.warning(
+                    "Could not confirm safe battery stop before unloading Battery Strategy"
+                )
         await self._planner.async_shutdown()
 
     def _disabled_display_command(self, command: StrategyCommand) -> StrategyCommand:

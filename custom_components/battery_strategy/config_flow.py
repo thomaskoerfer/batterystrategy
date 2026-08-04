@@ -41,6 +41,7 @@ from .const import (
     CONF_ZENDURE_OUTPUT_LIMIT_ENTITY,
     CONF_ZENDURE_OUTPUT_PACK_POWER_ENTITY,
     CONF_ZENDURE_PACK_INPUT_POWER_ENTITY,
+    CONFIG_ENTRY_VERSION,
     DISCHARGE_LOAD,
     DISCHARGE_OFF,
     DISCHARGE_PRICE_SENSITIVE,
@@ -182,11 +183,25 @@ if config_entries is not None:
             CONF_BATTERY_INPUT_ENERGY_ENTITY,
             CONF_BATTERY_OUTPUT_ENERGY_ENTITY,
         }
+        entity_keys = (
+            power_keys
+            | energy_keys
+            | {
+                CONF_PRICE_ENTITY,
+                CONF_BATTERY_SOC_ENTITY,
+                CONF_ZENDURE_AC_MODE_ENTITY,
+                CONF_ZENDURE_INPUT_LIMIT_ENTITY,
+                CONF_ZENDURE_OUTPUT_LIMIT_ENTITY,
+            }
+        )
         for key, entity_id in data.items():
+            if key not in entity_keys:
+                continue
             if not entity_id or key in errors:
                 continue
             state = hass.states.get(entity_id)
             if state is None:
+                errors[key] = "entity_not_found"
                 continue
             unit = (
                 str(state.attributes.get("unit_of_measurement") or "").strip().lower()
@@ -211,7 +226,7 @@ if config_entries is not None:
     class BatteryStrategyConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Handle a config flow for Battery Strategy."""
 
-        VERSION = 1
+        VERSION = CONFIG_ENTRY_VERSION
 
         async def async_step_import(self, user_input):
             """Import a minimal YAML configuration."""
@@ -222,11 +237,7 @@ if config_entries is not None:
             return self.async_create_entry(title="Battery Strategy", data=data)
 
         async def async_step_user(self, user_input=None):
-            """Create the basic integration entry.
-
-            The detailed entity mapping will live in options in early versions so the
-            integration can be installed without touching the existing package.
-            """
+            """Create the integration entry."""
             if user_input is not None:
                 errors = _validate_entity_mapping(self.hass, user_input)
                 if errors:
@@ -244,70 +255,40 @@ if config_entries is not None:
             schema = _entity_schema(_default_entry_data())
             return self.async_show_form(step_id="user", data_schema=schema)
 
+        async def async_step_reconfigure(self, user_input=None):
+            """Update source and control entities with one managed reload."""
+            entry = self._get_reconfigure_entry()
+            current = dict(_default_entry_data())
+            current.update(dict(entry.data))
+            if user_input is not None:
+                data = dict(current)
+                data.update(user_input)
+                errors = _validate_entity_mapping(self.hass, data)
+                if not errors:
+                    return self.async_update_reload_and_abort(
+                        entry,
+                        data_updates=data,
+                    )
+                current = data
+            else:
+                errors = {}
+            return self.async_show_form(
+                step_id="reconfigure",
+                data_schema=_entity_schema(current),
+                errors=errors,
+            )
+
         @staticmethod
         def async_get_options_flow(config_entry):
             """Return the options flow."""
-            return BatteryStrategyOptionsFlow(config_entry)
+            return BatteryStrategyOptionsFlow()
 
-    class BatteryStrategyOptionsFlow(config_entries.OptionsFlow):
+    class BatteryStrategyOptionsFlow(config_entries.OptionsFlowWithReload):
         """Handle Battery Strategy options."""
 
-        def __init__(self, config_entry):
-            """Initialize options flow."""
-            self._config_entry = config_entry
-
         async def async_step_init(self, user_input=None):
-            """Show options menu."""
-            if user_input is not None:
-                section = user_input.get("section")
-                if section == "entities":
-                    return await self.async_step_entities()
-                return await self.async_step_strategy()
-
-            schema = vol.Schema(
-                {
-                    vol.Required("section", default="strategy"): _select_label_selector(
-                        [
-                            {"value": "strategy", "label": "Strategie"},
-                            {"value": "entities", "label": "Entities zuordnen"},
-                        ]
-                    )
-                }
-            )
-            return self.async_show_form(
-                step_id="init",
-                data_schema=schema,
-                description_placeholders={
-                    "hint": "Waehle, welchen Bereich Du konfigurieren willst.",
-                },
-            )
-
-        async def async_step_entities(self, user_input=None):
-            """Edit source and control entity mapping."""
-            if user_input is not None:
-                data = dict(self._config_entry.data)
-                data.update(user_input)
-                errors = _validate_entity_mapping(self.hass, data)
-                if errors:
-                    return self.async_show_form(
-                        step_id="entities",
-                        data_schema=_entity_schema(data),
-                        errors=errors,
-                    )
-                self.hass.config_entries.async_update_entry(
-                    self._config_entry, data=data
-                )
-                self.hass.async_create_task(
-                    self.hass.config_entries.async_reload(self._config_entry.entry_id)
-                )
-                return self.async_create_entry(
-                    title="", data=dict(self._config_entry.options)
-                )
-
-            data = dict(_default_entry_data())
-            data.update(dict(self._config_entry.data))
-            schema = _entity_schema(data)
-            return self.async_show_form(step_id="entities", data_schema=schema)
+            """Show strategy options."""
+            return await self.async_step_strategy(user_input)
 
         async def async_step_strategy(self, user_input=None):
             """Show strategy options sections."""
@@ -342,7 +323,7 @@ if config_entries is not None:
             if user_input is not None:
                 return self._save_options(user_input)
 
-            options = self._config_entry.options
+            options = self.config_entry.options
             schema = vol.Schema(
                 {
                     vol.Required(
@@ -376,7 +357,7 @@ if config_entries is not None:
             if user_input is not None:
                 return self._save_options(user_input)
 
-            options = self._config_entry.options
+            options = self.config_entry.options
             schema = vol.Schema(
                 {
                     vol.Required(
@@ -415,7 +396,7 @@ if config_entries is not None:
 
             return self.async_show_form(
                 step_id="strategy_battery",
-                data_schema=self._battery_schema(dict(self._config_entry.options)),
+                data_schema=self._battery_schema(dict(self.config_entry.options)),
             )
 
         @staticmethod
@@ -481,7 +462,7 @@ if config_entries is not None:
             if user_input is not None:
                 return self._save_options(user_input)
 
-            options = self._config_entry.options
+            options = self.config_entry.options
             schema = vol.Schema(
                 {
                     vol.Required(
@@ -496,7 +477,7 @@ if config_entries is not None:
 
         def _save_options(self, user_input):
             """Persist partial options without dropping other sections."""
-            options = dict(self._config_entry.options)
+            options = dict(self.config_entry.options)
             options.update(user_input)
             return self.async_create_entry(title="", data=options)
 

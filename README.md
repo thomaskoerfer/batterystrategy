@@ -35,6 +35,8 @@ Optional inputs include EV charging power and detailed Zendure battery power ent
 - **Manual override:** manual charge or discharge; the integration services optionally accept a duration
 
 Existing installations preserve their stored control state. A fresh installation starts disabled.
+Use **Reconfigure** to change mapped Home Assistant entities and **Configure**
+to change strategy options. Both paths perform one managed integration reload.
 
 ## Example dashboard
 

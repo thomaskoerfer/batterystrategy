@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 DOMAIN = "battery_strategy"
+CONFIG_ENTRY_VERSION = 2
 
 CONF_GRID_MODE = "grid_mode"
 CONF_BATTERY_PROFILE = "battery_profile"
