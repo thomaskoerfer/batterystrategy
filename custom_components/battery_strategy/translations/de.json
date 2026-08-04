@@ -74,6 +74,7 @@
         "title": "Strategie - EV Policy",
         "description": "Regeln fuer Wallbox-/EV-Lasten.",
         "data": {
+          "pv_to_ev_first": "PV zuerst ins Auto",
           "discharge_during_ev_charging": "Entladung waehrend EV-Ladung erlauben",
           "battery_may_feed_ev": "Batterie darf Auto versorgen",
           "ev_active_threshold_w": "Auto laedt ab"

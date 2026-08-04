@@ -49,10 +49,13 @@ def net_no_battery_no_ev_w(inputs: StrategyInputs, options: StrategyOptions) -> 
 
 def real_pv_surplus_w(inputs: StrategyInputs, options: StrategyOptions) -> float:
     """PV surplus available for strategy charging."""
-    # Charge-follow may only consume export that remains after all live loads,
-    # including the EV. Otherwise an EV session can turn charge-follow into
-    # unintended grid charging.
-    return max(0.0, -net_no_battery_with_ev_w(inputs))
+    residual = net_no_battery_with_ev_w(inputs)
+    if not options.pv_to_ev_first:
+        # Optional policy: calculate available PV before the configured EV load.
+        # This lets battery charging compete with the EV and may intentionally
+        # cause equivalent grid import while both are active.
+        residual -= active_ev_power_w(inputs, options)
+    return max(0.0, -residual)
 
 
 def allowed_discharge_load_w(inputs: StrategyInputs, options: StrategyOptions) -> float:

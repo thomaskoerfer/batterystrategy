@@ -16,6 +16,7 @@ class BatteryStrategyEntity(CoordinatorEntity):
         """Initialize a Battery Strategy entity."""
         super().__init__(coordinator)
         self._attr_unique_id = f"{coordinator.entry.entry_id}_{key}"
+        self._attr_suggested_object_id = f"{DOMAIN}_{key}"
         self._attr_name = name
         self._attr_device_info = {
             "identifiers": {(DOMAIN, coordinator.entry.entry_id)},

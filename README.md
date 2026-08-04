@@ -30,11 +30,19 @@ Optional inputs include EV charging power and detailed Zendure battery power ent
 ## Configuration
 
 - **Mode:** enable control, PV charging, grid charging and discharge policy
-- **EV policy:** exclude EV charging and optionally block all battery discharge while EV charging
+- **EV policy:** choose whether PV serves the EV before battery charge-follow, exclude EV charging from discharge and optionally block all battery discharge while EV charging
 - **Battery and prices:** usable SoC, capacity, power, RTE, margin, feed-in tariff and PV capacity
 - **Manual override:** manual charge or discharge; the integration services optionally accept a duration
 
 Existing installations preserve their stored control state. A fresh installation starts disabled.
+
+## Example dashboard
+
+The integration ships a complete Lovelace example at
+`custom_components/battery_strategy/examples/lovelace_dashboard.json`. Paste its
+JSON into a new dashboard's raw configuration editor after setup. A regression
+test verifies that every Battery Strategy entity referenced by the dashboard is
+provided by the same release.
 
 ## Safety behavior
 

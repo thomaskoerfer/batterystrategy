@@ -166,7 +166,6 @@ def _async_remove_deprecated_entities(hass, entry) -> None:
                 "forty8h_strategy_passed",
                 "live_command_passed",
                 "override_active",
-                "control_pv_to_ev_first",
                 "plan_max_tomorrow_power_delta",
                 "plan_max_48h_power_delta",
             )
@@ -187,7 +186,7 @@ def _async_clean_deprecated_options(hass, entry) -> None:
     """Drop options that were exposed but never controlled distinct behavior."""
     options = dict(entry.options)
     changed = False
-    for key in ("manual_duration_min", "pv_to_ev_first"):
+    for key in ("manual_duration_min",):
         if key in options:
             options.pop(key)
             changed = True

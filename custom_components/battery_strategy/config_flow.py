@@ -380,6 +380,10 @@ if config_entries is not None:
             schema = vol.Schema(
                 {
                     vol.Required(
+                        "pv_to_ev_first",
+                        default=options.get("pv_to_ev_first", True),
+                    ): bool,
+                    vol.Required(
                         "discharge_during_ev_charging",
                         default=options.get("discharge_during_ev_charging", True),
                     ): bool,

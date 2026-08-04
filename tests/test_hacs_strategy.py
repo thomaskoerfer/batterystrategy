@@ -38,6 +38,9 @@ from custom_components.battery_strategy.models import (
 from custom_components.battery_strategy import optimizer_adapter
 from custom_components.battery_strategy import config_flow
 from custom_components.battery_strategy import optimizer_engine
+from custom_components.battery_strategy import number as battery_number
+from custom_components.battery_strategy import select as battery_select
+from custom_components.battery_strategy import switch as battery_switch
 from custom_components.battery_strategy.optimizer_state import (
     load_state_document,
     save_state_document,
@@ -1786,13 +1789,17 @@ class HacsStrategyTests(unittest.TestCase):
                 ev_power_w=4000,
                 soc_pct=60,
             ),
-            StrategyOptions(pv_charging=PV_CHARGING_ON, discharge=DISCHARGE_OFF),
+            StrategyOptions(
+                pv_charging=PV_CHARGING_ON,
+                discharge=DISCHARGE_OFF,
+                pv_to_ev_first=True,
+            ),
         )
         self.assertEqual(cmd.mode, COMMAND_INPUT)
         self.assertEqual(cmd.power_w, 1000)
         self.assertEqual(cmd.pv_surplus_w, 1000)
 
-    def test_pv_surplus_charging_never_treats_ev_load_as_export(self):
+    def test_pv_surplus_can_ignore_ev_load_when_policy_is_disabled(self):
         cmd = calculate_command(
             StrategyInputs(
                 grid_import_w=0,
@@ -1802,11 +1809,68 @@ class HacsStrategyTests(unittest.TestCase):
                 ev_power_w=4000,
                 soc_pct=60,
             ),
-            StrategyOptions(pv_charging=PV_CHARGING_ON, discharge=DISCHARGE_OFF),
+            StrategyOptions(
+                pv_charging=PV_CHARGING_ON,
+                discharge=DISCHARGE_OFF,
+                pv_to_ev_first=False,
+            ),
         )
         self.assertEqual(cmd.mode, COMMAND_INPUT)
-        self.assertEqual(cmd.power_w, 1000)
-        self.assertEqual(cmd.pv_surplus_w, 1000)
+        self.assertEqual(cmd.power_w, 2400)
+        self.assertEqual(cmd.pv_surplus_w, 5000)
+
+    def test_example_dashboard_only_references_shipped_entities(self):
+        dashboard_path = (
+            Path(__file__).parents[1]
+            / "custom_components"
+            / "battery_strategy"
+            / "examples"
+            / "lovelace_dashboard.json"
+        )
+        dashboard = json.loads(dashboard_path.read_text(encoding="utf-8"))
+
+        references = set()
+
+        def collect(value):
+            if isinstance(value, dict):
+                for child in value.values():
+                    collect(child)
+            elif isinstance(value, list):
+                for child in value:
+                    collect(child)
+            elif isinstance(value, str) and value.startswith(
+                (
+                    "sensor.battery_strategy_",
+                    "switch.battery_strategy_",
+                    "select.battery_strategy_",
+                    "number.battery_strategy_",
+                )
+            ):
+                references.add(value)
+
+        collect(dashboard)
+        supported = {
+            *(
+                f"sensor.battery_strategy_{description.key}"
+                for description in battery_sensor.SENSORS
+            ),
+            *(
+                f"switch.battery_strategy_control_{key}"
+                for key, _name, _default in battery_switch.SWITCHES
+            ),
+            *(
+                f"select.battery_strategy_control_{key}"
+                for key, _name, _default, _options in battery_select.SELECTS
+            ),
+            *(
+                f"number.battery_strategy_control_{control.key}"
+                for control in battery_number.NUMBERS
+            ),
+        }
+
+        self.assertTrue(references)
+        self.assertEqual(references - supported, set())
+        self.assertIn("switch.battery_strategy_control_pv_to_ev_first", references)
 
     def test_live_discharge_budget_uses_current_soc_instead_of_stale_plan_soc(self):
         now = dt.datetime(2026, 7, 21, 20, tzinfo=dt.timezone.utc)
