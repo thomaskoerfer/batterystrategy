@@ -1746,6 +1746,86 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertEqual(cmd.power_w, 450)
         self.assertEqual(cmd.reason, "budget_discharge")
 
+    def test_headroom_budget_never_overrides_live_pv_or_exports_battery_power(self):
+        now = dt.datetime(2026, 8, 13, 12, tzinfo=dt.timezone.utc)
+        point = PlanPoint(
+            int(now.timestamp() * 1000),
+            now.date().isoformat(),
+            20.0,
+            400,
+            3000,
+            0,
+            1700,
+            -1700,
+            COMMAND_INPUT,
+            900,
+            900,
+            0,
+            60.0,
+            discharge_budget_kwh=0.35,
+        )
+        plan = StrategyPlan([point], COMMAND_INPUT, 900, "pv headroom")
+        options = StrategyOptions(
+            pv_charging=PV_CHARGING_ON,
+            grid_charging=GRID_CHARGING_PRICE_SENSITIVE,
+            discharge=DISCHARGE_PRICE_SENSITIVE,
+            battery_may_feed_ev=False,
+            max_discharge_power_w=2400,
+        )
+
+        surplus_inputs = StrategyInputs(
+            grid_import_w=0,
+            grid_export_w=1000,
+            pv_w=2000,
+            battery_power_w=0,
+            ev_power_w=0,
+            soc_pct=60,
+        )
+        surplus_command = live_command_from_plan(
+            plan,
+            calculate_command(surplus_inputs, options),
+            surplus_inputs,
+            options,
+        )
+        self.assertEqual(surplus_command.mode, COMMAND_INPUT)
+        self.assertEqual(surplus_command.power_w, 1000)
+        self.assertEqual(surplus_command.reason, "live_pv_surplus")
+
+        unexpected_load_inputs = StrategyInputs(
+            grid_import_w=600,
+            grid_export_w=0,
+            pv_w=500,
+            battery_power_w=0,
+            ev_power_w=0,
+            soc_pct=60,
+        )
+        load_command = live_command_from_plan(
+            plan,
+            calculate_command(unexpected_load_inputs, options),
+            unexpected_load_inputs,
+            options,
+        )
+        self.assertEqual(load_command.mode, COMMAND_OUTPUT)
+        self.assertEqual(load_command.power_w, 600)
+        self.assertEqual(load_command.reason, "budget_discharge")
+
+        no_load_inputs = StrategyInputs(
+            grid_import_w=0,
+            grid_export_w=0,
+            pv_w=0,
+            battery_power_w=0,
+            ev_power_w=0,
+            soc_pct=60,
+        )
+        idle_command = live_command_from_plan(
+            plan,
+            calculate_command(no_load_inputs, options),
+            no_load_inputs,
+            options,
+        )
+        self.assertEqual(idle_command.mode, COMMAND_IDLE)
+        self.assertEqual(idle_command.power_w, 0)
+
     def test_price_sensitive_highest_price_block_releases_available_energy(self):
         now = dt.datetime(2026, 5, 29, 21, tzinfo=dt.timezone.utc)
         points = [
@@ -2469,6 +2549,117 @@ class HacsStrategyTests(unittest.TestCase):
 
         self.assertGreater(sum(p["grid_export_fc_w"] for p in plan["points"][1:4]), 0.0)
         self.assertGreater(plan["points"][0]["discharge_budget_kwh"], 0.0)
+
+    def test_optimizer_headroom_budget_coexists_with_planned_pv_charge(self):
+        """A budget may serve real load while live PV surplus still charges."""
+        start = dt.datetime(2026, 8, 13, 12, tzinfo=optimizer_engine.OPEN_METEO_TZ)
+        prices = [20.0] * 4 + [50.0] * 4
+        intervals = [
+            {"dt": start + dt.timedelta(minutes=15 * i), "price_eur": price / 100.0}
+            for i, price in enumerate(prices)
+        ]
+        samples = []
+        for weeks_ago in range(1, 5):
+            base = start - dt.timedelta(days=7 * weeks_ago)
+            for i, price in enumerate(prices):
+                pv_w = 3000.0 if i < 4 else 0.0
+                load_w = 400.0 if i < 4 else 1500.0
+                samples.append(
+                    {
+                        "ts": (base + dt.timedelta(minutes=15 * i)).timestamp(),
+                        "load_w": load_w,
+                        "house_w": load_w,
+                        "house_total_w": load_w,
+                        "wallbox_w": 0.0,
+                        "grid_import_w": load_w if pv_w == 0.0 else 0.0,
+                        "grid_export_w": max(0.0, pv_w - load_w),
+                        "pv_w": pv_w,
+                        "hp_w": 0.0,
+                        "price_ct": price,
+                    }
+                )
+
+        plan = optimizer_engine.build_virtual_plan(
+            intervals=intervals,
+            samples=samples,
+            start_energy_kwh=1.0,
+            weather_factor=1.0,
+            forecast_tomorrow_kwh=None,
+            load_bias=1.0,
+            load_bias_slots=[1.0] * optimizer_engine.SLOTS_PER_DAY,
+            pv_bias_slots=[1.0] * optimizer_engine.SLOTS_PER_DAY,
+            initial_mode=0,
+            weather_hourly={},
+            pv_now_actual_w=3000.0,
+            now_local=start,
+            pv_global_bias=1.0,
+            eex_days={},
+        )
+
+        current = plan["points"][0]
+        self.assertGreater(current["charge_fc_w"], 0.0)
+        self.assertGreater(current["discharge_budget_kwh"], 0.0)
+        self.assertGreater(
+            sum(point["grid_export_fc_w"] for point in plan["points"][:4]),
+            0.0,
+        )
+
+    def test_optimizer_headroom_credit_is_disabled_when_pv_charging_is_off(self):
+        start = dt.datetime(2026, 8, 13, 12, tzinfo=optimizer_engine.OPEN_METEO_TZ)
+        intervals = [
+            {
+                "dt": start + dt.timedelta(minutes=15 * i),
+                "price_eur": (20.0 if i < 4 else 50.0) / 100.0,
+            }
+            for i in range(8)
+        ]
+        samples = []
+        for weeks_ago in range(1, 5):
+            base = start - dt.timedelta(days=7 * weeks_ago)
+            for i in range(8):
+                pv_w = 3000.0 if i < 4 else 0.0
+                load_w = 400.0 if i < 4 else 1500.0
+                samples.append(
+                    {
+                        "ts": (base + dt.timedelta(minutes=15 * i)).timestamp(),
+                        "load_w": load_w,
+                        "house_w": load_w,
+                        "house_total_w": load_w,
+                        "wallbox_w": 0.0,
+                        "grid_import_w": load_w if pv_w == 0.0 else 0.0,
+                        "grid_export_w": max(0.0, pv_w - load_w),
+                        "pv_w": pv_w,
+                        "hp_w": 0.0,
+                        "price_ct": 20.0 if i < 4 else 50.0,
+                    }
+                )
+
+        original = optimizer_engine.PV_CHARGING_ENABLED
+        optimizer_engine.PV_CHARGING_ENABLED = False
+        try:
+            plan = optimizer_engine.build_virtual_plan(
+                intervals=intervals,
+                samples=samples,
+                start_energy_kwh=1.0,
+                weather_factor=1.0,
+                forecast_tomorrow_kwh=None,
+                load_bias=1.0,
+                load_bias_slots=[1.0] * optimizer_engine.SLOTS_PER_DAY,
+                pv_bias_slots=[1.0] * optimizer_engine.SLOTS_PER_DAY,
+                initial_mode=0,
+                weather_hourly={},
+                pv_now_actual_w=3000.0,
+                now_local=start,
+                pv_global_bias=1.0,
+                eex_days={},
+            )
+        finally:
+            optimizer_engine.PV_CHARGING_ENABLED = original
+
+        self.assertTrue(
+            all(point["discharge_budget_kwh"] == 0.0 for point in plan["points"][:4])
+        )
+        self.assertTrue(all(point["charge_fc_w"] == 0.0 for point in plan["points"]))
 
     def test_optimizer_discharge_budget_reserves_scarce_energy_for_later_high_prices(
         self,

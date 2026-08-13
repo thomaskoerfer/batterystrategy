@@ -1882,6 +1882,8 @@ def build_virtual_plan(intervals, samples, start_energy_kwh, weather_factor, for
         return default_end
 
     def safe_pv_recovery_ac_kwh(t, baseline_after_e):
+        if not PV_CHARGING_ENABLED:
+            return 0.0
         end_idx = recovery_window_end_idx(t)
         future_surplus_kwh = max(0.0, future_pv_surplus_kwh[t + 1] - future_pv_surplus_kwh[end_idx])
         recoverable_storage_kwh = future_surplus_kwh * ETA_C * PV_RECOVERY_CONFIDENCE
@@ -1924,8 +1926,9 @@ def build_virtual_plan(intervals, samples, start_energy_kwh, weather_factor, for
         return reserved_kwh
 
     def explicit_discharge_budget_kwh(t):
-        if point_charge_kwh(t) > 1e-6:
-            return 0.0
+        # A budget is permission to serve real load, not an instruction to
+        # discharge. Keep it independent from planned PV charging: live control
+        # still prioritizes actual PV surplus and never exports battery power.
         slot_energy_kwh = pre_slot_energy_kwh(t)
         available_ac_kwh = max(0.0, (slot_energy_kwh - MIN_E_KWH) * ETA_D)
         max_total_discharge_kwh = min(MAX_DISCHARGE_E_SLOT_KWH, available_ac_kwh)
