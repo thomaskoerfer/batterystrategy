@@ -2551,7 +2551,7 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertGreater(plan["points"][0]["discharge_budget_kwh"], 0.0)
 
     def test_optimizer_headroom_budget_coexists_with_planned_pv_charge(self):
-        """A budget may serve real load while live PV surplus still charges."""
+        """Surplus-backed budget may serve load while live PV still charges."""
         start = dt.datetime(2026, 8, 13, 12, tzinfo=optimizer_engine.OPEN_METEO_TZ)
         prices = [20.0] * 4 + [50.0] * 4
         intervals = [
@@ -2601,6 +2601,154 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertGreater(current["discharge_budget_kwh"], 0.0)
         self.assertGreater(
             sum(point["grid_export_fc_w"] for point in plan["points"][:4]),
+            0.0,
+        )
+
+        planned_charge_kwh = float(current["charge_fc_w"]) * optimizer_engine.SLOT_H / 1000.0
+        later_export_kwh = sum(
+            float(point["grid_export_fc_w"]) * optimizer_engine.SLOT_H / 1000.0
+            for point in plan["points"][1:4]
+        )
+        safe_recovery_ac_kwh = later_export_kwh * optimizer_engine.ETA_RT * optimizer_engine.PV_RECOVERY_CONFIDENCE
+        self.assertLessEqual(
+            float(current["discharge_budget_kwh"]) + planned_charge_kwh * optimizer_engine.ETA_RT,
+            safe_recovery_ac_kwh + 1e-3,
+        )
+
+    def test_optimizer_never_combines_grid_charge_with_discharge_budget(self):
+        start = dt.datetime(2026, 8, 13, 12, tzinfo=optimizer_engine.OPEN_METEO_TZ)
+        prices = [18.0] * 4 + [45.0] * 8
+        intervals = [
+            {"dt": start + dt.timedelta(minutes=15 * i), "price_eur": price / 100.0}
+            for i, price in enumerate(prices)
+        ]
+        samples = []
+        for weeks_ago in range(1, 5):
+            base = start - dt.timedelta(days=7 * weeks_ago)
+            for i, price in enumerate(prices):
+                load_w = 400.0 if i < 4 else 1800.0
+                samples.append(
+                    {
+                        "ts": (base + dt.timedelta(minutes=15 * i)).timestamp(),
+                        "load_w": load_w,
+                        "house_w": load_w,
+                        "house_total_w": load_w,
+                        "wallbox_w": 0.0,
+                        "grid_import_w": load_w,
+                        "grid_export_w": 0.0,
+                        "pv_w": 0.0,
+                        "hp_w": 0.0,
+                        "price_ct": price,
+                    }
+                )
+
+        plan = optimizer_engine.build_virtual_plan(
+            intervals=intervals,
+            samples=samples,
+            start_energy_kwh=1.0,
+            weather_factor=1.0,
+            forecast_tomorrow_kwh=None,
+            load_bias=1.0,
+            load_bias_slots=[1.0] * optimizer_engine.SLOTS_PER_DAY,
+            pv_bias_slots=[1.0] * optimizer_engine.SLOTS_PER_DAY,
+            initial_mode=0,
+            weather_hourly={},
+            pv_now_actual_w=0.0,
+            now_local=start,
+            pv_global_bias=1.0,
+            eex_days={},
+        )
+
+        charging_points = [
+            point
+            for point in plan["points"]
+            if float(point["charge_fc_w"])
+            > max(0.0, float(point["pv_fc_w"]) - float(point["load_fc_w"])) + 1.0
+        ]
+        self.assertTrue(charging_points)
+        self.assertTrue(
+            all(float(point["discharge_budget_kwh"]) == 0.0 for point in charging_points)
+        )
+
+    def test_headroom_budget_use_does_not_trigger_meaningful_grid_repurchase(self):
+        start = dt.datetime(2026, 8, 13, 12, tzinfo=optimizer_engine.OPEN_METEO_TZ)
+        prices = [20.0] * 4 + [50.0] * 4
+        intervals = [
+            {"dt": start + dt.timedelta(minutes=15 * i), "price_eur": price / 100.0}
+            for i, price in enumerate(prices)
+        ]
+        samples = []
+        for weeks_ago in range(1, 5):
+            base = start - dt.timedelta(days=7 * weeks_ago)
+            for i, price in enumerate(prices):
+                pv_w = 1500.0 if i == 0 else (2000.0 if i < 4 else 0.0)
+                load_w = 100.0 if i < 4 else 1800.0
+                samples.append(
+                    {
+                        "ts": (base + dt.timedelta(minutes=15 * i)).timestamp(),
+                        "load_w": load_w,
+                        "house_w": load_w,
+                        "house_total_w": load_w,
+                        "wallbox_w": 0.0,
+                        "grid_import_w": max(0.0, load_w - pv_w),
+                        "grid_export_w": max(0.0, pv_w - load_w),
+                        "pv_w": pv_w,
+                        "hp_w": 0.0,
+                        "price_ct": price,
+                    }
+                )
+
+        first_plan = optimizer_engine.build_virtual_plan(
+            intervals=intervals,
+            samples=samples,
+            start_energy_kwh=2.0,
+            weather_factor=1.0,
+            forecast_tomorrow_kwh=None,
+            load_bias=1.0,
+            load_bias_slots=[1.0] * optimizer_engine.SLOTS_PER_DAY,
+            pv_bias_slots=[1.0] * optimizer_engine.SLOTS_PER_DAY,
+            initial_mode=0,
+            weather_hourly={},
+            pv_now_actual_w=1500.0,
+            now_local=start,
+            pv_global_bias=1.0,
+            eex_days={},
+        )
+        budget_kwh = float(first_plan["points"][0]["discharge_budget_kwh"])
+        self.assertGreater(budget_kwh, 0.0)
+
+        next_energy_kwh = max(
+            optimizer_engine.MIN_E_KWH,
+            2.0 - budget_kwh / optimizer_engine.ETA_D,
+        )
+        second_plan = optimizer_engine.build_virtual_plan(
+            intervals=intervals[1:],
+            samples=samples,
+            start_energy_kwh=next_energy_kwh,
+            weather_factor=1.0,
+            forecast_tomorrow_kwh=None,
+            load_bias=1.0,
+            load_bias_slots=[1.0] * optimizer_engine.SLOTS_PER_DAY,
+            pv_bias_slots=[1.0] * optimizer_engine.SLOTS_PER_DAY,
+            initial_mode=0,
+            weather_hourly={},
+            pv_now_actual_w=2000.0,
+            now_local=start + dt.timedelta(minutes=15),
+            pv_global_bias=1.0,
+            eex_days={},
+        )
+        pv_window = second_plan["points"][:3]
+        max_grid_charge_w = max(
+            max(
+                0.0,
+                float(point["charge_fc_w"])
+                - max(0.0, float(point["pv_fc_w"]) - float(point["load_fc_w"])),
+            )
+            for point in pv_window
+        )
+        self.assertLess(max_grid_charge_w, 50.0)
+        self.assertGreater(
+            sum(float(point["grid_export_fc_w"]) for point in pv_window),
             0.0,
         )
 

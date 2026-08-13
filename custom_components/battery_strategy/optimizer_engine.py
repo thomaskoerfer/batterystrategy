@@ -1894,16 +1894,30 @@ def build_virtual_plan(intervals, samples, start_energy_kwh, weather_factor, for
         planned_export_recovery_ac_kwh = planned_export_kwh * ETA_RT * PV_RECOVERY_CONFIDENCE
         return max(spill_recovery_ac_kwh, planned_export_recovery_ac_kwh)
 
-    def final_slot_energy_kwh(t):
-        return clamp((float(points[t].get("soc_pct", 0.0)) / 100.0) * CAP_KWH, MIN_E_KWH, MAX_E_KWH)
-
     def pre_slot_energy_kwh(t):
-        if t <= 0:
-            return clamp(float(start_energy_kwh), MIN_E_KWH, MAX_E_KWH)
-        return final_slot_energy_kwh(t - 1)
+        return clamp(
+            (float(points[t].get("soc_pct", 0.0)) / 100.0) * CAP_KWH,
+            MIN_E_KWH,
+            MAX_E_KWH,
+        )
 
     def point_charge_kwh(t):
         return max(0.0, float(points[t].get("charge_fc_w", 0.0)) / 1000.0 * SLOT_H)
+
+    def point_discharge_kwh(t):
+        return max(0.0, float(points[t].get("discharge_fc_w", 0.0)) / 1000.0 * SLOT_H)
+
+    def post_slot_energy_kwh(t):
+        return clamp(
+            pre_slot_energy_kwh(t)
+            + point_charge_kwh(t) * ETA_C
+            - point_discharge_kwh(t) / ETA_D,
+            MIN_E_KWH,
+            MAX_E_KWH,
+        )
+
+    def point_grid_charge_kwh(t):
+        return max(0.0, point_charge_kwh(t) - float(slots[t]["surplus_kwh"]))
 
     def future_higher_value_load_kwh(t):
         """Return forecast load worth reserving inventory for before recharge."""
@@ -1926,9 +1940,12 @@ def build_virtual_plan(intervals, samples, start_energy_kwh, weather_factor, for
         return reserved_kwh
 
     def explicit_discharge_budget_kwh(t):
-        # A budget is permission to serve real load, not an instruction to
-        # discharge. Keep it independent from planned PV charging: live control
-        # still prioritizes actual PV surplus and never exports battery power.
+        # A budget may coexist with free PV charging, but never with paid
+        # charging. Otherwise live discharge lowers SoC and the next optimizer
+        # run immediately buys the same energy back through must-charge.
+        if point_grid_charge_kwh(t) > 1e-6:
+            return 0.0
+
         slot_energy_kwh = pre_slot_energy_kwh(t)
         available_ac_kwh = max(0.0, (slot_energy_kwh - MIN_E_KWH) * ETA_D)
         max_total_discharge_kwh = min(MAX_DISCHARGE_E_SLOT_KWH, available_ac_kwh)
@@ -1940,12 +1957,19 @@ def build_virtual_plan(intervals, samples, start_energy_kwh, weather_factor, for
         if price_ct < PV_EXPORT_OPPORTUNITY_CT + MIN_MARGIN_CT:
             return 0.0
 
-        safe_recovery_kwh = safe_pv_recovery_ac_kwh(t, slot_energy_kwh)
-        pv_recovery_budget_kwh = min(max_total_discharge_kwh, max(0.0, safe_recovery_kwh))
+        safe_recovery_kwh = safe_pv_recovery_ac_kwh(t, post_slot_energy_kwh(t))
+        # If live conditions turn a forecast PV-charge slot into discharge, the
+        # later free PV must first replace the missed planned charge. Only the
+        # remaining recovery energy is safe to expose as a discharge budget.
+        missed_plan_recovery_kwh = point_charge_kwh(t) * ETA_RT
+        pv_recovery_budget_kwh = min(
+            max_total_discharge_kwh,
+            max(0.0, safe_recovery_kwh - missed_plan_recovery_kwh),
+        )
 
         scarce_budget_kwh = 0.0
         scarce_floor_ct = float(discharge_floor_ct or 0.0)
-        if price_ct >= scarce_floor_ct:
+        if point_charge_kwh(t) <= 1e-6 and price_ct >= scarce_floor_ct:
             higher_value_need_kwh = future_higher_value_load_kwh(t)
             scarce_budget_kwh = max(
                 0.0,
