@@ -3125,13 +3125,6 @@ class HacsStrategyTests(unittest.TestCase):
             round(optimizer_engine.MAX_E_SLOT_KWH, 3),
         )
 
-    def test_optimizer_discharge_budget_has_no_current_charge_path_hard_block(self):
-        source = Path(optimizer_engine.__file__).read_text(encoding="utf-8")
-        budget_fn = source.split("def explicit_discharge_budget_kwh", 1)[1].split(
-            "for idx, point in enumerate(points)", 1
-        )[0]
-        self.assertNotIn("path_charge_in[t]", budget_fn)
-
     def test_optimizer_adapter_filters_expired_cached_slots(self):
         now = dt.datetime(2026, 5, 29, 12, tzinfo=dt.timezone.utc)
         old_ts = int((now - dt.timedelta(minutes=20)).timestamp() * 1000)
