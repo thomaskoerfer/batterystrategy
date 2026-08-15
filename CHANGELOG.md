@@ -2,7 +2,7 @@
 
 All notable changes to Battery Strategy are documented here.
 
-## Unreleased
+## [0.2.0-beta.7] - 2026-08-15
 
 ### Changed
 
@@ -11,6 +11,10 @@ All notable changes to Battery Strategy are documented here.
 - Optional entity mappings can be cleared in the reconfigure flow.
 - Removed unused pre-HACS forecast, persistence and Tibber storage helpers.
 - Documented that Tibber Prices is price-only and never a grid-power fallback.
+
+### Fixed
+
+- PV headroom discharge budgets remain consistent with planned charging.
 
 ## [0.2.0-beta.6] - 2026-08-04
 
