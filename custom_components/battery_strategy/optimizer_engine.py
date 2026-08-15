@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+"""Transitional optimizer monolith; see ARCHITECTURE.md before changing layers."""
+
 import base64
 import bisect
 import datetime as dt
