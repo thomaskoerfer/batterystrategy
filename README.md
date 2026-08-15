@@ -4,7 +4,8 @@ Battery Strategy plans and controls a Home Assistant battery using quarter-hour 
 
 Development and refactoring must follow the documented
 [target architecture](ARCHITECTURE.md), especially its single-actuator safety
-invariant and staged migration gates.
+invariant and staged migration gates. Layer changes must also preserve the
+[interface contracts](INTERFACE_CONTRACTS.md).
 
 > [!WARNING]
 > This integration can command real battery hardware. New installations start with control disabled. Verify entity mappings, units, signs, SoC limits and the displayed live command before enabling control. Keep the battery/BMS safety limits active.

@@ -4,6 +4,9 @@ This document defines the target architecture and the migration rules for
 Battery Strategy. Contributors should read it before changing forecasting,
 optimization, history access, plan directives, or live battery control.
 
+The normative units, data semantics and executable layer boundaries are defined
+in [INTERFACE_CONTRACTS.md](INTERFACE_CONTRACTS.md) and the `contracts` package.
+
 ## Safety invariant
 
 There is exactly one battery actuation path. Shadow implementations may produce

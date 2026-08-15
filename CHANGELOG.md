@@ -2,6 +2,15 @@
 
 All notable changes to Battery Strategy are documented here.
 
+## Unreleased
+
+### Added
+
+- Documented and executable interface contracts for data, forecasting,
+  optimization, plan compilation, live control and actuation boundaries.
+- Contract tests for units, slot alignment, forecast grids, market signs and
+  fail-closed command semantics.
+
 ## [0.2.0-beta.7] - 2026-08-15
 
 ### Changed

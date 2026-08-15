@@ -1,0 +1,203 @@
+"""Contracts between plan compilation, live control and actuation."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from enum import StrEnum
+from typing import Protocol
+
+from .common import DataQuality, SlotKey, require_nonnegative, require_percentage
+from .optimization import BatteryPlan
+
+
+class CommandMode(StrEnum):
+    """Unambiguous actuator direction."""
+
+    IDLE = "idle"
+    INPUT = "input"
+    OUTPUT = "output"
+
+
+@dataclass(frozen=True, slots=True)
+class SlotProgress:
+    """Measured progress used when compiling a current-slot directive."""
+
+    slot: SlotKey
+    charged_kwh: float
+    discharged_kwh: float
+    soc_pct: float
+
+    def __post_init__(self) -> None:
+        require_nonnegative("charged_kwh", self.charged_kwh)
+        require_nonnegative("discharged_kwh", self.discharged_kwh)
+        require_percentage("soc_pct", self.soc_pct)
+
+
+@dataclass(frozen=True, slots=True)
+class PlanLiveDirective:
+    """Complete commercial permission consumed by fast live control."""
+
+    directive_id: str
+    plan_id: str
+    issued_at_ms: int
+    slot: SlotKey
+    pv_charge_allowed: bool
+    grid_charge_allowed: bool
+    required_charge_remaining_kwh: float
+    max_pv_charge_power_w: float
+    max_grid_charge_power_w: float
+    max_discharge_power_w: float
+    discharge_budget_remaining_kwh: float
+    min_soc_pct: float
+    max_soc_pct: float
+
+    def __post_init__(self) -> None:
+        if not self.directive_id or not self.plan_id or self.issued_at_ms < 0:
+            raise ValueError("directive identity and issued_at_ms are required")
+        for name in (
+            "required_charge_remaining_kwh",
+            "max_pv_charge_power_w",
+            "max_grid_charge_power_w",
+            "max_discharge_power_w",
+            "discharge_budget_remaining_kwh",
+        ):
+            require_nonnegative(name, getattr(self, name))
+        require_percentage("min_soc_pct", self.min_soc_pct)
+        require_percentage("max_soc_pct", self.max_soc_pct)
+        if self.min_soc_pct >= self.max_soc_pct:
+            raise ValueError("directive min_soc_pct must be below max_soc_pct")
+        if not self.grid_charge_allowed and self.max_grid_charge_power_w > 0.0:
+            raise ValueError("grid charge power requires grid_charge_allowed")
+        if not self.pv_charge_allowed and self.max_pv_charge_power_w > 0.0:
+            raise ValueError("PV charge power requires pv_charge_allowed")
+
+
+@dataclass(frozen=True, slots=True)
+class LiveMeasurements:
+    """One normalized live snapshot; all named power flows are positive."""
+
+    captured_at_ms: int
+    grid_import_w: float
+    grid_export_w: float
+    pv_generation_w: float
+    battery_charge_w: float
+    battery_discharge_w: float
+    ev_charge_w: float
+    soc_pct: float
+    quality: DataQuality = DataQuality()
+
+    def __post_init__(self) -> None:
+        if self.captured_at_ms < 0:
+            raise ValueError("captured_at_ms must be non-negative")
+        for name in (
+            "grid_import_w",
+            "grid_export_w",
+            "pv_generation_w",
+            "battery_charge_w",
+            "battery_discharge_w",
+            "ev_charge_w",
+        ):
+            require_nonnegative(name, getattr(self, name))
+        require_percentage("soc_pct", self.soc_pct)
+        if self.battery_charge_w > 0.0 and self.battery_discharge_w > 0.0:
+            raise ValueError("battery cannot charge and discharge simultaneously")
+
+
+@dataclass(frozen=True, slots=True)
+class LivePolicy:
+    """User policy evaluated only against live EV and meter measurements."""
+
+    pv_to_ev_first: bool
+    discharge_during_ev_charging: bool
+    battery_may_feed_ev: bool
+    ev_active_threshold_w: float
+    min_command_power_w: float
+
+    def __post_init__(self) -> None:
+        require_nonnegative("ev_active_threshold_w", self.ev_active_threshold_w)
+        require_nonnegative("min_command_power_w", self.min_command_power_w)
+
+
+@dataclass(frozen=True, slots=True)
+class LiveControlState:
+    """Explicit previous-command state used by a pure live controller."""
+
+    previous_mode: CommandMode
+    previous_power_w: float
+    previous_command_at_ms: int | None
+
+    def __post_init__(self) -> None:
+        require_nonnegative("previous_power_w", self.previous_power_w)
+        if self.previous_command_at_ms is not None and self.previous_command_at_ms < 0:
+            raise ValueError("previous_command_at_ms must be non-negative")
+        if self.previous_mode == CommandMode.IDLE and self.previous_power_w != 0.0:
+            raise ValueError("idle live-control state must have zero power")
+
+
+@dataclass(frozen=True, slots=True)
+class BatteryCommand:
+    """Validated command passed to the single actuator path."""
+
+    command_id: str
+    directive_id: str
+    created_at_ms: int
+    valid_until_ms: int
+    mode: CommandMode
+    power_w: float
+    reason: str
+
+    def __post_init__(self) -> None:
+        if not self.command_id or not self.directive_id or not self.reason:
+            raise ValueError("command identity, directive and reason are required")
+        if self.created_at_ms < 0 or self.valid_until_ms <= self.created_at_ms:
+            raise ValueError("command validity interval is invalid")
+        require_nonnegative("power_w", self.power_w)
+        if self.mode == CommandMode.IDLE and self.power_w != 0.0:
+            raise ValueError("idle commands must have zero power")
+        if self.mode != CommandMode.IDLE and self.power_w <= 0.0:
+            raise ValueError("active commands must have positive power")
+
+
+@dataclass(frozen=True, slots=True)
+class ActuationResult:
+    """Observable result of one actuator request."""
+
+    command_id: str
+    applied: bool
+    applied_at_ms: int
+    detail: str
+
+    def __post_init__(self) -> None:
+        if not self.command_id or self.applied_at_ms < 0 or not self.detail:
+            raise ValueError(
+                "actuation result identity, timestamp and detail are required"
+            )
+
+
+class PlanCompiler(Protocol):
+    """Pure conversion from plan intent and measured progress to a directive."""
+
+    def compile(
+        self,
+        plan: BatteryPlan,
+        progress: SlotProgress,
+        issued_at_ms: int,
+    ) -> PlanLiveDirective: ...
+
+
+class LiveController(Protocol):
+    """Fast, side-effect-free meter-following command calculation."""
+
+    def command(
+        self,
+        directive: PlanLiveDirective,
+        measurements: LiveMeasurements,
+        policy: LivePolicy,
+        state: LiveControlState,
+    ) -> tuple[BatteryCommand, LiveControlState]: ...
+
+
+class BatteryActuator(Protocol):
+    """The only port allowed to write battery hardware controls."""
+
+    async def apply(self, command: BatteryCommand) -> ActuationResult: ...
