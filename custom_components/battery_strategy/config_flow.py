@@ -102,6 +102,31 @@ if config_entries is not None:
             )
         )
 
+    def _optional_entity_key(key: str, value: str):
+        """Return an optional entity field that can also be cleared."""
+        description = {"suggested_value": value} if value else None
+        return vol.Optional(key, description=description)
+
+    OPTIONAL_ENTITY_KEYS = (
+        CONF_SIGNED_GRID_POWER_ENTITY,
+        CONF_GRID_L1_ENTITY,
+        CONF_GRID_L2_ENTITY,
+        CONF_GRID_L3_ENTITY,
+        CONF_GRID_IMPORT_ENTITY,
+        CONF_GRID_EXPORT_ENTITY,
+        CONF_BATTERY_INPUT_ENERGY_ENTITY,
+        CONF_BATTERY_OUTPUT_ENERGY_ENTITY,
+        CONF_EV_POWER_ENTITY,
+        CONF_BATTERY_POWER_ENTITY,
+        CONF_ZENDURE_AC_MODE_ENTITY,
+        CONF_ZENDURE_OUTPUT_PACK_POWER_ENTITY,
+        CONF_ZENDURE_PACK_INPUT_POWER_ENTITY,
+        CONF_ZENDURE_OUTPUT_HOME_POWER_ENTITY,
+        CONF_ZENDURE_GRID_INPUT_POWER_ENTITY,
+        CONF_ZENDURE_INPUT_LIMIT_ENTITY,
+        CONF_ZENDURE_OUTPUT_LIMIT_ENTITY,
+    )
+
     def _default_entry_data() -> dict[str, str]:
         """Return safe, portable defaults for a new installation."""
         return {
@@ -262,6 +287,8 @@ if config_entries is not None:
             current.update(dict(entry.data))
             if user_input is not None:
                 data = dict(current)
+                for key in OPTIONAL_ENTITY_KEYS:
+                    data[key] = user_input.get(key, "")
                 data.update(user_input)
                 errors = _validate_entity_mapping(self.hass, data)
                 if not errors:
@@ -493,24 +520,24 @@ if config_entries is not None:
                 CONF_BATTERY_PROFILE,
                 default=data.get(CONF_BATTERY_PROFILE, BATTERY_PROFILE_ZENDURE),
             ): _select_selector([BATTERY_PROFILE_ZENDURE, BATTERY_PROFILE_GENERIC]),
-            vol.Optional(
+            _optional_entity_key(
                 CONF_SIGNED_GRID_POWER_ENTITY,
-                default=data.get(CONF_SIGNED_GRID_POWER_ENTITY, ""),
+                data.get(CONF_SIGNED_GRID_POWER_ENTITY, ""),
             ): _entity_selector(["sensor"]),
-            vol.Optional(
-                CONF_GRID_L1_ENTITY, default=data.get(CONF_GRID_L1_ENTITY, "")
+            _optional_entity_key(
+                CONF_GRID_L1_ENTITY, data.get(CONF_GRID_L1_ENTITY, "")
             ): _entity_selector(["sensor"]),
-            vol.Optional(
-                CONF_GRID_L2_ENTITY, default=data.get(CONF_GRID_L2_ENTITY, "")
+            _optional_entity_key(
+                CONF_GRID_L2_ENTITY, data.get(CONF_GRID_L2_ENTITY, "")
             ): _entity_selector(["sensor"]),
-            vol.Optional(
-                CONF_GRID_L3_ENTITY, default=data.get(CONF_GRID_L3_ENTITY, "")
+            _optional_entity_key(
+                CONF_GRID_L3_ENTITY, data.get(CONF_GRID_L3_ENTITY, "")
             ): _entity_selector(["sensor"]),
-            vol.Optional(
-                CONF_GRID_IMPORT_ENTITY, default=data.get(CONF_GRID_IMPORT_ENTITY, "")
+            _optional_entity_key(
+                CONF_GRID_IMPORT_ENTITY, data.get(CONF_GRID_IMPORT_ENTITY, "")
             ): _entity_selector(["sensor"]),
-            vol.Optional(
-                CONF_GRID_EXPORT_ENTITY, default=data.get(CONF_GRID_EXPORT_ENTITY, "")
+            _optional_entity_key(
+                CONF_GRID_EXPORT_ENTITY, data.get(CONF_GRID_EXPORT_ENTITY, "")
             ): _entity_selector(["sensor"]),
             vol.Required(
                 CONF_PV_POWER_ENTITY, default=data.get(CONF_PV_POWER_ENTITY, "")
@@ -521,48 +548,48 @@ if config_entries is not None:
             vol.Required(
                 CONF_BATTERY_SOC_ENTITY, default=data.get(CONF_BATTERY_SOC_ENTITY, "")
             ): _entity_selector(["sensor"]),
-            vol.Optional(
+            _optional_entity_key(
                 CONF_BATTERY_INPUT_ENERGY_ENTITY,
-                default=data.get(CONF_BATTERY_INPUT_ENERGY_ENTITY, ""),
+                data.get(CONF_BATTERY_INPUT_ENERGY_ENTITY, ""),
             ): _entity_selector(["sensor"]),
-            vol.Optional(
+            _optional_entity_key(
                 CONF_BATTERY_OUTPUT_ENERGY_ENTITY,
-                default=data.get(CONF_BATTERY_OUTPUT_ENERGY_ENTITY, ""),
+                data.get(CONF_BATTERY_OUTPUT_ENERGY_ENTITY, ""),
             ): _entity_selector(["sensor"]),
-            vol.Optional(
-                CONF_EV_POWER_ENTITY, default=data.get(CONF_EV_POWER_ENTITY, "")
+            _optional_entity_key(
+                CONF_EV_POWER_ENTITY, data.get(CONF_EV_POWER_ENTITY, "")
             ): _entity_selector(["sensor"]),
-            vol.Optional(
+            _optional_entity_key(
                 CONF_BATTERY_POWER_ENTITY,
-                default=data.get(CONF_BATTERY_POWER_ENTITY, ""),
+                data.get(CONF_BATTERY_POWER_ENTITY, ""),
             ): _entity_selector(["sensor"]),
-            vol.Optional(
+            _optional_entity_key(
                 CONF_ZENDURE_AC_MODE_ENTITY,
-                default=data.get(CONF_ZENDURE_AC_MODE_ENTITY, ""),
+                data.get(CONF_ZENDURE_AC_MODE_ENTITY, ""),
             ): _entity_selector(["select"]),
-            vol.Optional(
+            _optional_entity_key(
                 CONF_ZENDURE_OUTPUT_PACK_POWER_ENTITY,
-                default=data.get(CONF_ZENDURE_OUTPUT_PACK_POWER_ENTITY, ""),
+                data.get(CONF_ZENDURE_OUTPUT_PACK_POWER_ENTITY, ""),
             ): _entity_selector(["sensor"]),
-            vol.Optional(
+            _optional_entity_key(
                 CONF_ZENDURE_PACK_INPUT_POWER_ENTITY,
-                default=data.get(CONF_ZENDURE_PACK_INPUT_POWER_ENTITY, ""),
+                data.get(CONF_ZENDURE_PACK_INPUT_POWER_ENTITY, ""),
             ): _entity_selector(["sensor"]),
-            vol.Optional(
+            _optional_entity_key(
                 CONF_ZENDURE_OUTPUT_HOME_POWER_ENTITY,
-                default=data.get(CONF_ZENDURE_OUTPUT_HOME_POWER_ENTITY, ""),
+                data.get(CONF_ZENDURE_OUTPUT_HOME_POWER_ENTITY, ""),
             ): _entity_selector(["sensor"]),
-            vol.Optional(
+            _optional_entity_key(
                 CONF_ZENDURE_GRID_INPUT_POWER_ENTITY,
-                default=data.get(CONF_ZENDURE_GRID_INPUT_POWER_ENTITY, ""),
+                data.get(CONF_ZENDURE_GRID_INPUT_POWER_ENTITY, ""),
             ): _entity_selector(["sensor"]),
-            vol.Optional(
+            _optional_entity_key(
                 CONF_ZENDURE_INPUT_LIMIT_ENTITY,
-                default=data.get(CONF_ZENDURE_INPUT_LIMIT_ENTITY, ""),
+                data.get(CONF_ZENDURE_INPUT_LIMIT_ENTITY, ""),
             ): _entity_selector(["number"]),
-            vol.Optional(
+            _optional_entity_key(
                 CONF_ZENDURE_OUTPUT_LIMIT_ENTITY,
-                default=data.get(CONF_ZENDURE_OUTPUT_LIMIT_ENTITY, ""),
+                data.get(CONF_ZENDURE_OUTPUT_LIMIT_ENTITY, ""),
             ): _entity_selector(["number"]),
         }
         return vol.Schema(schema)

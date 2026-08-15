@@ -2,6 +2,16 @@
 
 All notable changes to Battery Strategy are documented here.
 
+## Unreleased
+
+### Changed
+
+- Recorder history now uses Home Assistant's configured recorder engine only;
+  there is no SQLite fallback on MariaDB or other recorder backends.
+- Optional entity mappings can be cleared in the reconfigure flow.
+- Removed unused pre-HACS forecast, persistence and Tibber storage helpers.
+- Documented that Tibber Prices is price-only and never a grid-power fallback.
+
 ## [0.2.0-beta.6] - 2026-08-04
 
 ### Changed

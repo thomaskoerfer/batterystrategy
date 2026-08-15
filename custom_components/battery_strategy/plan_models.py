@@ -6,24 +6,6 @@ from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
-class PricePoint:
-    """Electricity price for a planning slot."""
-
-    ts_ms: int
-    price_ct: float
-
-
-@dataclass(frozen=True)
-class ForecastPoint:
-    """Forecast data for a planning slot."""
-
-    ts_ms: int
-    load_w: float
-    pv_w: float
-    price_ct: float
-
-
-@dataclass(frozen=True)
 class PlanPoint:
     """Optimized battery action for a planning slot."""
 

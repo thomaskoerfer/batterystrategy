@@ -27,6 +27,11 @@ This beta currently targets Germany, Tibber Prices quarter-hour data and Zendure
 
 Optional inputs include EV charging power and detailed Zendure battery power entities. Power units are read from each entity's Home Assistant metadata; configure `W` or `kW` correctly at the source.
 
+The selected grid-meter mode is authoritative. Battery Strategy never switches
+automatically between grid sources: stale or unavailable grid measurements put
+live actuation into fail-safe instead. Tibber Prices is used exclusively for
+electricity prices and is never a fallback for grid power.
+
 ## Configuration
 
 - **Mode:** enable control, PV charging, grid charging and discharge policy

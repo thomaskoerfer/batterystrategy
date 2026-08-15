@@ -175,7 +175,6 @@ def plan_live_directive_from_plan(
     slot_end_ts = slot_start_ts + int(SLOT_H * 3600 * 1000) if slot_start_ts else 0
     slot_id = str(slot_start_ts) if slot_start_ts else "current"
     pv_charge_allowed = options.pv_charging == PV_CHARGING_ON and not manual
-    planned_charge_w = _planned_charge_w(plan)
     planned_pv_surplus_w = (
         max(0.0, float(current_point.pv_fc_w) - float(current_point.load_fc_w))
         if current_point is not None

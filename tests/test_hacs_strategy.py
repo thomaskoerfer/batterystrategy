@@ -27,10 +27,6 @@ from custom_components.battery_strategy.const import (
     PV_CHARGING_OFF,
     PV_CHARGING_ON,
 )
-from custom_components.battery_strategy.forecast import (
-    clamp_bias,
-    fallback_weather_factor,
-)
 from custom_components.battery_strategy.models import (
     StrategyCommand,
     StrategyInputs,
@@ -52,7 +48,6 @@ from custom_components.battery_strategy.plan_models import (
     PlanPoint,
     StrategyPlan,
 )
-from custom_components.battery_strategy.pricing import read_tibber_price_points
 from custom_components.battery_strategy import sensor as battery_sensor
 from custom_components.battery_strategy.actuator import (
     should_write_limit,
@@ -162,6 +157,40 @@ class HacsStrategyTests(unittest.TestCase):
             optimizer_engine._ENTITY_SCALE = original_scale
             optimizer_engine._query_series_many_sql = original_query
         self.assertEqual(result["pv_power"], [(100.0, 1250.0)])
+
+    def test_optimizer_history_does_not_fall_back_to_local_sqlite(self):
+        original_engine = optimizer_engine._DB_ENGINE
+        original_states = dict(optimizer_engine._RUNTIME_STATES)
+        optimizer_engine._DB_ENGINE = None
+        optimizer_engine._RUNTIME_STATES = {"grid_import": 123.0}
+        try:
+            states = optimizer_engine.get_latest_states(
+                ["grid_import", "missing_sensor"]
+            )
+            series = optimizer_engine.fetch_sensor_series("grid_import", 0.0)
+        finally:
+            optimizer_engine._DB_ENGINE = original_engine
+            optimizer_engine._RUNTIME_STATES = original_states
+        self.assertEqual(states["grid_import"], 123.0)
+        self.assertIsNone(states["missing_sensor"])
+        self.assertEqual(series, [])
+
+    def test_optional_entity_selectors_can_be_omitted(self):
+        schema = config_flow._entity_schema({})
+        result = schema(
+            {
+                "grid_mode": "signed",
+                "battery_profile": "generic",
+                "signed_grid_power_entity": "sensor.grid",
+                "pv_power_entity": "sensor.pv",
+                "price_entity": "sensor.price",
+                "battery_soc_entity": "sensor.soc",
+                "battery_power_entity": "sensor.battery",
+            }
+        )
+        self.assertNotIn("grid_import_entity", result)
+        self.assertNotIn("grid_export_entity", result)
+        self.assertNotIn("ev_power_entity", result)
 
     def test_config_mapping_requires_selected_profiles_and_valid_units(self):
         states = {
@@ -2303,38 +2332,6 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertFalse(should_write_mode("Output mode", "Input mode", 10))
         self.assertTrue(should_write_mode("Output mode", "Input mode", 30))
 
-    def test_tibber_prices_storage_reader_accepts_eur_and_ct_values(self):
-        now = dt.datetime(2026, 5, 26, 10, tzinfo=dt.timezone.utc)
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "tibber_prices.interval_pool.test"
-            path.write_text(
-                json.dumps(
-                    {
-                        "data": {
-                            "fetch_groups": [
-                                {
-                                    "intervals": [
-                                        {
-                                            "startsAt": "2026-05-26T10:00:00+00:00",
-                                            "total": 0.31,
-                                        },
-                                        {
-                                            "start": "2026-05-26T11:00:00+00:00",
-                                            "total": 28.0,
-                                        },
-                                    ]
-                                }
-                            ]
-                        }
-                    }
-                ),
-                encoding="utf-8",
-            )
-            points = read_tibber_price_points(
-                str(Path(tmp) / "tibber_prices.interval_pool.*"), now, 3
-            )
-        self.assertEqual([round(p.price_ct, 1) for p in points], [31.0, 28.0])
-
     def test_eex_proxy_fills_missing_tomorrow_prices(self):
         tz = dt.timezone(dt.timedelta(hours=2))
         today = dt.date(2026, 6, 11)
@@ -2403,11 +2400,6 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertEqual(source, "tibber")
         self.assertEqual(len([it for it in filled if it["dt"].date() == tomorrow]), 96)
         self.assertTrue(all(it["source"] == "tibber" for it in filled))
-
-    def test_forecast_fallbacks_are_bounded(self):
-        self.assertEqual(clamp_bias(2.0, 0.5, 1.4), 1.4)
-        self.assertGreater(fallback_weather_factor(None, None), 0.0)
-        self.assertLessEqual(fallback_weather_factor(100, None), 1.0)
 
     def test_full_optimizer_does_not_plan_discharge_export_when_feed_in_is_zero(self):
         tz = dt.timezone.utc

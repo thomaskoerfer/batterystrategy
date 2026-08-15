@@ -5,19 +5,16 @@ import datetime as dt
 import json
 import math
 import os
-import sqlite3
 import statistics
 import urllib.parse
 from functools import lru_cache
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 
 from .optimizer_state import load_state_document, save_state_document
 
-DB = "/config/home-assistant_v2.db"
-DEFAULT_DB_URL = "sqlite:////config/home-assistant_v2.db"
 STATE_FILE = "/config/battery_strategy_optimizer_state.json"
 SCRIPT_VERSION = "1.8.7"
 _DB_ENGINE = None
@@ -124,7 +121,7 @@ OPEN_METEO_URL = (
 
 def configure_runtime(context):
     """Apply one config-entry runtime context before an optimizer run."""
-    global DB, DEFAULT_DB_URL, STATE_FILE, _DB_ENGINE
+    global STATE_FILE, _DB_ENGINE
     global _RUNTIME_STATES, _RUNTIME_PRICE_INTERVALS, _ENTITY_MAP, _ENTITY_SCALE
     global CAP_KWH, SOC_MIN, SOC_MAX, MIN_E_KWH, MAX_E_KWH, MAX_P_W, MAX_E_SLOT_KWH
     global MAX_CHARGE_P_W, MAX_DISCHARGE_P_W, MAX_CHARGE_E_SLOT_KWH, MAX_DISCHARGE_E_SLOT_KWH
@@ -133,8 +130,6 @@ def configure_runtime(context):
     global OPEN_METEO_TZ, OPEN_METEO_URL, PV_CAPACITY_EVENTS
 
     config_dir = str(context.get("config_dir") or "/config")
-    DB = os.path.join(config_dir, "home-assistant_v2.db")
-    DEFAULT_DB_URL = f"sqlite:///{DB}"
     STATE_FILE = os.path.join(config_dir, "battery_strategy_optimizer_state.json")
     _DB_ENGINE = context.get("db_engine")
     _RUNTIME_STATES = dict(context.get("states") or {})
@@ -191,14 +186,9 @@ def _entity_id(key):
     return _ENTITY_MAP.get(key, key)
 
 
-def _load_db_url():
-    return DEFAULT_DB_URL
-
-
 def _get_db_engine():
-    global _DB_ENGINE
     if _DB_ENGINE is None:
-        _DB_ENGINE = create_engine(_load_db_url(), pool_pre_ping=True)
+        raise RuntimeError("Home Assistant recorder engine is unavailable")
     return _DB_ENGINE
 
 
@@ -307,24 +297,8 @@ def get_latest_states(entity_ids):
             continue
         try:
             out[eid] = _query_latest_state_sql(eid)
-            continue
         except Exception:
-            pass
-
-        actual_eid = _entity_id(eid)
-        conn = sqlite3.connect(DB)
-        cur = conn.cursor()
-        q = """
-        SELECT s.state
-        FROM states s
-        JOIN states_meta sm ON sm.metadata_id=s.metadata_id
-        WHERE sm.entity_id=?
-        ORDER BY s.state_id DESC
-        LIMIT 1
-        """
-        row = cur.execute(q, (actual_eid,)).fetchone()
-        out[eid] = row[0] if row else None
-        conn.close()
+            out[eid] = None
     return out
 
 
@@ -354,17 +328,7 @@ def fetch_sensor_series(entity_id, cutoff_ts):
     try:
         rows = _query_series_sql(entity_id, cutoff_ts)
     except Exception:
-        conn = sqlite3.connect(DB)
-        cur = conn.cursor()
-        q = """
-        SELECT s.last_updated_ts, s.state
-        FROM states s
-        JOIN states_meta sm ON sm.metadata_id=s.metadata_id
-        WHERE sm.entity_id=? AND s.last_updated_ts>=?
-        ORDER BY s.last_updated_ts
-        """
-        rows = cur.execute(q, (_entity_id(entity_id), cutoff_ts)).fetchall()
-        conn.close()
+        rows = []
     out = []
     for ts, st in rows:
         try:
@@ -1782,10 +1746,7 @@ def build_virtual_plan(intervals, samples, start_energy_kwh, weather_factor, for
 
     for t in range(n_slots):
         sl = slots[t]
-        price = sl["price_eur"]
-        price_ct = sl["price_ct"]
         net_pos = sl["net_pos_kwh"]
-        surplus = sl["surplus_kwh"]
         discharge_eligible = sl.get("discharge_eligible_kwh", net_pos)
         for i, e_now in enumerate(energies):
             min_e_next = max(MIN_E_KWH, e_now - min(max_discharge_delta_e, discharge_eligible / ETA_D))
@@ -2497,7 +2458,6 @@ def update_actual_savings_incremental(data, now_ts):
                 # Use ts_cutoff=0 so all events in the query window are processed;
                 # use first series value as delta baseline (not the tracker baseline
                 # which was set at post-migration init time).
-                ts_cutoff          = 0.0
                 input_prev_init    = float(input_series[0][1])  if input_series  else None
                 output_prev_init   = float(output_series[0][1]) if output_series else None
                 tracker["savings_backfill_v1_done"] = True
@@ -2920,7 +2880,6 @@ def main():
         }
     )
     future_points_display = apply_live_override_to_future_points(future_points, mode, rec_w, now_ts_ms)
-    hourly_points = compress_points_hourly(future_points_display)
     forecast_today = split_profile(future_points_display, today)
     forecast_tomorrow = split_profile(future_points_display, tomorrow)
     actual_points = data.get("virtual_trace", [])
