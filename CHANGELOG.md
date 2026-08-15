@@ -10,6 +10,8 @@ All notable changes to Battery Strategy are documented here.
   optimization, plan compilation, live control and actuation boundaries.
 - Contract tests for units, slot alignment, forecast grids, market signs and
   fail-closed command semantics.
+- Contract governance requiring impact analysis while explicitly allowing the
+  target-architecture contracts to evolve as migration evidence improves them.
 
 ## [0.2.0-beta.7] - 2026-08-15
 

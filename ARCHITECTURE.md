@@ -6,6 +6,10 @@ optimization, history access, plan directives, or live battery control.
 
 The normative units, data semantics and executable layer boundaries are defined
 in [INTERFACE_CONTRACTS.md](INTERFACE_CONTRACTS.md) and the `contracts` package.
+They are binding migration guidelines, but deliberately evolvable. Any contract
+change requires the impact analysis defined there before implementations are
+adapted. Local workarounds that bypass a boundary are not an acceptable form of
+contract evolution.
 
 ## Safety invariant
 
@@ -128,6 +132,8 @@ That module is a migration source, not the desired permanent boundary.
 - Freeze representative historical scenarios and current regression output.
 - Introduce typed contracts for historical features, forecasts, optimization
   inputs, battery plans and evaluation results.
+- Treat these contracts as the reviewed starting baseline; revise them through
+  impact analysis when migration evidence exposes an incorrect boundary.
 - Add forecast MAE/bias, plan parity and data-quality diagnostics.
 - Change no production decisions.
 
@@ -202,3 +208,8 @@ Gate: HACS, Hassfest, unit tests, historical backtests and live health checks pa
 Each phase is released and observed before the next cutover. Refactoring must
 preserve behavior first; forecast or optimization improvements are separate,
 measurable changes after the corresponding boundary is stable.
+
+Contract conformance is enforced at the boundary currently being migrated, not
+retroactively across the entire legacy runtime. Discovering a deficient
+contract pauses that boundary's cutover until its impact analysis, contract
+tests and migration approach have been reviewed.

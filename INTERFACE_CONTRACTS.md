@@ -6,6 +6,23 @@ semantics and evolution rules. The contracts describe the target boundaries;
 the legacy runtime models remain transitional until each migration phase in
 `ARCHITECTURE.md` is completed.
 
+## Contract status
+
+These contracts are binding design constraints for new code and for code moved
+across a layer boundary during the architecture migration. They are the initial
+baseline for the target architecture, not an assertion that every decision in
+the baseline is permanently correct. Existing production code is only required
+to conform after the corresponding migration gate has been completed.
+
+Contracts may change when implementation experience, operational evidence or
+new requirements show that a boundary is incomplete or wrong. A contract must
+not be bypassed locally to accommodate such a finding. Change the contract
+deliberately, document the impact, update affected producers and consumers, and
+then migrate them through the normal release gates.
+
+Documentation and the executable types form one contract. If they disagree,
+the change is incomplete; neither representation silently overrides the other.
+
 ## Why Python contracts
 
 Battery Strategy is an internal Python pipeline, not a network API. Frozen
@@ -135,9 +152,20 @@ the requested power.
 
 ## Compatibility and evolution
 
-- Additive optional fields are allowed within a contract schema version.
-- Changed units, signs, required fields or semantics require a new schema
-  version and an explicit migration.
+- Every contract change requires an impact analysis in its pull request or
+  commit description. Small additive changes may use a short analysis; breaking
+  changes require an explicit migration and rollback plan.
+- Additive optional fields with unchanged semantics are allowed within a
+  contract schema version. Producers must not assume that all consumers use the
+  field until their migration is complete.
+- Changed units, signs, required fields, invariants or semantics are breaking
+  changes. Persisted or externally serialized contracts require a new schema
+  version and an explicit data migration. Internal in-memory contracts require
+  coordinated producer/consumer migration even when no persisted schema version
+  changes.
+- Removing a field follows the expand-and-contract pattern: introduce the
+  replacement, migrate and observe all consumers, then remove the old field in
+  a later phase.
 - Producers and consumers receive contract tests from both sides. A layer is not
   cut over until old and new boundary outputs pass historical golden-master and
   live shadow comparisons.
@@ -145,6 +173,31 @@ the requested power.
   obtain a `BatteryActuator` reference.
 - Contract types do not expose persistence serialization directly. Storage and
   diagnostics adapters own conversion to JSON or Home Assistant attributes.
+
+### Required impact analysis
+
+The analysis should be proportional to the change, but must answer each
+applicable item:
+
+1. **Reason and evidence:** What new observation or requirement makes the
+   current contract insufficient?
+2. **Semantic impact:** Do units, signs, time alignment, optionality, invariants
+   or ownership change?
+3. **Dependency impact:** Which producers, consumers, adapters, stored records,
+   diagnostics, dashboards and tests are affected?
+4. **Decision impact:** Can forecasts, plans, budgets, live commands, savings or
+   safety behavior change? If not, how is parity demonstrated?
+5. **Compatibility:** Is the change additive or breaking? Is a schema-version
+   bump, dual-read/dual-write period or backfill required?
+6. **Verification:** Which contract tests, historical scenarios, shadow metrics
+   and live acceptance checks prove the change?
+7. **Rollout and rollback:** In which migration phase is it introduced, and how
+   can the previous contract and implementation be restored safely?
+
+The impact analysis is a decision record, not ceremony: links to tests,
+backtests or operational evidence are preferred over speculative prose. A
+contract change that can affect actuation must never be combined with an
+unrelated live-control change.
 
 ## Transitional mapping
 
