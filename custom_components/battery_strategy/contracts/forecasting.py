@@ -82,17 +82,57 @@ class ForecastRequest:
 
 @dataclass(frozen=True, slots=True)
 class QuantileEnergy:
-    """P10/P50/P90 slot energy in kWh."""
+    """Point forecast with optional empirically calibrated uncertainty."""
 
-    p10_kwh: float
     p50_kwh: float
-    p90_kwh: float
+    p10_kwh: float | None = None
+    p90_kwh: float | None = None
+    calibration_samples: int = 0
 
     def __post_init__(self) -> None:
-        for name in ("p10_kwh", "p50_kwh", "p90_kwh"):
-            require_nonnegative(name, getattr(self, name))
+        require_nonnegative("p50_kwh", self.p50_kwh)
+        if (self.p10_kwh is None) != (self.p90_kwh is None):
+            raise ValueError(
+                "p10 and p90 must either both be present or both be absent"
+            )
+        if self.calibration_samples < 0:
+            raise ValueError("calibration_samples must be non-negative")
+        if self.p10_kwh is None:
+            return
+        require_nonnegative("p10_kwh", self.p10_kwh)
+        require_nonnegative("p90_kwh", self.p90_kwh)
         if not self.p10_kwh <= self.p50_kwh <= self.p90_kwh:
             raise ValueError("forecast quantiles must satisfy p10 <= p50 <= p90")
+        if self.calibration_samples == 0:
+            raise ValueError("calibrated quantiles require calibration samples")
+
+
+@dataclass(frozen=True, slots=True)
+class LoadDriverSnapshot:
+    """Current normalized measurement for one optional load driver."""
+
+    driver_key: str
+    power_w: float
+    quality: DataQuality = DataQuality()
+
+    def __post_init__(self) -> None:
+        if not self.driver_key:
+            raise ValueError("load driver key is required")
+        require_nonnegative("power_w", self.power_w)
+
+
+@dataclass(frozen=True, slots=True)
+class LoadForecastContext:
+    """Extensible current context; unknown drivers may be ignored."""
+
+    house_load_no_ev_w: float
+    drivers: tuple[LoadDriverSnapshot, ...] = ()
+
+    def __post_init__(self) -> None:
+        require_nonnegative("house_load_no_ev_w", self.house_load_no_ev_w)
+        keys = tuple(driver.driver_key for driver in self.drivers)
+        if len(set(keys)) != len(keys):
+            raise ValueError("load driver keys must be unique")
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,6 +205,7 @@ class LoadForecaster(Protocol):
         self,
         request: ForecastRequest,
         history: tuple[HistoricalFeatureSlot, ...],
+        context: LoadForecastContext,
     ) -> LoadForecast: ...
 
 

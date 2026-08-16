@@ -44,7 +44,9 @@ async def async_get_config_entry_diagnostics(hass, entry) -> dict:
         },
         "inputs": asdict(data["inputs"]) if data.get("inputs") else None,
         "command": asdict(data["command"]) if data.get("command") else None,
-        "plan_to_live": asdict(data["plan_to_live"]) if data.get("plan_to_live") else None,
+        "plan_to_live": asdict(data["plan_to_live"])
+        if data.get("plan_to_live")
+        else None,
         "plan": {
             "current_mode": getattr(plan, "current_mode", None),
             "current_power_w": getattr(plan, "current_power_w", None),
@@ -53,5 +55,10 @@ async def async_get_config_entry_diagnostics(hass, entry) -> dict:
         },
         "actuation": data.get("actuation"),
         "optimizer_age_s": data.get("optimizer_age_s"),
+        "forecast_shadow": {
+            key.removeprefix("forecast_shadow_"): value
+            for key, value in (data.get("optimizer_attrs") or {}).items()
+            if key.startswith("forecast_shadow_")
+        },
         "strategy_enabled": data.get("strategy_enabled"),
     }

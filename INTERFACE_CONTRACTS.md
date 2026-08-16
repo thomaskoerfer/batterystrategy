@@ -88,9 +88,16 @@ Each result identifies its model version and training cutoff. The cutoff may not
 be later than generation time, preventing accidental future-data leakage in
 backtests.
 
-Forecast uncertainty is expressed as non-negative `P10 <= P50 <= P90` slot
-energy. A `ForecastBundle` is valid only when load and PV use the identical slot
-grid.
+P50 is the required point forecast. P10 and P90 are added as a pair only after
+they can be calibrated from matured forecast residuals; missing quantiles mean
+"not calibrated", not zero uncertainty. A `ForecastBundle` is valid only when
+load and PV use the identical slot grid.
+
+Current device measurements that can explain near-term load are supplied as an
+extensible `LoadForecastContext`. Adapters map entities to stable semantic
+driver keys; the forecaster may ignore unknown drivers. The whole-house load
+without EV remains the forecast target, and optional device measurements must
+not be subtracted from it a second time.
 
 ### Forecasting and market data to optimization
 

@@ -18,7 +18,9 @@ from custom_components.battery_strategy.contracts import (
     ForecastBundle,
     ForecastRequest,
     ForecastSlot,
+    LoadDriverSnapshot,
     LoadForecast,
+    LoadForecastContext,
     MarketSlot,
     OptimizationProblem,
     PlanLiveDirective,
@@ -41,10 +43,10 @@ def slot(index: int) -> SlotKey:
 def forecast_bundle(*slots: SlotKey, generated_at_ms: int = 0) -> ForecastBundle:
     """Return aligned deterministic load and PV forecasts."""
     load_slots = tuple(
-        ForecastSlot(item, QuantileEnergy(0.1, 0.2, 0.3)) for item in slots
+        ForecastSlot(item, QuantileEnergy(0.2, 0.1, 0.3, 20)) for item in slots
     )
     pv_slots = tuple(
-        ForecastSlot(item, QuantileEnergy(0.0, 0.1, 0.2)) for item in slots
+        ForecastSlot(item, QuantileEnergy(0.1, 0.0, 0.2, 20)) for item in slots
     )
     return ForecastBundle(
         load=LoadForecast(
@@ -97,7 +99,32 @@ class ContractTests(unittest.TestCase):
 
     def test_forecast_quantiles_are_ordered(self):
         with self.assertRaisesRegex(ValueError, "p10 <= p50 <= p90"):
+            QuantileEnergy(0.1, 0.2, 0.3, 20)
+
+    def test_forecast_point_is_valid_before_quantile_calibration(self):
+        point = QuantileEnergy(0.2)
+        self.assertEqual(point.p50_kwh, 0.2)
+        self.assertIsNone(point.p10_kwh)
+        self.assertIsNone(point.p90_kwh)
+        with self.assertRaisesRegex(ValueError, "both be present"):
+            QuantileEnergy(0.2, p10_kwh=0.1)
+        with self.assertRaisesRegex(ValueError, "require calibration samples"):
             QuantileEnergy(0.2, 0.1, 0.3)
+
+    def test_load_context_supports_unique_extensible_drivers(self):
+        context = LoadForecastContext(
+            500.0,
+            (LoadDriverSnapshot("heat_pump", 300.0),),
+        )
+        self.assertEqual(context.drivers[0].driver_key, "heat_pump")
+        with self.assertRaisesRegex(ValueError, "unique"):
+            LoadForecastContext(
+                500.0,
+                (
+                    LoadDriverSnapshot("heat_pump", 300.0),
+                    LoadDriverSnapshot("heat_pump", 400.0),
+                ),
+            )
 
     def test_forecast_bundle_rejects_misaligned_load_and_pv(self):
         load = LoadForecast(
@@ -105,14 +132,14 @@ class ContractTests(unittest.TestCase):
             0,
             0,
             "v1",
-            (ForecastSlot(slot(0), QuantileEnergy(0.1, 0.2, 0.3)),),
+            (ForecastSlot(slot(0), QuantileEnergy(0.2)),),
         )
         pv = PvForecast(
             "pv-1",
             0,
             0,
             "v1",
-            (ForecastSlot(slot(1), QuantileEnergy(0.0, 0.1, 0.2)),),
+            (ForecastSlot(slot(1), QuantileEnergy(0.1)),),
         )
         with self.assertRaisesRegex(ValueError, "same slot grid"):
             ForecastBundle(load, pv)

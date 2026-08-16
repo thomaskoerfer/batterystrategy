@@ -139,15 +139,33 @@ That module is a migration source, not the desired permanent boundary.
 
 Gate: all existing tests pass and serialized plan/live outputs are unchanged.
 
-### Phase 1: Extract forecasting without changing mathematics
+### Phase 0.5: Forecast seam and shadow parity
 
-- Move active load and PV forecasting out of `optimizer_engine.py`.
-- Keep coefficients, capacity normalization, weather inputs and bias updates
-  identical.
-- Run old and extracted forecasters in shadow mode for several days.
+- Keep the existing forecast authoritative and duplicate only its pure
+  mathematics in isolated load/PV shadow modules.
+- Capture one immutable input set per optimizer run so production and shadow do
+  not perform separate recorder, weather or state reads.
+- Emit target-contract P50 forecasts; leave P10/P90 uncalibrated until matured
+  residuals exist.
+- Compare slot grids and P50 values without feeding shadow output into the
+  optimizer, plan compiler, live controller or actuator.
+- Retain one compact comparison per quarter-hour for 14 days outside the Home
+  Assistant recorder.
 
-Gate: slot outputs are numerically identical apart from explicit rounding, and
-the shadow path cannot reach the actuator.
+Gate: at least 72 hours with identical slot grids, no unexplained shadow error,
+and at most 1 W load/PV difference per slot. Production plans, commands and
+actuation must remain unchanged. The transitional legacy sample input is not a
+replacement for the finalized feature-store contract.
+
+### Phase 1: Cut over extracted forecasting without changing mathematics
+
+- Make the parity-proven load and PV modules authoritative for optimizer input.
+- Keep coefficients, weather inputs and bias updates identical.
+- Retain the previous path only for a short rollback period, then remove the
+  duplicate forecast mathematics.
+
+Gate: slot outputs remain numerically identical apart from explicit rounding,
+live plans remain stable, and rollback to the old forecast path has been tested.
 
 ### Phase 2: Add the feature store in parallel
 

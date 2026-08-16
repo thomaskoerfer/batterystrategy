@@ -4,6 +4,8 @@ All notable changes to Battery Strategy are documented here.
 
 ## Unreleased
 
+## [0.2.0-beta.8] - 2026-08-16
+
 ### Added
 
 - Documented and executable interface contracts for data, forecasting,
@@ -12,6 +14,20 @@ All notable changes to Battery Strategy are documented here.
   fail-closed command semantics.
 - Contract governance requiring impact analysis while explicitly allowing the
   target-architecture contracts to evolve as migration evidence improves them.
+- Forecast contracts now support an immediately available P50 point forecast,
+  progressively calibrated P10/P90 bounds and extensible current load-driver
+  context without device-specific Home Assistant coupling.
+- Added an isolated load/PV shadow forecaster that compares against the
+  unchanged production forecast using one captured input set.
+- Added bounded 14-day quarter-hour parity diagnostics outside the Home
+  Assistant recorder, with no shadow path to optimization or actuation.
+
+### Safety
+
+- Shadow failures are contained and cannot prevent the production optimizer
+  from returning its existing plan.
+- Production forecast values remain authoritative throughout the observation
+  window.
 
 ## [0.2.0-beta.7] - 2026-08-15
 
