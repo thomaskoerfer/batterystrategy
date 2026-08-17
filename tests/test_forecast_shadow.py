@@ -70,10 +70,14 @@ class ForecastShadowTests(unittest.TestCase):
         self.old_capacity_events = optimizer_engine.PV_CAPACITY_EVENTS
         optimizer_engine.OPEN_METEO_TZ = self.timezone
         optimizer_engine.PV_CAPACITY_EVENTS = [("2000-01-01T00:00:00+00:00", 2.3, 2.0)]
+        optimizer_engine.local_dt_from_ts.cache_clear()
+        optimizer_engine.pv_capacity_for_iso.cache_clear()
 
     def tearDown(self) -> None:
         optimizer_engine.OPEN_METEO_TZ = self.old_timezone
         optimizer_engine.PV_CAPACITY_EVENTS = self.old_capacity_events
+        optimizer_engine.local_dt_from_ts.cache_clear()
+        optimizer_engine.pv_capacity_for_iso.cache_clear()
 
     def _plan(self):
         return optimizer_engine.build_virtual_plan(

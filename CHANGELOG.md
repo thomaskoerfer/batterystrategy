@@ -4,6 +4,26 @@ All notable changes to Battery Strategy are documented here.
 
 ## Unreleased
 
+## [0.2.0-beta.9] - 2026-08-17
+
+### Fixed
+
+- Removed artificial monetary costs for optimizer plan-mode transitions. Scarce
+  battery energy now stays assigned to the objectively most valuable slots
+  instead of being moved to cheaper slots to avoid a fictional stop/start.
+- Guaranteed that every planned discharge is covered by the slot's explicit
+  commercial discharge budget.
+- Cleared timezone and PV-capacity caches when runtime configuration changes.
+
+### Safety
+
+- RTE, minimum margin and micro-cycle suppression remain the economic cycle
+  guards. PV follow, EV policy, live meter following and battery actuation are
+  unchanged.
+- A discharge budget may still coexist with free PV charging when later PV
+  export creates real headroom value; live PV surplus continues to take
+  precedence over planned discharge.
+
 ## [0.2.0-beta.8] - 2026-08-16
 
 ### Added

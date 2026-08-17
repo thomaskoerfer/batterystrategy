@@ -31,7 +31,7 @@ from .forecasting import (
 from .optimizer_state import load_state_document, save_state_document
 
 STATE_FILE = "/config/battery_strategy_optimizer_state.json"
-SCRIPT_VERSION = "1.8.8"
+SCRIPT_VERSION = "1.8.9"
 _DB_ENGINE = None
 _RUNTIME_STATES = {}
 _RUNTIME_PRICE_INTERVALS = []
@@ -87,8 +87,6 @@ SLOT_BIAS_ALPHA = 0.08
 SLOTS_PER_DAY = 96
 SWITCH_PENALTY_MIN = 5.0
 SWITCH_PENALTY_REF_W = 500.0
-REVERSAL_PENALTY_MIN = 20.0
-REVERSAL_PENALTY_REF_W = 1000.0
 TRACE_MIN_INTERVAL_S = 240
 TRACE_RETENTION_DAYS = 14
 TRACE_MAX_POINTS = 8000
@@ -195,6 +193,10 @@ def configure_runtime(context):
         pv_kwp = max(0.1, float(context.get("pv_capacity_kwp") or 1.0))
         inverter_kw = max(0.1, float(context.get("pv_inverter_power_kw") or pv_kwp))
         PV_CAPACITY_EVENTS = [("2000-01-01T00:00:00+00:00", pv_kwp, inverter_kw)]
+    # Both caches depend on mutable runtime configuration and must not survive
+    # an integration reload with changed timezone or PV capacity history.
+    local_dt_from_ts.cache_clear()
+    pv_capacity_for_iso.cache_clear()
 
 
 def _entity_id(key):
@@ -1876,13 +1878,11 @@ def build_virtual_plan(intervals, samples, start_energy_kwh, weather_factor, for
         elif discharge_out > 1e-4:
             mode_now = -1
 
+        # Plan modes are economic intent, not actuator state: live PV surplus
+        # may turn a planned discharge slot into charge-follow. Artificial mode
+        # transition costs would therefore distort slot value. RTE, margin and
+        # micro-cycle suppression remain the economic cycle guards.
         switch_cost = 0.0
-        if mode_now != prev_mode and (mode_now != 0 or prev_mode != 0):
-            switch_energy_kwh = (SWITCH_PENALTY_MIN / 60.0) * (SWITCH_PENALTY_REF_W / 1000.0)
-            switch_cost = switch_energy_kwh * price
-            if mode_now != 0 and prev_mode != 0 and mode_now == -prev_mode:
-                reversal_energy_kwh = (REVERSAL_PENALTY_MIN / 60.0) * (REVERSAL_PENALTY_REF_W / 1000.0)
-                switch_cost += reversal_energy_kwh * price
 
         charge_from_grid = max(0.0, charge_in - surplus)
         if charge_from_grid > 1e-9:
@@ -2109,7 +2109,15 @@ def build_virtual_plan(intervals, samples, start_energy_kwh, weather_factor, for
                 available_ac_kwh + safe_recovery_kwh - higher_value_need_kwh,
             )
 
-        budget_kwh = max(pv_recovery_budget_kwh, min(max_total_discharge_kwh, scarce_budget_kwh))
+        # Expected dispatch is a subset of commercial permission. The live
+        # controller may use a larger budget for unexpected household load, but
+        # it must never be unable to execute an optimizer-planned discharge.
+        planned_discharge_kwh = point_discharge_kwh(t)
+        budget_kwh = max(
+            planned_discharge_kwh,
+            pv_recovery_budget_kwh,
+            min(max_total_discharge_kwh, scarce_budget_kwh),
+        )
 
         return round(min(max_total_discharge_kwh, budget_kwh), 3)
 

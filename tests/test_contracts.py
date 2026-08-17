@@ -190,6 +190,21 @@ class ContractTests(unittest.TestCase):
                 expected_soc_end_pct=52.0,
             )
 
+    def test_optimizer_plan_slot_requires_budget_for_planned_discharge(self):
+        with self.assertRaisesRegex(ValueError, "commercial budget"):
+            BatteryPlanSlot(
+                slot(0),
+                PlanMode.DISCHARGE,
+                True,
+                False,
+                planned_charge_kwh=0.0,
+                planned_discharge_kwh=0.1,
+                required_charge_kwh=0.0,
+                discharge_budget_kwh=0.05,
+                expected_soc_start_pct=50.0,
+                expected_soc_end_pct=48.0,
+            )
+
     def test_directive_rejects_power_without_permission(self):
         with self.assertRaisesRegex(ValueError, "grid charge power"):
             PlanLiveDirective(

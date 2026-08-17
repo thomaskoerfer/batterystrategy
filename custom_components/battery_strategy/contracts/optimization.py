@@ -158,6 +158,8 @@ class BatteryPlanSlot:
             raise ValueError("charge plan slots cannot plan discharge")
         if self.mode == PlanMode.DISCHARGE and self.planned_charge_kwh > 0.0:
             raise ValueError("discharge plan slots cannot plan charge")
+        if self.planned_discharge_kwh > self.discharge_budget_kwh + 1e-9:
+            raise ValueError("planned discharge cannot exceed its commercial budget")
 
 
 @dataclass(frozen=True, slots=True)

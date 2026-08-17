@@ -111,7 +111,9 @@ charging are commercially allowed. `required_charge_kwh` is the non-deferrable
 portion of planned charge and cannot exceed total planned charge.
 `discharge_budget_kwh` is commercial permission, not a live power target. The
 plan carries the battery constraints used during optimization so the compiler
-does not query configuration behind the contract.
+does not query configuration behind the contract. Planned discharge is expected
+execution and must be contained by that permission; a budget may be larger to
+cover unexpected live household load.
 
 ### Optimization to plan compiler
 
