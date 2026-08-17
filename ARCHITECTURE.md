@@ -99,6 +99,11 @@ meter following, EV policy, manual controls, budget consumption, command
 smoothing and fail-safe behavior. It does not optimize prices or retrain a
 forecast.
 
+Dashboard future profiles remain canonical optimizer output. They may be joined
+to measured history at the current timestamp, but the current live command does
+not mutate future plan slots. This keeps plan diagnostics reproducible and
+prevents display-only SoC shifts from becoming inconsistent with planned power.
+
 ### Actuator
 
 The actuator is the only hardware-writing boundary. It translates a validated

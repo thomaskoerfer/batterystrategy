@@ -115,6 +115,11 @@ does not query configuration behind the contract. Planned discharge is expected
 execution and must be contained by that permission; a budget may be larger to
 cover unexpected live household load.
 
+Published future profiles are canonical projections of `BatteryPlan`. Actual
+history may be joined up to the observation time, but a live directive or live
+command must never rewrite future plan SoC, power or budget values. Live
+deviations become optimizer input at the next planning run instead.
+
 ### Optimization to plan compiler
 
 The plan compiler combines `BatteryPlan` with measured `SlotProgress`. It may

@@ -3217,11 +3217,24 @@ class HacsStrategyTests(unittest.TestCase):
         )
         self.assertEqual(points[0].date, "2026-05-30")
 
-    def test_live_overlay_does_not_turn_display_plan_into_battery_export(self):
+    def test_published_future_profile_is_not_mutated_by_live_actuals(self):
         now = dt.datetime(2026, 5, 26, 18, tzinfo=dt.timezone.utc)
+        today = now.date().isoformat()
+        tomorrow = (now.date() + dt.timedelta(days=1)).isoformat()
+        actual = [
+            {
+                "ts_ms": int(now.timestamp() * 1000),
+                "date": today,
+                "soc_pct": 10.0,
+                "power_w": -200.0,
+                "charge_fc_w": 0.0,
+                "discharge_fc_w": 200.0,
+            }
+        ]
         future = [
             {
                 "ts_ms": int((now + dt.timedelta(minutes=15)).timestamp() * 1000),
+                "date": today,
                 "load_fc_w": 700.0,
                 "pv_fc_w": 500.0,
                 "power_w": 0.0,
@@ -3232,16 +3245,62 @@ class HacsStrategyTests(unittest.TestCase):
                 "grid_net_fc_w": 200.0,
                 "mode": "idle",
                 "soc_pct": 80.0,
+                "price_ct": 30.0,
+                "discharge_budget_kwh": 0.0,
+            },
+            {
+                "ts_ms": int(
+                    (now + dt.timedelta(days=1, minutes=15)).timestamp() * 1000
+                ),
+                "date": tomorrow,
+                "load_fc_w": 400.0,
+                "pv_fc_w": 0.0,
+                "power_w": -300.0,
+                "charge_fc_w": 0.0,
+                "discharge_fc_w": 300.0,
+                "grid_import_fc_w": 100.0,
+                "grid_export_fc_w": 0.0,
+                "grid_net_fc_w": 100.0,
+                "mode": "discharge",
+                "soc_pct": 12.0,
+                "price_ct": 40.0,
+                "discharge_budget_kwh": 0.075,
             }
         ]
-        out = optimizer_engine.apply_live_override_to_future_points(
-            future,
-            "discharge_limited",
-            2400,
-            int(now.timestamp() * 1000),
+
+        forecast_today, forecast_tomorrow, profile_today, profile_tomorrow = (
+            optimizer_engine.build_published_plan_profiles(
+                actual,
+                future,
+                today,
+                tomorrow,
+                int(now.timestamp() * 1000),
+            )
         )
-        self.assertEqual(out[0]["discharge_fc_w"], 200.0)
-        self.assertEqual(out[0]["grid_export_fc_w"], 0.0)
+
+        self.assertEqual(
+            profile_today["power"],
+            [
+                [int(now.timestamp() * 1000), -200.0],
+                [int((now + dt.timedelta(minutes=15)).timestamp() * 1000), 0.0],
+            ],
+        )
+        self.assertEqual(profile_today["soc"][-1][1], 80.0)
+        self.assertEqual(
+            profile_tomorrow["soc"],
+            [
+                [
+                    int(
+                        (now + dt.timedelta(days=1, minutes=15)).timestamp()
+                        * 1000
+                    ),
+                    12.0,
+                ]
+            ],
+        )
+        self.assertEqual(forecast_today["discharge_power"][0][1], 0.0)
+        self.assertEqual(forecast_tomorrow["discharge_power"][0][1], 300.0)
+        self.assertEqual(forecast_tomorrow["discharge_budget_kwh"][0][1], 0.075)
 
 
 if __name__ == "__main__":

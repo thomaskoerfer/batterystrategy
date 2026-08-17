@@ -31,7 +31,7 @@ from .forecasting import (
 from .optimizer_state import load_state_document, save_state_document
 
 STATE_FILE = "/config/battery_strategy_optimizer_state.json"
-SCRIPT_VERSION = "1.8.9"
+SCRIPT_VERSION = "1.8.10"
 _DB_ENGINE = None
 _RUNTIME_STATES = {}
 _RUNTIME_PRICE_INTERVALS = []
@@ -1169,80 +1169,6 @@ def merge_actual_and_future_profile(actual_points, future_points, date_str, now_
         "discharge_power": [[p["ts_ms"], p["discharge_fc_w"]] for p in merged if "discharge_fc_w" in p],
         "discharge_budget_kwh": [[p["ts_ms"], p.get("discharge_budget_kwh", 0.0)] for p in merged],
     }
-
-
-def battery_delta_kwh_for_mode(mode, power_w):
-    power_kw = max(0.0, float(power_w)) / 1000.0
-    if mode in ("charge_grid", "charge_pv_surplus", "charge_follow"):
-        return power_kw * SLOT_H * ETA_C
-    if str(mode).startswith("discharge_"):
-        return -(power_kw * SLOT_H / ETA_D)
-    return 0.0
-
-
-def apply_live_override_to_future_points(future_points, effective_mode, rec_w, now_ts_ms):
-    if not future_points:
-        return future_points
-    out = [dict(p) for p in future_points]
-    idx = next((i for i, p in enumerate(out) if int(p.get("ts_ms", 0)) > int(now_ts_ms)), None)
-    if idx is None:
-        return out
-    first = out[idx]
-    raw_power = float(first.get("power_w", 0.0) or 0.0)
-    if raw_power > 0.0:
-        raw_mode = "charge_grid"
-        raw_abs_power = raw_power
-    elif raw_power < 0.0:
-        raw_mode = "discharge_limited"
-        raw_abs_power = -raw_power
-    else:
-        raw_mode = "idle"
-        raw_abs_power = 0.0
-
-    raw_delta_kwh = battery_delta_kwh_for_mode(raw_mode, raw_abs_power)
-    eff_delta_kwh = battery_delta_kwh_for_mode(effective_mode, rec_w)
-    delta_shift_pct = ((eff_delta_kwh - raw_delta_kwh) / CAP_KWH) * 100.0
-
-    load_fc_w = max(0.0, float(first.get("load_fc_w", 0.0) or 0.0))
-    pv_fc_w = max(0.0, float(first.get("pv_fc_w", 0.0) or 0.0))
-    net_pos_w = max(0.0, load_fc_w - pv_fc_w)
-    surplus_w = max(0.0, pv_fc_w - load_fc_w)
-
-    if effective_mode in ("charge_grid", "charge_pv_surplus", "charge_follow"):
-        charge_fc_w = max(0.0, float(rec_w))
-        discharge_fc_w = 0.0
-        power_w = charge_fc_w
-        grid_import_fc_w = max(0.0, net_pos_w + max(0.0, charge_fc_w - surplus_w))
-        grid_export_fc_w = max(0.0, surplus_w - charge_fc_w)
-        mode = "charge"
-    elif str(effective_mode).startswith("discharge_"):
-        charge_fc_w = 0.0
-        discharge_fc_w = min(max(0.0, float(rec_w)), net_pos_w)
-        power_w = -discharge_fc_w
-        grid_import_fc_w = max(0.0, net_pos_w - discharge_fc_w)
-        grid_export_fc_w = 0.0
-        mode = "discharge"
-    else:
-        charge_fc_w = 0.0
-        discharge_fc_w = 0.0
-        power_w = 0.0
-        grid_import_fc_w = net_pos_w
-        grid_export_fc_w = surplus_w
-        mode = "idle"
-
-    first["mode"] = mode
-    first["power_w"] = round(power_w, 1)
-    first["charge_fc_w"] = round(charge_fc_w, 1)
-    first["discharge_fc_w"] = round(discharge_fc_w, 1)
-    first["grid_import_fc_w"] = round(grid_import_fc_w, 1)
-    first["grid_export_fc_w"] = round(grid_export_fc_w, 1)
-    first["grid_net_fc_w"] = round(grid_import_fc_w - grid_export_fc_w, 1)
-
-    if abs(delta_shift_pct) > 1e-6:
-        for p in out[idx + 1:]:
-            if "soc_pct" in p:
-                p["soc_pct"] = round(clamp(float(p["soc_pct"]) + delta_shift_pct, SOC_MIN, SOC_MAX), 2)
-    return out
 
 
 def collect_inputs():
@@ -2426,6 +2352,25 @@ def split_profile(points, date_str):
     }
 
 
+def build_published_plan_profiles(
+    actual_points,
+    future_points,
+    today,
+    tomorrow,
+    now_ts_ms,
+):
+    """Publish canonical plan data without projecting live commands forward."""
+    forecast_today = split_profile(future_points, today)
+    forecast_tomorrow = split_profile(future_points, tomorrow)
+    profile_today = merge_actual_and_future_profile(
+        actual_points, future_points, today, now_ts_ms
+    )
+    profile_tomorrow = merge_actual_and_future_profile(
+        actual_points, future_points, tomorrow, now_ts_ms
+    )
+    return forecast_today, forecast_tomorrow, profile_today, profile_tomorrow
+
+
 def derive_planned_dispatch(first_plan, discharge_ctx):
     if not first_plan:
         return "idle", 0
@@ -3062,9 +3007,6 @@ def main():
             "load_bias_used": load_bias,
         }
     )
-    future_points_display = apply_live_override_to_future_points(future_points, mode, rec_w, now_ts_ms)
-    forecast_today = split_profile(future_points_display, today)
-    forecast_tomorrow = split_profile(future_points_display, tomorrow)
     actual_points = data.get("virtual_trace", [])
     if soc is None:
         append_virtual_trace(data, int(now_ts * 1000), today, (start_e / CAP_KWH) * 100.0, mode, rec_w)
@@ -3074,8 +3016,18 @@ def main():
         data["virtual_last_power_w"] = rec_w
         data["virtual_energy_kwh"] = start_e
 
-    profile_today = merge_actual_and_future_profile(actual_points, future_points_display, today, now_ts_ms)
-    profile_tomorrow = merge_actual_and_future_profile(actual_points, future_points_display, tomorrow, now_ts_ms)
+    (
+        forecast_today,
+        forecast_tomorrow,
+        profile_today,
+        profile_tomorrow,
+    ) = build_published_plan_profiles(
+        actual_points,
+        future_points,
+        today,
+        tomorrow,
+        now_ts_ms,
+    )
     profile_today["price"] = build_price_profile(intervals_all, today)
     profile_tomorrow["price"] = build_price_profile(intervals_all, tomorrow)
     price_obs = compute_price_quantiles(data["samples"], local_now, p_now, profile_tomorrow["price"])
@@ -3232,14 +3184,31 @@ def main():
         "profile_tomorrow_grid_import_fc_power": profile_tomorrow["grid_import_fc_power"],
         "profile_tomorrow_grid_export_fc_power": profile_tomorrow["grid_export_fc_power"],
         "profile_tomorrow_grid_net_fc_power": profile_tomorrow["grid_net_fc_power"],
-        "profile_48h_pv_fc_power": [[p["ts_ms"], p["pv_fc_w"]] for p in future_points_display],
-        "profile_48h_house_fc_power": [[p["ts_ms"], p["load_fc_w"]] for p in future_points_display],
-        "profile_48h_charge_fc_power": [[p["ts_ms"], p["charge_fc_w"]] for p in future_points_display],
-        "profile_48h_discharge_fc_power": [[p["ts_ms"], p["discharge_fc_w"]] for p in future_points_display],
-        "profile_48h_discharge_budget_kwh": [[p["ts_ms"], p.get("discharge_budget_kwh", 0.0)] for p in future_points_display],
-        "profile_48h_grid_import_fc_power": [[p["ts_ms"], p["grid_import_fc_w"]] for p in future_points_display],
-        "profile_48h_grid_export_fc_power": [[p["ts_ms"], p["grid_export_fc_w"]] for p in future_points_display],
-        "profile_48h_grid_net_fc_power": [[p["ts_ms"], p["grid_net_fc_w"]] for p in future_points_display],
+        "profile_48h_pv_fc_power": [
+            [p["ts_ms"], p["pv_fc_w"]] for p in future_points
+        ],
+        "profile_48h_house_fc_power": [
+            [p["ts_ms"], p["load_fc_w"]] for p in future_points
+        ],
+        "profile_48h_charge_fc_power": [
+            [p["ts_ms"], p["charge_fc_w"]] for p in future_points
+        ],
+        "profile_48h_discharge_fc_power": [
+            [p["ts_ms"], p["discharge_fc_w"]] for p in future_points
+        ],
+        "profile_48h_discharge_budget_kwh": [
+            [p["ts_ms"], p.get("discharge_budget_kwh", 0.0)]
+            for p in future_points
+        ],
+        "profile_48h_grid_import_fc_power": [
+            [p["ts_ms"], p["grid_import_fc_w"]] for p in future_points
+        ],
+        "profile_48h_grid_export_fc_power": [
+            [p["ts_ms"], p["grid_export_fc_w"]] for p in future_points
+        ],
+        "profile_48h_grid_net_fc_power": [
+            [p["ts_ms"], p["grid_net_fc_w"]] for p in future_points
+        ],
         "profile_48h_pv_actual_power": fetch_pv_actual_profile(48),
         "profile_48h_house_actual_power": fetch_house_actual_profile(48, data["samples"]),
         "profile_48h_grid_net_actual_power": fetch_net_actual_profile(48),

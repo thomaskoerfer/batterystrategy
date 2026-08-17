@@ -4,6 +4,22 @@ All notable changes to Battery Strategy are documented here.
 
 ## Unreleased
 
+## [0.2.0-beta.10] - 2026-08-17
+
+### Fixed
+
+- Future SoC, power and discharge-budget profiles now remain canonical
+  optimizer output. Live command deviations are no longer projected into the
+  next plan slot or applied as a constant shift to the remaining horizon.
+- Removed the display-only live overlay that could show planned discharge after
+  the displayed SoC had already reached its minimum.
+
+### Safety
+
+- The economic optimizer, plan compiler, live controller, PV/EV policy and
+  actuator are unchanged. Actual live deviations feed the next regular planning
+  run through measured battery SoC.
+
 ## [0.2.0-beta.9] - 2026-08-17
 
 ### Fixed
