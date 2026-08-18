@@ -31,7 +31,7 @@ from .forecasting import (
 from .optimizer_state import load_state_document, save_state_document
 
 STATE_FILE = "/config/battery_strategy_optimizer_state.json"
-SCRIPT_VERSION = "1.8.10"
+SCRIPT_VERSION = "1.8.11"
 _DB_ENGINE = None
 _RUNTIME_STATES = {}
 _RUNTIME_PRICE_INTERVALS = []
