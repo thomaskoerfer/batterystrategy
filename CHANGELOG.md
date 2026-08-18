@@ -4,6 +4,22 @@ All notable changes to Battery Strategy are documented here.
 
 ## Unreleased
 
+## [0.2.0-beta.11] - 2026-08-18
+
+### Fixed
+
+- Future charging now reduces higher-value load reserves only by the energy it
+  can actually replace. A small forecast PV charge no longer releases all
+  battery inventory reserved for later expensive household load.
+- Forecast PV replacement receives the existing PV-confidence discount; firm
+  grid recharge remains fully credited.
+
+### Safety
+
+- The slot budget cap, plan compiler, live meter following, PV/EV policy and
+  actuator are unchanged. This release only corrects the optimizer's
+  commercial discharge permission.
+
 ## [0.2.0-beta.10] - 2026-08-17
 
 ### Fixed

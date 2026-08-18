@@ -113,7 +113,9 @@ portion of planned charge and cannot exceed total planned charge.
 plan carries the battery constraints used during optimization so the compiler
 does not query configuration behind the contract. Planned discharge is expected
 execution and must be contained by that permission; a budget may be larger to
-cover unexpected live household load.
+cover unexpected live household load. Future recharge reduces inventory
+reserved for later higher-value load only by its expected deliverable energy;
+the presence of a charge slot alone never resets scarcity.
 
 Published future profiles are canonical projections of `BatteryPlan`. Actual
 history may be joined up to the observation time, but a live directive or live

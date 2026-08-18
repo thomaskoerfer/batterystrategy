@@ -1566,6 +1566,51 @@ def update_forecast_shadow_trace(data, summary, now_ts):
     data["forecast_shadow_trace"] = trace[-14 * SLOTS_PER_DAY :]
 
 
+def _future_higher_value_load_reserve_kwh(
+    slots,
+    points,
+    current_idx,
+    *,
+    pv_recovery_confidence=PV_RECOVERY_CONFIDENCE,
+):
+    """Return later high-value load not covered by planned recharge.
+
+    A future charge is replacement energy, not a binary reset of inventory
+    scarcity. Grid charge is treated as firm; forecast PV charge receives the
+    same confidence discount as the existing PV-recovery budget.
+    """
+    current_price_ct = float(slots[current_idx]["price_ct"])
+    replacement_ac_kwh = 0.0
+    reserved_kwh = 0.0
+    for future_idx in range(current_idx + 1, len(slots)):
+        charge_kwh = max(
+            0.0,
+            float(points[future_idx].get("charge_fc_w", 0.0)) / 1000.0 * SLOT_H,
+        )
+        surplus_kwh = max(0.0, float(slots[future_idx].get("surplus_kwh", 0.0)))
+        pv_charge_kwh = min(charge_kwh, surplus_kwh)
+        grid_charge_kwh = max(0.0, charge_kwh - pv_charge_kwh)
+        replacement_ac_kwh += (
+            grid_charge_kwh + pv_charge_kwh * pv_recovery_confidence
+        ) * ETA_RT
+
+        if float(slots[future_idx]["price_ct"]) <= current_price_ct + 1e-9:
+            continue
+        future_load_kwh = min(
+            MAX_DISCHARGE_E_SLOT_KWH,
+            float(
+                slots[future_idx].get(
+                    "discharge_eligible_kwh",
+                    slots[future_idx]["net_pos_kwh"],
+                )
+            ),
+        )
+        replacement_used_kwh = min(replacement_ac_kwh, future_load_kwh)
+        replacement_ac_kwh -= replacement_used_kwh
+        reserved_kwh += future_load_kwh - replacement_used_kwh
+    return reserved_kwh
+
+
 def build_virtual_plan(intervals, samples, start_energy_kwh, weather_factor, forecast_tomorrow_kwh, load_bias, load_bias_slots, pv_bias_slots, initial_mode=0, weather_hourly=None, pv_now_actual_w=None, now_local=None, pv_global_bias=1.0, eex_days=None, inventory_discharge_floor_ct=None):
     if not intervals:
         return {"points": [], "today": {}, "tomorrow": {}, "end_soc": 50.0, "price_stats": {}, "daily_costs": {}}
@@ -1979,24 +2024,8 @@ def build_virtual_plan(intervals, samples, start_energy_kwh, weather_factor, for
         return max(0.0, point_charge_kwh(t) - float(slots[t]["surplus_kwh"]))
 
     def future_higher_value_load_kwh(t):
-        """Return forecast load worth reserving inventory for before recharge."""
-        current_price_ct = float(slots[t]["price_ct"])
-        reserved_kwh = 0.0
-        for future_idx in range(t + 1, n_slots):
-            if point_charge_kwh(future_idx) > 1e-6:
-                break
-            if float(slots[future_idx]["price_ct"]) <= current_price_ct + 1e-9:
-                continue
-            reserved_kwh += min(
-                MAX_DISCHARGE_E_SLOT_KWH,
-                float(
-                    slots[future_idx].get(
-                        "discharge_eligible_kwh",
-                        slots[future_idx]["net_pos_kwh"],
-                    )
-                ),
-            )
-        return reserved_kwh
+        """Return high-value forecast load not replaced by planned recharge."""
+        return _future_higher_value_load_reserve_kwh(slots, points, t)
 
     def explicit_discharge_budget_kwh(t):
         # A budget may coexist with free PV charging, but never with paid

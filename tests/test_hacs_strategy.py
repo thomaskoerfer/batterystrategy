@@ -2916,7 +2916,7 @@ class HacsStrategyTests(unittest.TestCase):
             max(p["discharge_budget_kwh"] for p in plan["points"][1:]), 0.0
         )
 
-    def test_optimizer_discharge_budget_does_not_reserve_across_future_charge_window(
+    def test_optimizer_discharge_budget_reserves_across_incomplete_charge_window(
         self,
     ):
         tz = dt.timezone.utc
@@ -2963,9 +2963,96 @@ class HacsStrategyTests(unittest.TestCase):
             eex_days={},
         )
 
-        self.assertGreater(plan["points"][0]["discharge_budget_kwh"], 0.0)
-        self.assertGreater(plan["points"][1]["discharge_budget_kwh"], 0.0)
+        self.assertEqual(plan["points"][0]["discharge_budget_kwh"], 0.0)
+        self.assertEqual(plan["points"][1]["discharge_budget_kwh"], 0.0)
         self.assertGreater(plan["points"][6]["charge_fc_w"], 0.0)
+
+    def test_small_future_pv_charge_only_offsets_matching_evening_reserve(self):
+        slots = [
+            {
+                "price_ct": 36.0,
+                "surplus_kwh": 0.0,
+                "net_pos_kwh": 0.1,
+                "discharge_eligible_kwh": 0.1,
+            },
+            {
+                "price_ct": 20.0,
+                "surplus_kwh": 0.05,
+                "net_pos_kwh": 0.0,
+                "discharge_eligible_kwh": 0.0,
+            },
+            {
+                "price_ct": 43.0,
+                "surplus_kwh": 0.0,
+                "net_pos_kwh": 0.3,
+                "discharge_eligible_kwh": 0.3,
+            },
+            {
+                "price_ct": 42.0,
+                "surplus_kwh": 0.0,
+                "net_pos_kwh": 0.3,
+                "discharge_eligible_kwh": 0.3,
+            },
+        ]
+        points = [
+            {"charge_fc_w": 0.0},
+            {"charge_fc_w": 200.0},
+            {"charge_fc_w": 0.0},
+            {"charge_fc_w": 0.0},
+        ]
+
+        reserve_kwh = optimizer_engine._future_higher_value_load_reserve_kwh(
+            slots,
+            points,
+            0,
+            pv_recovery_confidence=0.75,
+        )
+
+        expected_replacement_kwh = 0.05 * optimizer_engine.ETA_RT * 0.75
+        self.assertAlmostEqual(reserve_kwh, 0.6 - expected_replacement_kwh)
+
+    def test_full_future_grid_recharge_can_cover_evening_reserve(self):
+        slots = [
+            {
+                "price_ct": 36.0,
+                "surplus_kwh": 0.0,
+                "net_pos_kwh": 0.1,
+                "discharge_eligible_kwh": 0.1,
+            },
+            {
+                "price_ct": 20.0,
+                "surplus_kwh": 0.0,
+                "net_pos_kwh": 0.0,
+                "discharge_eligible_kwh": 0.0,
+            },
+            {
+                "price_ct": 43.0,
+                "surplus_kwh": 0.0,
+                "net_pos_kwh": 0.3,
+                "discharge_eligible_kwh": 0.3,
+            },
+            {
+                "price_ct": 42.0,
+                "surplus_kwh": 0.0,
+                "net_pos_kwh": 0.3,
+                "discharge_eligible_kwh": 0.3,
+            },
+        ]
+        required_grid_charge_kwh = 0.6 / optimizer_engine.ETA_RT
+        points = [
+            {"charge_fc_w": 0.0},
+            {"charge_fc_w": required_grid_charge_kwh / optimizer_engine.SLOT_H * 1000.0},
+            {"charge_fc_w": 0.0},
+            {"charge_fc_w": 0.0},
+        ]
+
+        reserve_kwh = optimizer_engine._future_higher_value_load_reserve_kwh(
+            slots,
+            points,
+            0,
+        )
+
+        self.assertAlmostEqual(reserve_kwh, 0.0)
 
     def test_optimizer_discharge_floor_uses_cheapest_horizon_replacement(self):
         tz = dt.timezone.utc
