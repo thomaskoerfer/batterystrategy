@@ -116,6 +116,11 @@ execution and must be contained by that permission; a budget may be larger to
 cover unexpected live household load. Future recharge reduces inventory
 reserved for later higher-value load only by its expected deliverable energy;
 the presence of a charge slot alone never resets scarcity.
+PV-recovery discharge permission requires a physical storage-headroom shortage:
+confidence-weighted future PV surplus must exceed remaining battery headroom and
+the uncertainty reserve. Forecast grid export is diagnostic optimizer output;
+by itself it must not authorize discharge because it can result from plan
+discretization or an economic choice.
 
 Published future profiles are canonical projections of `BatteryPlan`. Actual
 history may be joined up to the observation time, but a live directive or live

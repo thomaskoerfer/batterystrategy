@@ -2560,7 +2560,7 @@ class HacsStrategyTests(unittest.TestCase):
         )
         self.assertGreater(plan["points"][0]["discharge_budget_kwh"], 0.0)
 
-    def test_optimizer_discharge_budget_opens_for_planned_future_export(self):
+    def test_optimizer_planned_export_does_not_create_recovery_budget(self):
         tz = optimizer_engine.OPEN_METEO_TZ
         start = dt.datetime(2026, 6, 23, 12, tzinfo=tz)
         prices = [27.0, 26.0, 25.5, 25.0, 28.0, 35.0]
@@ -2604,10 +2604,10 @@ class HacsStrategyTests(unittest.TestCase):
         )
 
         self.assertGreater(sum(p["grid_export_fc_w"] for p in plan["points"][1:4]), 0.0)
-        self.assertGreater(plan["points"][0]["discharge_budget_kwh"], 0.0)
+        self.assertEqual(plan["points"][0]["discharge_budget_kwh"], 0.0)
 
-    def test_optimizer_headroom_budget_coexists_with_planned_pv_charge(self):
-        """Surplus-backed budget may serve load while live PV still charges."""
+    def test_optimizer_pv_charge_with_headroom_has_no_recovery_budget(self):
+        """Plan rounding must not turn forecast export into discharge permission."""
         start = dt.datetime(2026, 8, 13, 12, tzinfo=optimizer_engine.OPEN_METEO_TZ)
         prices = [20.0] * 4 + [50.0] * 4
         intervals = [
@@ -2654,22 +2654,38 @@ class HacsStrategyTests(unittest.TestCase):
 
         current = plan["points"][0]
         self.assertGreater(current["charge_fc_w"], 0.0)
-        self.assertGreater(current["discharge_budget_kwh"], 0.0)
+        self.assertEqual(current["discharge_budget_kwh"], 0.0)
         self.assertGreater(
             sum(point["grid_export_fc_w"] for point in plan["points"][:4]),
             0.0,
         )
 
-        planned_charge_kwh = float(current["charge_fc_w"]) * optimizer_engine.SLOT_H / 1000.0
-        later_export_kwh = sum(
-            float(point["grid_export_fc_w"]) * optimizer_engine.SLOT_H / 1000.0
-            for point in plan["points"][1:4]
+    def test_pv_spill_recovery_requires_physical_headroom_shortage(self):
+        low_soc_budget = optimizer_engine._pv_spill_recovery_budget_ac_kwh(
+            future_surplus_kwh=0.5,
+            baseline_energy_kwh=optimizer_engine.MIN_E_KWH,
         )
-        safe_recovery_ac_kwh = later_export_kwh * optimizer_engine.ETA_RT * optimizer_engine.PV_RECOVERY_CONFIDENCE
-        self.assertLessEqual(
-            float(current["discharge_budget_kwh"]) + planned_charge_kwh * optimizer_engine.ETA_RT,
-            safe_recovery_ac_kwh + 1e-3,
+        self.assertEqual(low_soc_budget, 0.0)
+
+        future_surplus_kwh = 1.0
+        baseline_energy_kwh = optimizer_engine.MAX_E_KWH - 0.1
+        expected_storage_kwh = max(
+            0.0,
+            future_surplus_kwh
+            * optimizer_engine.ETA_C
+            * optimizer_engine.PV_RECOVERY_CONFIDENCE
+            - 0.1
+            - optimizer_engine.PV_RECOVERY_RESERVE_KWH,
         )
+        high_soc_budget = optimizer_engine._pv_spill_recovery_budget_ac_kwh(
+            future_surplus_kwh=future_surplus_kwh,
+            baseline_energy_kwh=baseline_energy_kwh,
+        )
+        self.assertAlmostEqual(
+            high_soc_budget,
+            expected_storage_kwh * optimizer_engine.ETA_D,
+        )
+        self.assertGreater(high_soc_budget, 0.0)
 
     def test_optimizer_never_combines_grid_charge_with_discharge_budget(self):
         start = dt.datetime(2026, 8, 13, 12, tzinfo=optimizer_engine.OPEN_METEO_TZ)
@@ -2757,7 +2773,7 @@ class HacsStrategyTests(unittest.TestCase):
         first_plan = optimizer_engine.build_virtual_plan(
             intervals=intervals,
             samples=samples,
-            start_energy_kwh=3.0,
+            start_energy_kwh=5.9,
             weather_factor=1.0,
             forecast_tomorrow_kwh=None,
             load_bias=1.0,
@@ -2775,7 +2791,7 @@ class HacsStrategyTests(unittest.TestCase):
 
         next_energy_kwh = max(
             optimizer_engine.MIN_E_KWH,
-            3.0 - budget_kwh / optimizer_engine.ETA_D,
+            5.9 - budget_kwh / optimizer_engine.ETA_D,
         )
         second_plan = optimizer_engine.build_virtual_plan(
             intervals=intervals[1:],

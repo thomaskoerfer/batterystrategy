@@ -4,6 +4,25 @@ All notable changes to Battery Strategy are documented here.
 
 ## Unreleased
 
+## [0.2.0-beta.12] - 2026-08-18
+
+### Fixed
+
+- PV-recovery discharge budgets now open only when confidence-weighted future
+  PV surplus exceeds physical battery headroom plus the uncertainty reserve.
+- Forecast export caused by optimizer discretization or an economic plan choice
+  no longer creates discharge permission by itself.
+
+### Changed
+
+- Isolated the PV spill calculation in a pure, directly tested optimizer
+  function and removed the superseded planned-export recovery path completely.
+
+### Safety
+
+- Later expensive-load reservation, slot budget caps, live PV priority, EV
+  policy and battery actuation are unchanged.
+
 ## [0.2.0-beta.11] - 2026-08-18
 
 ### Fixed

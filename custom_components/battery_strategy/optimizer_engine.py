@@ -31,7 +31,7 @@ from .forecasting import (
 from .optimizer_state import load_state_document, save_state_document
 
 STATE_FILE = "/config/battery_strategy_optimizer_state.json"
-SCRIPT_VERSION = "1.8.11"
+SCRIPT_VERSION = "1.8.12"
 _DB_ENGINE = None
 _RUNTIME_STATES = {}
 _RUNTIME_PRICE_INTERVALS = []
@@ -1611,6 +1611,34 @@ def _future_higher_value_load_reserve_kwh(
     return reserved_kwh
 
 
+def _pv_spill_recovery_budget_ac_kwh(
+    future_surplus_kwh,
+    baseline_energy_kwh,
+    *,
+    confidence=PV_RECOVERY_CONFIDENCE,
+    reserve_kwh=PV_RECOVERY_RESERVE_KWH,
+):
+    """Return discharge energy backed by otherwise uncapturable PV.
+
+    Forecast export is not evidence of missing physical headroom: it can be a
+    plan-discretization artifact or an economic choice. Recovery is therefore
+    authorized only when confidence-weighted PV surplus exceeds the actual
+    storage headroom plus the configured uncertainty reserve.
+    """
+    recoverable_storage_kwh = max(0.0, float(future_surplus_kwh)) * ETA_C * max(
+        0.0, float(confidence)
+    )
+    baseline_energy_kwh = clamp(
+        float(baseline_energy_kwh), MIN_E_KWH, MAX_E_KWH
+    )
+    headroom_kwh = max(0.0, MAX_E_KWH - baseline_energy_kwh)
+    threatened_storage_kwh = max(
+        0.0,
+        recoverable_storage_kwh - headroom_kwh - max(0.0, float(reserve_kwh)),
+    )
+    return threatened_storage_kwh * ETA_D
+
+
 def build_virtual_plan(intervals, samples, start_energy_kwh, weather_factor, forecast_tomorrow_kwh, load_bias, load_bias_slots, pv_bias_slots, initial_mode=0, weather_hourly=None, pv_now_actual_w=None, now_local=None, pv_global_bias=1.0, eex_days=None, inventory_discharge_floor_ct=None):
     if not intervals:
         return {"points": [], "today": {}, "tomorrow": {}, "end_soc": 50.0, "price_stats": {}, "daily_costs": {}}
@@ -1971,12 +1999,6 @@ def build_virtual_plan(intervals, samples, start_energy_kwh, weather_factor, for
     points = suppress_uneconomic_micro_cycles(points, start_energy_kwh)
 
     recovery_lookahead_slots = max(1, int(round(PV_RECOVERY_LOOKAHEAD_H / SLOT_H)))
-    future_planned_export_kwh = [0.0] * (n_slots + 1)
-    for idx in range(n_slots - 1, -1, -1):
-        future_planned_export_kwh[idx] = future_planned_export_kwh[idx + 1] + max(
-            0.0, float(points[idx].get("grid_export_fc_w", 0.0)) / 1000.0 * SLOT_H
-        )
-
     def recovery_window_end_idx(t):
         price_ct = float(slots[t]["price_ct"])
         default_end = min(n_slots, t + 1 + recovery_lookahead_slots)
@@ -1990,13 +2012,10 @@ def build_virtual_plan(intervals, samples, start_energy_kwh, weather_factor, for
             return 0.0
         end_idx = recovery_window_end_idx(t)
         future_surplus_kwh = max(0.0, future_pv_surplus_kwh[t + 1] - future_pv_surplus_kwh[end_idx])
-        recoverable_storage_kwh = future_surplus_kwh * ETA_C * PV_RECOVERY_CONFIDENCE
-        headroom_after_baseline_kwh = max(0.0, MAX_E_KWH - baseline_after_e)
-        spill_storage_kwh = max(0.0, recoverable_storage_kwh - headroom_after_baseline_kwh - PV_RECOVERY_RESERVE_KWH)
-        spill_recovery_ac_kwh = spill_storage_kwh * ETA_D
-        planned_export_kwh = max(0.0, future_planned_export_kwh[t + 1] - future_planned_export_kwh[end_idx])
-        planned_export_recovery_ac_kwh = planned_export_kwh * ETA_RT * PV_RECOVERY_CONFIDENCE
-        return max(spill_recovery_ac_kwh, planned_export_recovery_ac_kwh)
+        return _pv_spill_recovery_budget_ac_kwh(
+            future_surplus_kwh,
+            baseline_after_e,
+        )
 
     def pre_slot_energy_kwh(t):
         return clamp(
