@@ -55,10 +55,10 @@ async def async_get_config_entry_diagnostics(hass, entry) -> dict:
         },
         "actuation": data.get("actuation"),
         "optimizer_age_s": data.get("optimizer_age_s"),
-        "forecast_shadow": {
-            key.removeprefix("forecast_shadow_"): value
+        "forecast": {
+            key.removeprefix("forecast_"): value
             for key, value in (data.get("optimizer_attrs") or {}).items()
-            if key.startswith("forecast_shadow_")
+            if key == "forecast_source" or key.startswith("forecast_parity_")
         },
         "strategy_enabled": data.get("strategy_enabled"),
     }

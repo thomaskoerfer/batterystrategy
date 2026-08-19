@@ -132,6 +132,11 @@ That module is a migration source, not the desired permanent boundary.
 
 ## Migration plan and gates
 
+Current status: Phase 0.5 completed with 236 consecutive quarter-hour parity
+records and no errors or gaps. Phase 1 is active from release
+`0.2.0-beta.13`; the extracted forecasters are authoritative and the inline
+forecast remains only as a parity-gated rollback path during observation.
+
 ### Phase 0: Baseline and contracts
 
 - Freeze representative historical scenarios and current regression output.
@@ -171,6 +176,9 @@ replacement for the finalized feature-store contract.
 
 Gate: slot outputs remain numerically identical apart from explicit rounding,
 live plans remain stable, and rollback to the old forecast path has been tested.
+After this gate, remove the inline forecast calculation, parity gating and
+legacy trace migration in one cleanup change; do not let the rollback path
+become a second permanent production implementation.
 
 ### Phase 2: Add the feature store in parallel
 

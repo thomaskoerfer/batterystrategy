@@ -4,6 +4,24 @@ All notable changes to Battery Strategy are documented here.
 
 ## Unreleased
 
+## [0.2.0-beta.13] - 2026-08-19
+
+### Changed
+
+- Promoted the parity-proven extracted load and PV forecasters to the
+  authoritative optimizer input without changing forecast mathematics.
+- Retained the previous inline calculation as a temporary Phase-1 rollback
+  path when the extracted forecast errors or differs by more than 1 W.
+- Renamed shadow diagnostics to forecast source/parity diagnostics and migrated
+  the existing bounded comparison trace without losing observations.
+
+### Safety
+
+- Forecast source selection occurs before optimization. Optimization, plan
+  compilation, live control, EV policy and battery actuation are unchanged.
+- The inline fallback is explicit, tested and scheduled for removal after the
+  extracted-forecast observation window succeeds.
+
 ## [0.2.0-beta.12] - 2026-08-18
 
 ### Fixed

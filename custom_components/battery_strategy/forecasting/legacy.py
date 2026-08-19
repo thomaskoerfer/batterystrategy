@@ -1,8 +1,7 @@
-"""Side-effect-free shadow of the current production forecast mathematics.
+"""Extracted implementation of the proven legacy forecast mathematics.
 
-The legacy sample shape is intentionally transitional. It preserves exact
-production parity while the finalized 15-minute feature store is introduced in
-a later migration phase. Outputs already use the target forecast contracts.
+The legacy sample shape remains transitional while the finalized 15-minute
+feature store is introduced. Outputs already use the target forecast contracts.
 """
 
 from __future__ import annotations
@@ -89,7 +88,7 @@ class LegacyForecastConfig:
             raise ValueError("at least one PV capacity event is required")
 
 
-def build_legacy_shadow_forecast(
+def build_legacy_forecast(
     request: ForecastRequest,
     samples: tuple[LegacyForecastSample, ...],
     targets: tuple[LegacyForecastTarget, ...],
@@ -172,20 +171,20 @@ def build_legacy_shadow_forecast(
         request.as_of_ms,
         int(max((sample.ts_s for sample in samples), default=0.0) * 1000),
     )
-    forecast_id = f"legacy-shadow-{request.as_of_ms}"
+    forecast_id = f"legacy-{request.as_of_ms}"
     return ForecastBundle(
         load=LoadForecast(
             forecast_id=f"{forecast_id}-load",
             generated_at_ms=request.as_of_ms,
             training_cutoff_ms=training_cutoff_ms,
-            model_version="legacy-load-shadow-v1",
+            model_version="legacy-load-v1",
             slots=tuple(load_slots),
         ),
         pv=PvForecast(
             forecast_id=f"{forecast_id}-pv",
             generated_at_ms=request.as_of_ms,
             training_cutoff_ms=training_cutoff_ms,
-            model_version="legacy-pv-shadow-v1",
+            model_version="legacy-pv-v1",
             slots=tuple(pv_slots),
         ),
     )

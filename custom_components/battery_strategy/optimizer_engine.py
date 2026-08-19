@@ -26,12 +26,12 @@ from .forecasting import (
     LegacyForecastConfig,
     LegacyForecastSample,
     LegacyForecastTarget,
-    build_legacy_shadow_forecast,
+    build_legacy_forecast,
 )
 from .optimizer_state import load_state_document, save_state_document
 
 STATE_FILE = "/config/battery_strategy_optimizer_state.json"
-SCRIPT_VERSION = "1.8.12"
+SCRIPT_VERSION = "1.8.13"
 _DB_ENGINE = None
 _RUNTIME_STATES = {}
 _RUNTIME_PRICE_INTERVALS = []
@@ -774,9 +774,9 @@ def load_state():
         "eex_cache": {},
         "daily_savings": {},
         "actual_daily_savings": {},
-        "forecast_shadow_trace": [],
+        "forecast_parity_trace": [],
         "last_output": {},
-        "state_schema": 6,
+        "state_schema": 7,
     }
     if not os.path.exists(STATE_FILE):
         return default_state
@@ -786,6 +786,9 @@ def load_state():
             return default_state
         for k, v in default_state.items():
             data.setdefault(k, v)
+        legacy_trace = data.pop("forecast_shadow_trace", [])
+        if legacy_trace and not data["forecast_parity_trace"]:
+            data["forecast_parity_trace"] = legacy_trace
         if int(data.get("state_schema", 0)) < 4:
             data["virtual_energy_kwh"] = CAP_KWH * 0.5
             data["virtual_last_ts"] = None
@@ -793,7 +796,7 @@ def load_state():
             data["virtual_last_power_w"] = 0.0
             data["virtual_trace"] = []
         data["samples"] = normalize_samples(data.get("samples", []))
-        data["state_schema"] = 6
+        data["state_schema"] = 7
         data["virtual_trace"] = compact_virtual_trace(data.get("virtual_trace", []))
         return data
     except Exception:
@@ -1426,10 +1429,10 @@ def tibber_price_eur_at(ts, price_ts, price_vals):
     return float(price_vals[i])
 
 
-def build_forecast_shadow_summary(
+def build_extracted_forecast(
     intervals,
     samples,
-    production_pre,
+    inline_pre,
     tomorrow_scale,
     *,
     now_local,
@@ -1442,7 +1445,7 @@ def build_forecast_shadow_summary(
     pv_global_bias,
     capacity_events,
 ):
-    """Compare an isolated forecast against production without affecting it."""
+    """Build the extracted forecast and compare it with the inline rollback path."""
     started = time.perf_counter()
     try:
         request = ForecastRequest(
@@ -1458,7 +1461,7 @@ def build_forecast_shadow_summary(
         )
         targets = tuple(
             LegacyForecastTarget(item["dt"], float(pre_item[3]))
-            for item, pre_item in zip(intervals, production_pre, strict=True)
+            for item, pre_item in zip(intervals, inline_pre, strict=True)
         )
         immutable_samples = tuple(
             LegacyForecastSample.from_mapping(sample) for sample in samples[-6000:]
@@ -1495,38 +1498,39 @@ def build_forecast_shadow_summary(
                 for item in capacity_events
             ),
         )
-        shadow = build_legacy_shadow_forecast(
+        extracted = build_legacy_forecast(
             request, immutable_samples, targets, context, config
         )
-        production_load_w = [float(item[1]) for item in production_pre]
-        production_pv_w = [
+        inline_load_w = [float(item[1]) for item in inline_pre]
+        inline_pv_w = [
             float(item[2])
             * (
                 tomorrow_scale
                 if item[0]["dt"].date().isoformat() == config.tomorrow_date
                 else 1.0
             )
-            for item in production_pre
+            for item in inline_pre
         ]
-        shadow_load_w = [
-            slot.energy.p50_kwh / SLOT_H * 1000.0 for slot in shadow.load.slots
+        extracted_load_w = [
+            slot.energy.p50_kwh / SLOT_H * 1000.0
+            for slot in extracted.load.slots
         ]
-        shadow_pv_w = [
-            slot.energy.p50_kwh / SLOT_H * 1000.0 for slot in shadow.pv.slots
+        extracted_pv_w = [
+            slot.energy.p50_kwh / SLOT_H * 1000.0 for slot in extracted.pv.slots
         ]
         load_errors = [
             abs(actual - candidate)
             for actual, candidate in zip(
-                production_load_w, shadow_load_w, strict=True
+                inline_load_w, extracted_load_w, strict=True
             )
         ]
         pv_errors = [
             abs(actual - candidate)
-            for actual, candidate in zip(production_pv_w, shadow_pv_w, strict=True)
+            for actual, candidate in zip(inline_pv_w, extracted_pv_w, strict=True)
         ]
         load_max = max(load_errors, default=0.0)
         pv_max = max(pv_errors, default=0.0)
-        return {
+        summary = {
             "status": "pass" if load_max <= 1.0 and pv_max <= 1.0 else "mismatch",
             "generated_at_ms": request.as_of_ms,
             "slot_count": len(request.slots),
@@ -1535,21 +1539,22 @@ def build_forecast_shadow_summary(
             "pv_mae_w": round(sum(pv_errors) / max(1, len(pv_errors)), 6),
             "pv_max_abs_w": round(pv_max, 6),
             "runtime_ms": round((time.perf_counter() - started) * 1000.0, 3),
-            "model_version": "legacy-shadow-v1",
+            "model_version": "legacy-extracted-v1",
         }
+        return extracted_load_w, extracted_pv_w, summary
     except Exception as exc:
-        return {
+        return None, None, {
             "status": "error",
             "generated_at_ms": int(now_local.timestamp() * 1000),
             "slot_count": len(intervals),
             "runtime_ms": round((time.perf_counter() - started) * 1000.0, 3),
             "error": f"{type(exc).__name__}: {exc}"[:240],
-            "model_version": "legacy-shadow-v1",
+            "model_version": "legacy-extracted-v1",
         }
 
 
-def update_forecast_shadow_trace(data, summary, now_ts):
-    """Retain one bounded shadow comparison per quarter-hour for 14 days."""
+def update_forecast_parity_trace(data, summary, now_ts):
+    """Retain one bounded forecast comparison per quarter-hour for 14 days."""
     if not isinstance(summary, dict) or not summary.get("status"):
         return
     slot_start = int(float(now_ts) // 900) * 900
@@ -1557,13 +1562,13 @@ def update_forecast_shadow_trace(data, summary, now_ts):
     record["slot_start_ts"] = slot_start
     trace = [
         item
-        for item in data.get("forecast_shadow_trace", [])
+        for item in data.get("forecast_parity_trace", [])
         if isinstance(item, dict)
         and int(item.get("slot_start_ts", 0)) != slot_start
         and int(item.get("slot_start_ts", 0)) >= slot_start - 14 * 86400
     ]
     trace.append(record)
-    data["forecast_shadow_trace"] = trace[-14 * SLOTS_PER_DAY :]
+    data["forecast_parity_trace"] = trace[-14 * SLOTS_PER_DAY :]
 
 
 def _future_higher_value_load_reserve_kwh(
@@ -1701,7 +1706,7 @@ def build_virtual_plan(intervals, samples, start_energy_kwh, weather_factor, for
     else:
         tom_scale = 1.0
 
-    forecast_shadow = build_forecast_shadow_summary(
+    extracted_load_w, extracted_pv_w, forecast_parity = build_extracted_forecast(
         intervals,
         samples,
         pre,
@@ -1717,12 +1722,43 @@ def build_virtual_plan(intervals, samples, start_energy_kwh, weather_factor, for
         capacity_events=PV_CAPACITY_EVENTS,
     )
 
+    if (
+        forecast_parity.get("status") == "pass"
+        and extracted_load_w is not None
+        and extracted_pv_w is not None
+        and len(extracted_load_w) == len(pre)
+        and len(extracted_pv_w) == len(pre)
+    ):
+        forecast_source = "extracted"
+        forecast_pre = [
+            (it, load_w, pv_w, inline_item[3])
+            for it, load_w, pv_w, inline_item in zip(
+                intervals,
+                extracted_load_w,
+                extracted_pv_w,
+                pre,
+                strict=True,
+            )
+        ]
+    else:
+        # Phase-1 rollback path: retain only through the extracted-forecast
+        # observation window, then remove it together with parity gating.
+        forecast_source = "inline_fallback"
+        forecast_pre = [
+            (
+                it,
+                load_w,
+                pv_w * (tom_scale if it["dt"].date().isoformat() == tomorrow else 1.0),
+                slot_weather_factor,
+            )
+            for it, load_w, pv_w, slot_weather_factor in pre
+        ]
+    forecast_parity["source"] = forecast_source
+
     slots = []
     daily = {}
-    for it, load_w_slot, pv_w_slot, _slot_weather_factor_raw in pre:
+    for it, load_w_slot, pv_w_slot, _slot_weather_factor_raw in forecast_pre:
         d = it["dt"].date().isoformat()
-        if d == tomorrow:
-            pv_w_slot *= tom_scale
         load_kwh = max(0.0, load_w_slot / 1000.0 * SLOT_H)
         pv_kwh = max(0.0, pv_w_slot / 1000.0 * SLOT_H)
         net_pos_kwh = max(0.0, load_kwh - pv_kwh)
@@ -2137,7 +2173,7 @@ def build_virtual_plan(intervals, samples, start_energy_kwh, weather_factor, for
             "cheap_anchor_rank": round(cheap_anchor_rank, 3) if cheap_anchor_rank is not None else None,
         },
         "daily_costs": daily_costs,
-        "forecast_shadow": forecast_shadow,
+        "forecast_parity": forecast_parity,
     }
 
 
@@ -2994,8 +3030,8 @@ def main():
         eex_days=eex_days,
         inventory_discharge_floor_ct=inventory_discharge_floor_ct,
     )
-    forecast_shadow = plan.get("forecast_shadow", {})
-    update_forecast_shadow_trace(data, forecast_shadow, now_ts)
+    forecast_parity = plan.get("forecast_parity", {})
+    update_forecast_parity_trace(data, forecast_parity, now_ts)
     future_points = plan["points"]
     usable_energy_ac_kwh = max(0.0, start_e - MIN_E_KWH) * ETA_D
     discharge_ctx = classify_discharge_mode(future_points, p_now, usable_energy_ac_kwh)
@@ -3149,15 +3185,16 @@ def main():
         "backtest_hit_rate_24h_pct": round(hit24, 1) if hit24 is not None else None,
         "weather_factor": round(weather_factor, 3),
         "script_version": SCRIPT_VERSION,
-        "forecast_shadow_status": forecast_shadow.get("status"),
-        "forecast_shadow_slot_count": forecast_shadow.get("slot_count"),
-        "forecast_shadow_load_mae_w": forecast_shadow.get("load_mae_w"),
-        "forecast_shadow_load_max_abs_w": forecast_shadow.get("load_max_abs_w"),
-        "forecast_shadow_pv_mae_w": forecast_shadow.get("pv_mae_w"),
-        "forecast_shadow_pv_max_abs_w": forecast_shadow.get("pv_max_abs_w"),
-        "forecast_shadow_runtime_ms": forecast_shadow.get("runtime_ms"),
-        "forecast_shadow_error": forecast_shadow.get("error"),
-        "forecast_shadow_model_version": forecast_shadow.get("model_version"),
+        "forecast_source": forecast_parity.get("source"),
+        "forecast_parity_status": forecast_parity.get("status"),
+        "forecast_parity_slot_count": forecast_parity.get("slot_count"),
+        "forecast_parity_load_mae_w": forecast_parity.get("load_mae_w"),
+        "forecast_parity_load_max_abs_w": forecast_parity.get("load_max_abs_w"),
+        "forecast_parity_pv_mae_w": forecast_parity.get("pv_mae_w"),
+        "forecast_parity_pv_max_abs_w": forecast_parity.get("pv_max_abs_w"),
+        "forecast_parity_runtime_ms": forecast_parity.get("runtime_ms"),
+        "forecast_parity_error": forecast_parity.get("error"),
+        "forecast_parity_model_version": forecast_parity.get("model_version"),
         "pv_bias": round(data.get("pv_bias", 1.0), 3),
         "load_bias": round(data.get("load_bias", 1.0), 3),
         "pv_bias_slot_now": round(float(data["pv_bias_slots"][slot_now]), 3),
