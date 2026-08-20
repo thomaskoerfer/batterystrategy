@@ -4,6 +4,24 @@ All notable changes to Battery Strategy are documented here.
 
 ## Unreleased
 
+## [0.2.0-beta.14] - 2026-08-20
+
+### Changed
+
+- Completed Phase 1 by removing the duplicate inline forecast calculation,
+  parity gate and comparison trace after the extracted forecast observation
+  window succeeded.
+- The extracted load/PV forecaster is now the sole optimizer forecast input.
+- Simplified forecast diagnostics to source, model version, slot count and
+  runtime; optimizer state schema 8 discards obsolete comparison traces.
+
+### Safety
+
+- Forecast mathematics and inputs are unchanged. Optimization, plan and budget
+  generation, live control, switches and battery actuation are untouched.
+- Forecast failures continue through the existing global fail-safe, which
+  publishes the last valid output as `error` instead of inventing a forecast.
+
 ## [0.2.0-beta.13] - 2026-08-19
 
 ### Changed

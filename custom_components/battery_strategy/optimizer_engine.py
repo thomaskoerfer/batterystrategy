@@ -31,7 +31,7 @@ from .forecasting import (
 from .optimizer_state import load_state_document, save_state_document
 
 STATE_FILE = "/config/battery_strategy_optimizer_state.json"
-SCRIPT_VERSION = "1.8.13"
+SCRIPT_VERSION = "1.8.14"
 _DB_ENGINE = None
 _RUNTIME_STATES = {}
 _RUNTIME_PRICE_INTERVALS = []
@@ -94,7 +94,6 @@ EEX_SCOPE_URL = "https://api.eex-group.com/pub/customise-widget/filter-data-with
 EEX_TABLE_URL = "https://api.eex-group.com/pub/market-data/table-data"
 EEX_CACHE_TTL_S = 6 * 3600
 OPEN_METEO_TZ = ZoneInfo("Europe/Berlin")
-PV_NOWCAST_BLEND_HOURS = 2.5
 TERMINAL_RANK_THRESHOLD = 0.35
 TERMINAL_VALUE_CAP_CT = 25.0
 CHEAP_CHARGE_RANK_THRESHOLD = 0.35
@@ -193,10 +192,8 @@ def configure_runtime(context):
         pv_kwp = max(0.1, float(context.get("pv_capacity_kwp") or 1.0))
         inverter_kw = max(0.1, float(context.get("pv_inverter_power_kw") or pv_kwp))
         PV_CAPACITY_EVENTS = [("2000-01-01T00:00:00+00:00", pv_kwp, inverter_kw)]
-    # Both caches depend on mutable runtime configuration and must not survive
-    # an integration reload with changed timezone or PV capacity history.
+    # This cache depends on mutable runtime timezone configuration.
     local_dt_from_ts.cache_clear()
-    pv_capacity_for_iso.cache_clear()
 
 
 def _entity_id(key):
@@ -774,9 +771,8 @@ def load_state():
         "eex_cache": {},
         "daily_savings": {},
         "actual_daily_savings": {},
-        "forecast_parity_trace": [],
         "last_output": {},
-        "state_schema": 7,
+        "state_schema": 8,
     }
     if not os.path.exists(STATE_FILE):
         return default_state
@@ -786,9 +782,10 @@ def load_state():
             return default_state
         for k, v in default_state.items():
             data.setdefault(k, v)
-        legacy_trace = data.pop("forecast_shadow_trace", [])
-        if legacy_trace and not data["forecast_parity_trace"]:
-            data["forecast_parity_trace"] = legacy_trace
+        # Phase-1 comparison traces are obsolete once the extracted forecast is
+        # the sole production path. Drop both historical names during migration.
+        data.pop("forecast_shadow_trace", None)
+        data.pop("forecast_parity_trace", None)
         if int(data.get("state_schema", 0)) < 4:
             data["virtual_energy_kwh"] = CAP_KWH * 0.5
             data["virtual_last_ts"] = None
@@ -796,7 +793,7 @@ def load_state():
             data["virtual_last_power_w"] = 0.0
             data["virtual_trace"] = []
         data["samples"] = normalize_samples(data.get("samples", []))
-        data["state_schema"] = 7
+        data["state_schema"] = 8
         data["virtual_trace"] = compact_virtual_trace(data.get("virtual_trace", []))
         return data
     except Exception:
@@ -852,25 +849,6 @@ def slot_index_for_dt(dt_obj):
 @lru_cache(maxsize=131072)
 def local_dt_from_ts(ts):
     return dt.datetime.fromtimestamp(float(ts), tz=dt.timezone.utc).astimezone(OPEN_METEO_TZ)
-
-
-@lru_cache(maxsize=512)
-def pv_capacity_for_iso(iso_ts):
-    target = dt.datetime.fromisoformat(iso_ts).astimezone(OPEN_METEO_TZ)
-    current_kwp, current_wr_kw = PV_CAPACITY_EVENTS[0][1], PV_CAPACITY_EVENTS[0][2]
-    for event_iso, kwp, wr_kw in PV_CAPACITY_EVENTS:
-        event_dt = dt.datetime.fromisoformat(event_iso).astimezone(OPEN_METEO_TZ)
-        if target >= event_dt:
-            current_kwp, current_wr_kw = float(kwp), float(wr_kw)
-        else:
-            break
-    return current_kwp, current_wr_kw
-
-
-def pv_capacity_for_dt(dt_obj):
-    if dt_obj.tzinfo is None:
-        dt_obj = dt_obj.replace(tzinfo=OPEN_METEO_TZ)
-    return pv_capacity_for_iso(dt_obj.astimezone(OPEN_METEO_TZ).isoformat())
 
 
 def bootstrap_samples_from_db(now_ts, days=21):
@@ -1000,39 +978,6 @@ def forecast_load_w_for_slot(samples, target_dt, fallback_w, hp_now_w, now_dt=No
             load_w += 0.22 * hp_excess * math.exp(-horizon_h / 1.5)
 
     return max(0.0, load_w * clamp(load_bias, 0.6, 1.6) * clamp(slot_bias, 0.7, 1.4))
-
-
-def forecast_pv_w_for_slot(samples, target_dt, weather_factor, fallback_w=0.0, slot_bias=1.0):
-    target_slot = target_dt.hour * 4 + target_dt.minute // 15
-    target_is_weekend = target_dt.weekday() >= 5
-    target_kwp, target_wr_kw = pv_capacity_for_dt(target_dt)
-
-    same_slot = []
-    same_slot_weektype = []
-    for s in samples[-6000:]:
-        ts = s.get("ts", 0)
-        slot = slot_idx_for_ts(ts)
-        pv = max(0.0, float(s.get("pv_w", 0.0)))
-        if not sample_has_valid_live_power(s) and pv <= 1.0:
-            continue
-        if slot == target_slot:
-            dt_s = local_dt_from_ts(ts).astimezone(target_dt.tzinfo)
-            sample_kwp, _sample_wr_kw = pv_capacity_for_dt(dt_s)
-            normalized_pv = pv * (target_kwp / max(0.1, sample_kwp))
-            same_slot.append(normalized_pv)
-            if (dt_s.weekday() >= 5) == target_is_weekend:
-                same_slot_weektype.append(normalized_pv)
-
-    base_all = med(same_slot[-60:], fallback_w)
-    base_weektype = med(same_slot_weektype[-30:], base_all)
-    pv_w = 0.65 * base_weektype + 0.35 * base_all
-
-    # night guard
-    if target_dt.hour < 6 or target_dt.hour > 20:
-        pv_w = 0.0
-
-    forecast_w = max(0.0, pv_w * weather_factor * clamp(slot_bias, 0.6, 1.5))
-    return min(forecast_w, max(0.0, target_wr_kw * 1000.0))
 
 
 def recent_surplus_stable(samples):
@@ -1429,11 +1374,10 @@ def tibber_price_eur_at(ts, price_ts, price_vals):
     return float(price_vals[i])
 
 
-def build_extracted_forecast(
+def build_production_forecast(
     intervals,
     samples,
-    inline_pre,
-    tomorrow_scale,
+    targets,
     *,
     now_local,
     weather_factor,
@@ -1445,130 +1389,65 @@ def build_extracted_forecast(
     pv_global_bias,
     capacity_events,
 ):
-    """Build the extracted forecast and compare it with the inline rollback path."""
+    """Build the sole production forecast from immutable inputs."""
     started = time.perf_counter()
-    try:
-        request = ForecastRequest(
-            as_of_ms=int(now_local.timestamp() * 1000),
-            timezone=str(getattr(OPEN_METEO_TZ, "key", OPEN_METEO_TZ)),
-            slots=tuple(
-                SlotKey(
-                    int(item["dt"].timestamp() * 1000),
-                    int(item["dt"].timestamp() * 1000) + int(SLOT_H * 3600 * 1000),
-                )
-                for item in intervals
-            ),
-        )
-        targets = tuple(
-            LegacyForecastTarget(item["dt"], float(pre_item[3]))
-            for item, pre_item in zip(intervals, inline_pre, strict=True)
-        )
-        immutable_samples = tuple(
-            LegacyForecastSample.from_mapping(sample) for sample in samples[-6000:]
-        )
-        latest = samples[-1] if samples else {}
-        context = LoadForecastContext(
-            house_load_no_ev_w=max(0.0, float(latest.get("load_w", 0.0) or 0.0)),
-            drivers=(
-                LoadDriverSnapshot(
-                    "heat_pump", max(0.0, float(latest.get("hp_w", 0.0) or 0.0))
-                ),
-            ),
-        )
-        config = LegacyForecastConfig(
-            timezone=request.timezone,
-            load_bias=float(load_bias),
-            load_slot_biases=tuple(float(value) for value in load_bias_slots),
-            pv_global_bias=float(pv_global_bias),
-            pv_slot_biases=tuple(float(value) for value in pv_bias_slots),
-            current_weather_factor=float(weather_factor),
-            current_pv_w=(
-                None if pv_now_actual_w is None else max(0.0, float(pv_now_actual_w))
-            ),
-            tomorrow_date=(
-                intervals[0]["dt"].date() + dt.timedelta(days=1)
-            ).isoformat(),
-            tomorrow_energy_kwh=(
-                None
-                if forecast_tomorrow_kwh is None
-                else float(forecast_tomorrow_kwh)
-            ),
-            capacity_events=tuple(
-                (str(item[0]), float(item[1]), float(item[2]))
-                for item in capacity_events
-            ),
-        )
-        extracted = build_legacy_forecast(
-            request, immutable_samples, targets, context, config
-        )
-        inline_load_w = [float(item[1]) for item in inline_pre]
-        inline_pv_w = [
-            float(item[2])
-            * (
-                tomorrow_scale
-                if item[0]["dt"].date().isoformat() == config.tomorrow_date
-                else 1.0
+    request = ForecastRequest(
+        as_of_ms=int(now_local.timestamp() * 1000),
+        timezone=str(getattr(OPEN_METEO_TZ, "key", OPEN_METEO_TZ)),
+        slots=tuple(
+            SlotKey(
+                int(item["dt"].timestamp() * 1000),
+                int(item["dt"].timestamp() * 1000) + int(SLOT_H * 3600 * 1000),
             )
-            for item in inline_pre
-        ]
-        extracted_load_w = [
-            slot.energy.p50_kwh / SLOT_H * 1000.0
-            for slot in extracted.load.slots
-        ]
-        extracted_pv_w = [
-            slot.energy.p50_kwh / SLOT_H * 1000.0 for slot in extracted.pv.slots
-        ]
-        load_errors = [
-            abs(actual - candidate)
-            for actual, candidate in zip(
-                inline_load_w, extracted_load_w, strict=True
-            )
-        ]
-        pv_errors = [
-            abs(actual - candidate)
-            for actual, candidate in zip(inline_pv_w, extracted_pv_w, strict=True)
-        ]
-        load_max = max(load_errors, default=0.0)
-        pv_max = max(pv_errors, default=0.0)
-        summary = {
-            "status": "pass" if load_max <= 1.0 and pv_max <= 1.0 else "mismatch",
-            "generated_at_ms": request.as_of_ms,
-            "slot_count": len(request.slots),
-            "load_mae_w": round(sum(load_errors) / max(1, len(load_errors)), 6),
-            "load_max_abs_w": round(load_max, 6),
-            "pv_mae_w": round(sum(pv_errors) / max(1, len(pv_errors)), 6),
-            "pv_max_abs_w": round(pv_max, 6),
-            "runtime_ms": round((time.perf_counter() - started) * 1000.0, 3),
-            "model_version": "legacy-extracted-v1",
-        }
-        return extracted_load_w, extracted_pv_w, summary
-    except Exception as exc:
-        return None, None, {
-            "status": "error",
-            "generated_at_ms": int(now_local.timestamp() * 1000),
-            "slot_count": len(intervals),
-            "runtime_ms": round((time.perf_counter() - started) * 1000.0, 3),
-            "error": f"{type(exc).__name__}: {exc}"[:240],
-            "model_version": "legacy-extracted-v1",
-        }
-
-
-def update_forecast_parity_trace(data, summary, now_ts):
-    """Retain one bounded forecast comparison per quarter-hour for 14 days."""
-    if not isinstance(summary, dict) or not summary.get("status"):
-        return
-    slot_start = int(float(now_ts) // 900) * 900
-    record = dict(summary)
-    record["slot_start_ts"] = slot_start
-    trace = [
-        item
-        for item in data.get("forecast_parity_trace", [])
-        if isinstance(item, dict)
-        and int(item.get("slot_start_ts", 0)) != slot_start
-        and int(item.get("slot_start_ts", 0)) >= slot_start - 14 * 86400
-    ]
-    trace.append(record)
-    data["forecast_parity_trace"] = trace[-14 * SLOTS_PER_DAY :]
+            for item in intervals
+        ),
+    )
+    immutable_samples = tuple(
+        LegacyForecastSample.from_mapping(sample) for sample in samples[-6000:]
+    )
+    latest = samples[-1] if samples else {}
+    context = LoadForecastContext(
+        house_load_no_ev_w=max(0.0, float(latest.get("load_w", 0.0) or 0.0)),
+        drivers=(
+            LoadDriverSnapshot(
+                "heat_pump", max(0.0, float(latest.get("hp_w", 0.0) or 0.0))
+            ),
+        ),
+    )
+    config = LegacyForecastConfig(
+        timezone=request.timezone,
+        load_bias=float(load_bias),
+        load_slot_biases=tuple(float(value) for value in load_bias_slots),
+        pv_global_bias=float(pv_global_bias),
+        pv_slot_biases=tuple(float(value) for value in pv_bias_slots),
+        current_weather_factor=float(weather_factor),
+        current_pv_w=(
+            None if pv_now_actual_w is None else max(0.0, float(pv_now_actual_w))
+        ),
+        tomorrow_date=(
+            intervals[0]["dt"].date() + dt.timedelta(days=1)
+        ).isoformat(),
+        tomorrow_energy_kwh=(
+            None if forecast_tomorrow_kwh is None else float(forecast_tomorrow_kwh)
+        ),
+        capacity_events=tuple(
+            (str(item[0]), float(item[1]), float(item[2]))
+            for item in capacity_events
+        ),
+    )
+    forecast = build_legacy_forecast(
+        request, immutable_samples, tuple(targets), context, config
+    )
+    load_w = [slot.energy.p50_kwh / SLOT_H * 1000.0 for slot in forecast.load.slots]
+    pv_w = [slot.energy.p50_kwh / SLOT_H * 1000.0 for slot in forecast.pv.slots]
+    if len(load_w) != len(intervals) or len(pv_w) != len(intervals):
+        raise ValueError("production forecast does not match requested slot grid")
+    return load_w, pv_w, {
+        "source": "extracted",
+        "slot_count": len(request.slots),
+        "runtime_ms": round((time.perf_counter() - started) * 1000.0, 3),
+        "model_version": "legacy-extracted-v1",
+    }
 
 
 def _future_higher_value_load_reserve_kwh(
@@ -1658,59 +1537,19 @@ def build_virtual_plan(intervals, samples, start_energy_kwh, weather_factor, for
     today = intervals[0]["dt"].date().isoformat()
     tomorrow = (intervals[0]["dt"].date() + dt.timedelta(days=1)).isoformat()
 
-    # build preliminary slot forecasts for tomorrow scaling
-    pre = []
     now_local = now_local or dt.datetime.now(OPEN_METEO_TZ)
+    forecast_targets = []
     for it in intervals:
-        slot = slot_index_for_dt(it["dt"])
         hour_key = it["dt"].replace(minute=0, second=0, microsecond=0).isoformat()
         slot_weather_factor_raw = float((weather_hourly or {}).get(hour_key, {}).get("weather_factor", weather_factor))
-        lw = forecast_load_w_for_slot(
-            samples,
-            it["dt"],
-            450.0,
-            samples[-1].get("hp_w", 0.0) if samples else 0.0,
-            now_dt=now_local,
-            load_bias=load_bias,
-            slot_bias=load_bias_slots[slot],
+        forecast_targets.append(
+            LegacyForecastTarget(it["dt"], slot_weather_factor_raw)
         )
-        pv = forecast_pv_w_for_slot(
-            samples,
-            it["dt"],
-            slot_weather_factor_raw * pv_global_bias,
-            slot_bias=pv_bias_slots[slot],
-        )
-        pre.append((it, lw, pv, slot_weather_factor_raw))
 
-    if pre and pv_now_actual_w is not None and pv_now_actual_w > 50.0:
-        current_weather_ref = max(0.2, float(weather_factor))
-        anchored = []
-        for it, lw, pv, slot_weather_factor_raw in pre:
-            horizon_h = max(0.0, (it["dt"] - now_local).total_seconds() / 3600.0)
-            if 0.0 <= horizon_h <= PV_NOWCAST_BLEND_HOURS and pv > 1.0:
-                blend = 1.0 - (horizon_h / PV_NOWCAST_BLEND_HOURS)
-                persistence_pv = max(
-                    0.0,
-                    float(pv_now_actual_w) * (max(0.2, float(slot_weather_factor_raw)) / current_weather_ref),
-                )
-                pv = max(pv, (pv * (1.0 - blend)) + (persistence_pv * blend))
-            anchored.append((it, lw, pv, slot_weather_factor_raw))
-        pre = anchored
-
-    if forecast_tomorrow_kwh is not None and forecast_tomorrow_kwh > 0:
-        sum_tom_kwh = sum(max(0.0, pv) / 1000.0 * SLOT_H for it, _, pv, _ in pre if it["dt"].date().isoformat() == tomorrow)
-        if sum_tom_kwh > 0.05:
-            tom_scale = clamp(forecast_tomorrow_kwh / sum_tom_kwh, 0.25, 4.0)
-        else:
-            tom_scale = 1.0
-    else:
-        tom_scale = 1.0
-
-    extracted_load_w, extracted_pv_w, forecast_parity = build_extracted_forecast(
+    forecast_load_w, forecast_pv_w, forecast_diagnostics = build_production_forecast(
         intervals,
         samples,
-        pre,
-        tom_scale,
+        forecast_targets,
         now_local=now_local,
         weather_factor=weather_factor,
         forecast_tomorrow_kwh=forecast_tomorrow_kwh,
@@ -1721,39 +1560,16 @@ def build_virtual_plan(intervals, samples, start_energy_kwh, weather_factor, for
         pv_global_bias=pv_global_bias,
         capacity_events=PV_CAPACITY_EVENTS,
     )
-
-    if (
-        forecast_parity.get("status") == "pass"
-        and extracted_load_w is not None
-        and extracted_pv_w is not None
-        and len(extracted_load_w) == len(pre)
-        and len(extracted_pv_w) == len(pre)
-    ):
-        forecast_source = "extracted"
-        forecast_pre = [
-            (it, load_w, pv_w, inline_item[3])
-            for it, load_w, pv_w, inline_item in zip(
-                intervals,
-                extracted_load_w,
-                extracted_pv_w,
-                pre,
-                strict=True,
-            )
-        ]
-    else:
-        # Phase-1 rollback path: retain only through the extracted-forecast
-        # observation window, then remove it together with parity gating.
-        forecast_source = "inline_fallback"
-        forecast_pre = [
-            (
-                it,
-                load_w,
-                pv_w * (tom_scale if it["dt"].date().isoformat() == tomorrow else 1.0),
-                slot_weather_factor,
-            )
-            for it, load_w, pv_w, slot_weather_factor in pre
-        ]
-    forecast_parity["source"] = forecast_source
+    forecast_pre = [
+        (it, load_w, pv_w, target.weather_factor)
+        for it, load_w, pv_w, target in zip(
+            intervals,
+            forecast_load_w,
+            forecast_pv_w,
+            forecast_targets,
+            strict=True,
+        )
+    ]
 
     slots = []
     daily = {}
@@ -2173,7 +1989,7 @@ def build_virtual_plan(intervals, samples, start_energy_kwh, weather_factor, for
             "cheap_anchor_rank": round(cheap_anchor_rank, 3) if cheap_anchor_rank is not None else None,
         },
         "daily_costs": daily_costs,
-        "forecast_parity": forecast_parity,
+        "forecast_diagnostics": forecast_diagnostics,
     }
 
 
@@ -3030,8 +2846,7 @@ def main():
         eex_days=eex_days,
         inventory_discharge_floor_ct=inventory_discharge_floor_ct,
     )
-    forecast_parity = plan.get("forecast_parity", {})
-    update_forecast_parity_trace(data, forecast_parity, now_ts)
+    forecast_diagnostics = plan.get("forecast_diagnostics", {})
     future_points = plan["points"]
     usable_energy_ac_kwh = max(0.0, start_e - MIN_E_KWH) * ETA_D
     discharge_ctx = classify_discharge_mode(future_points, p_now, usable_energy_ac_kwh)
@@ -3185,16 +3000,10 @@ def main():
         "backtest_hit_rate_24h_pct": round(hit24, 1) if hit24 is not None else None,
         "weather_factor": round(weather_factor, 3),
         "script_version": SCRIPT_VERSION,
-        "forecast_source": forecast_parity.get("source"),
-        "forecast_parity_status": forecast_parity.get("status"),
-        "forecast_parity_slot_count": forecast_parity.get("slot_count"),
-        "forecast_parity_load_mae_w": forecast_parity.get("load_mae_w"),
-        "forecast_parity_load_max_abs_w": forecast_parity.get("load_max_abs_w"),
-        "forecast_parity_pv_mae_w": forecast_parity.get("pv_mae_w"),
-        "forecast_parity_pv_max_abs_w": forecast_parity.get("pv_max_abs_w"),
-        "forecast_parity_runtime_ms": forecast_parity.get("runtime_ms"),
-        "forecast_parity_error": forecast_parity.get("error"),
-        "forecast_parity_model_version": forecast_parity.get("model_version"),
+        "forecast_source": forecast_diagnostics.get("source"),
+        "forecast_slot_count": forecast_diagnostics.get("slot_count"),
+        "forecast_runtime_ms": forecast_diagnostics.get("runtime_ms"),
+        "forecast_model_version": forecast_diagnostics.get("model_version"),
         "pv_bias": round(data.get("pv_bias", 1.0), 3),
         "load_bias": round(data.get("load_bias", 1.0), 3),
         "pv_bias_slot_now": round(float(data["pv_bias_slots"][slot_now]), 3),

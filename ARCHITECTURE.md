@@ -132,10 +132,10 @@ That module is a migration source, not the desired permanent boundary.
 
 ## Migration plan and gates
 
-Current status: Phase 0.5 completed with 236 consecutive quarter-hour parity
-records and no errors or gaps. Phase 1 is active from release
-`0.2.0-beta.13`; the extracted forecasters are authoritative and the inline
-forecast remains only as a parity-gated rollback path during observation.
+Current status: Phase 1 is complete in release `0.2.0-beta.14`. The extracted
+forecasters are the sole production forecast path; the temporary inline
+calculation, parity gate and comparison trace have been removed after a stable
+observation window. Phase 2 is the next migration step.
 
 ### Phase 0: Baseline and contracts
 

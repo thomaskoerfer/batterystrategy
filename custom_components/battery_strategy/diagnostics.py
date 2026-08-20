@@ -58,7 +58,13 @@ async def async_get_config_entry_diagnostics(hass, entry) -> dict:
         "forecast": {
             key.removeprefix("forecast_"): value
             for key, value in (data.get("optimizer_attrs") or {}).items()
-            if key == "forecast_source" or key.startswith("forecast_parity_")
+            if key
+            in {
+                "forecast_source",
+                "forecast_slot_count",
+                "forecast_runtime_ms",
+                "forecast_model_version",
+            }
         },
         "strategy_enabled": data.get("strategy_enabled"),
     }

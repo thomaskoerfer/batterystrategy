@@ -1,4 +1,4 @@
-"""Regression tests for the extracted forecast production cutover."""
+"""Regression tests for the sole extracted forecast production path."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 from custom_components.battery_strategy import optimizer_engine
 
 
-class ForecastCutoverTests(unittest.TestCase):
+class ForecastProductionTests(unittest.TestCase):
     def test_forecasting_package_has_no_runtime_or_actuator_dependency(self):
         package_dir = (
             Path(__file__).parents[1]
@@ -71,15 +71,15 @@ class ForecastCutoverTests(unittest.TestCase):
         self.old_timezone = optimizer_engine.OPEN_METEO_TZ
         self.old_capacity_events = optimizer_engine.PV_CAPACITY_EVENTS
         optimizer_engine.OPEN_METEO_TZ = self.timezone
-        optimizer_engine.PV_CAPACITY_EVENTS = [("2000-01-01T00:00:00+00:00", 2.3, 2.0)]
+        optimizer_engine.PV_CAPACITY_EVENTS = [
+            ("2000-01-01T00:00:00+00:00", 2.3, 2.0)
+        ]
         optimizer_engine.local_dt_from_ts.cache_clear()
-        optimizer_engine.pv_capacity_for_iso.cache_clear()
 
     def tearDown(self) -> None:
         optimizer_engine.OPEN_METEO_TZ = self.old_timezone
         optimizer_engine.PV_CAPACITY_EVENTS = self.old_capacity_events
         optimizer_engine.local_dt_from_ts.cache_clear()
-        optimizer_engine.pv_capacity_for_iso.cache_clear()
 
     def _plan(self):
         return optimizer_engine.build_virtual_plan(
@@ -96,33 +96,15 @@ class ForecastCutoverTests(unittest.TestCase):
             pv_global_bias=1.0,
         )
 
-    def test_extracted_forecast_matches_inline_rollback_path(self):
+    def test_extracted_forecast_is_the_only_plan_input(self):
         plan = self._plan()
-        summary = plan["forecast_parity"]
-        self.assertEqual(summary["status"], "pass")
+        summary = plan["forecast_diagnostics"]
         self.assertEqual(summary["source"], "extracted")
         self.assertEqual(summary["slot_count"], 16)
-        self.assertEqual(summary["load_max_abs_w"], 0.0)
-        self.assertEqual(summary["pv_max_abs_w"], 0.0)
         self.assertEqual(plan["points"][0]["load_fc_w"], 455.4)
         self.assertEqual(plan["points"][0]["pv_fc_w"], 600.0)
 
-    def test_extracted_failure_uses_inline_fallback(self):
-        with patch.object(
-            optimizer_engine,
-            "build_legacy_forecast",
-            side_effect=RuntimeError("extracted forecast test failure"),
-        ):
-            plan = self._plan()
-        self.assertEqual(len(plan["points"]), 16)
-        self.assertEqual(plan["forecast_parity"]["status"], "error")
-        self.assertEqual(plan["forecast_parity"]["source"], "inline_fallback")
-        self.assertIn(
-            "extracted forecast test failure", plan["forecast_parity"]["error"]
-        )
-        self.assertEqual(plan["points"][0]["load_fc_w"], 455.4)
-
-    def test_extracted_forecast_is_authoritative_within_parity_tolerance(self):
+    def test_extracted_forecast_change_is_authoritative(self):
         original = optimizer_engine.build_legacy_forecast
 
         def shifted_forecast(*args, **kwargs):
@@ -133,106 +115,48 @@ class ForecastCutoverTests(unittest.TestCase):
                 energy=replace(
                     first.energy,
                     p50_kwh=first.energy.p50_kwh
-                    + 0.5 * optimizer_engine.SLOT_H / 1000.0,
-                ),
-            )
-            return replace(
-                bundle,
-                load=replace(
-                    bundle.load,
-                    slots=(shifted_first, *bundle.load.slots[1:]),
-                ),
-            )
-
-        with patch.object(
-            optimizer_engine,
-            "build_legacy_forecast",
-            side_effect=shifted_forecast,
-        ):
-            plan = self._plan()
-
-        self.assertEqual(plan["forecast_parity"]["status"], "pass")
-        self.assertEqual(plan["forecast_parity"]["source"], "extracted")
-        self.assertEqual(plan["forecast_parity"]["load_max_abs_w"], 0.5)
-        self.assertEqual(plan["points"][0]["load_fc_w"], 455.9)
-
-    def test_forecast_mismatch_uses_inline_fallback(self):
-        original = optimizer_engine.build_legacy_forecast
-
-        def mismatched_forecast(*args, **kwargs):
-            bundle = original(*args, **kwargs)
-            first = bundle.load.slots[0]
-            mismatched_first = replace(
-                first,
-                energy=replace(
-                    first.energy,
-                    p50_kwh=first.energy.p50_kwh
                     + 2.0 * optimizer_engine.SLOT_H / 1000.0,
                 ),
             )
             return replace(
                 bundle,
-                load=replace(
-                    bundle.load,
-                    slots=(mismatched_first, *bundle.load.slots[1:]),
-                ),
+                load=replace(bundle.load, slots=(shifted_first, *bundle.load.slots[1:])),
             )
 
         with patch.object(
-            optimizer_engine,
-            "build_legacy_forecast",
-            side_effect=mismatched_forecast,
+            optimizer_engine, "build_legacy_forecast", side_effect=shifted_forecast
         ):
             plan = self._plan()
+        self.assertEqual(plan["points"][0]["load_fc_w"], 457.4)
 
-        self.assertEqual(plan["forecast_parity"]["status"], "mismatch")
-        self.assertEqual(plan["forecast_parity"]["source"], "inline_fallback")
-        self.assertEqual(plan["points"][0]["load_fc_w"], 455.4)
+    def test_extracted_failure_propagates_to_global_fail_safe(self):
+        with patch.object(
+            optimizer_engine,
+            "build_legacy_forecast",
+            side_effect=RuntimeError("production forecast test failure"),
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError, "production forecast test failure"
+            ):
+                self._plan()
 
-    def test_parity_trace_replaces_current_slot_and_is_bounded(self):
-        now_ts = self.start.timestamp()
-        data = {
-            "forecast_parity_trace": [
-                {"slot_start_ts": int(now_ts) - index * 900, "status": "pass"}
-                for index in range(14 * 96 + 10)
-            ]
-        }
-        optimizer_engine.update_forecast_parity_trace(
-            data, {"status": "mismatch", "runtime_ms": 2.0}, now_ts
-        )
-        optimizer_engine.update_forecast_parity_trace(
-            data, {"status": "pass", "runtime_ms": 1.0}, now_ts
-        )
-        trace = data["forecast_parity_trace"]
-        current_slot = int(now_ts // 900) * 900
-        self.assertLessEqual(len(trace), 14 * 96)
-        self.assertEqual(
-            len([item for item in trace if item["slot_start_ts"] == current_slot]),
-            1,
-        )
-        self.assertEqual(trace[-1]["status"], "pass")
-
-    def test_load_state_migrates_shadow_trace_without_losing_history(self):
+    def test_load_state_removes_obsolete_comparison_traces(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             state_path = Path(temp_dir) / "optimizer_state.json"
             optimizer_engine.save_state_document(
                 state_path,
                 {
-                    "forecast_shadow_trace": [
-                        {"slot_start_ts": 1234, "status": "pass"}
-                    ],
-                    "state_schema": 6,
+                    "forecast_shadow_trace": [{"slot_start_ts": 1234}],
+                    "forecast_parity_trace": [{"slot_start_ts": 5678}],
+                    "state_schema": 7,
                 },
             )
             with patch.object(optimizer_engine, "STATE_FILE", str(state_path)):
                 data = optimizer_engine.load_state()
 
         self.assertNotIn("forecast_shadow_trace", data)
-        self.assertEqual(
-            data["forecast_parity_trace"],
-            [{"slot_start_ts": 1234, "status": "pass"}],
-        )
-        self.assertEqual(data["state_schema"], 7)
+        self.assertNotIn("forecast_parity_trace", data)
+        self.assertEqual(data["state_schema"], 8)
 
 
 if __name__ == "__main__":
