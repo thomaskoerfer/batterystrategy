@@ -18,6 +18,7 @@ class QualityFlag(StrEnum):
     MISSING_PV = "missing_pv"
     MISSING_BATTERY = "missing_battery"
     MISSING_EV = "missing_ev"
+    MISSING_PRICE = "missing_price"
     COUNTER_RESET = "counter_reset"
     RESTART_GAP = "restart_gap"
 

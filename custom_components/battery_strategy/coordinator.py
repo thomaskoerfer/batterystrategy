@@ -26,6 +26,7 @@ from .const import (
     CONF_GRID_L2_ENTITY,
     CONF_GRID_L3_ENTITY,
     CONF_GRID_MODE,
+    CONF_PRICE_ENTITY,
     CONF_PV_CAPACITY_KWP,
     CONF_PV_INVERTER_POWER_KW,
     CONF_PV_POWER_ENTITY,
@@ -46,6 +47,13 @@ from .const import (
     MANUAL_OFF,
     PV_CHARGING_ON,
 )
+from .contracts import QualityFlag
+from .feature_store import (
+    CompressedFeatureStore,
+    ExecutorFeatureStore,
+    FeatureAggregator,
+    FeatureObservation,
+)
 from .models import StrategyCommand, StrategyInputs, StrategyOptions
 from .optimizer_adapter import OptimizerEngineAdapter
 from .optimizer_state import last_known_soc_pct
@@ -62,6 +70,7 @@ OPTIMIZER_PREFETCH_LEAD_S = 60
 SOC_BRIDGE_MAX_AGE_S = 300
 EV_POWER_BRIDGE_MAX_AGE_S = 180
 OPTIMIZER_STATE_FILE = "battery_strategy_optimizer_state.json"
+FEATURE_STORE_FILE = "battery_strategy_features.json.gz"
 COMMAND_TRACE_FILE = "battery_strategy_command_trace.jsonl"
 COMMAND_TRACE_MAX_BYTES = 64 * 1024 * 1024
 COMMAND_TRACE_RETAIN_LINES = 50000
@@ -82,6 +91,7 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         update_interval,
         last_known_soc_pct: float | None = None,
         last_optimizer_output: dict | None = None,
+        feature_store: ExecutorFeatureStore | None = None,
     ):
         """Initialize coordinator."""
         super().__init__(
@@ -119,6 +129,11 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         self._ev_control_ready = not bool(entry.data.get(CONF_EV_POWER_ENTITY))
         self._strategy_was_enabled = bool(entry.options.get("strategy_enabled", False))
         self._disabled_zeroed = not self._strategy_was_enabled
+        self._feature_store = feature_store or ExecutorFeatureStore(
+            CompressedFeatureStore(Path(hass.config.path(FEATURE_STORE_FILE))),
+            hass.async_add_executor_job,
+        )
+        self._feature_aggregator = FeatureAggregator()
 
     def set_manual_override(
         self, mode: str, power_w: float, duration_min: int = 0
@@ -213,6 +228,23 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         options = self._strategy_options()
         inputs = self._strategy_inputs()
         now = dt.datetime.now(dt.timezone.utc)
+        try:
+            finalized_features = self._feature_aggregator.observe(
+                FeatureObservation(
+                    timestamp_ms=int(now.timestamp() * 1000),
+                    grid_import_w=inputs.grid_import_w,
+                    grid_export_w=inputs.grid_export_w,
+                    pv_generation_w=inputs.pv_w,
+                    battery_power_w=inputs.battery_power_w,
+                    ev_charge_w=inputs.ev_power_w,
+                    price_ct_per_kwh=self._current_price_ct(now),
+                    quality_flags=self._feature_quality_flags(),
+                )
+            )
+        except Exception as err:  # noqa: BLE001 - shadow code must not stop control.
+            finalized_features = ()
+            self._feature_store.last_error = f"{type(err).__name__}: {err}"
+            LOGGER.warning("Feature-store shadow aggregation failed: %s", err)
         self._account_actual_battery_power(now)
         force_optimizer = self._should_force_optimizer(now)
         simple_command = calculate_command(inputs, options)
@@ -273,7 +305,80 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             data["actuation"] = self.last_actuation
         if bool(self.entry.options.get("trace_enabled", False)):
             await self.hass.async_add_executor_job(self._append_command_trace, data)
+        if finalized_features:
+            try:
+                await self._feature_store.upsert(finalized_features)
+            except (OSError, ValueError, TypeError) as err:
+                self._feature_store.last_error = f"{type(err).__name__}: {err}"
+                LOGGER.warning("Feature-store shadow write failed: %s", err)
+        data["feature_store"] = self._feature_store.diagnostics(
+            self._feature_aggregator.active_coverage
+        )
         return data
+
+    def _current_price_ct(self, now: dt.datetime) -> float | None:
+        """Return the configured Tibber Prices value normalized to ct/kWh."""
+        entity_id = self.entry.data.get(CONF_PRICE_ENTITY)
+        state = self.hass.states.get(entity_id) if entity_id else None
+        if state is None or state.state in ("unknown", "unavailable", "none", ""):
+            return None
+        intervals = state.attributes.get("data") or []
+        selected: tuple[dt.datetime, float] | None = None
+        for item in intervals:
+            if not isinstance(item, dict):
+                continue
+            start_raw = (
+                item.get("start_time") or item.get("startsAt") or item.get("start")
+            )
+            price_raw = item.get("price_per_kwh", item.get("price", item.get("total")))
+            if start_raw is None or price_raw is None:
+                continue
+            try:
+                start = dt.datetime.fromisoformat(str(start_raw).replace("Z", "+00:00"))
+                price_value = float(price_raw)
+                price_ct = price_value if price_value >= 2.0 else price_value * 100.0
+            except (TypeError, ValueError):
+                continue
+            if start.tzinfo is None:
+                start = start.replace(tzinfo=dt.timezone.utc)
+            if start <= now and (selected is None or start > selected[0]):
+                selected = (start, price_ct)
+        if selected is not None:
+            return selected[1]
+        try:
+            value = float(state.state)
+        except (TypeError, ValueError):
+            return None
+        unit = str(state.attributes.get("unit_of_measurement") or "").lower()
+        return value if "ct" in unit else value * 100.0
+
+    def _feature_quality_flags(self) -> tuple[QualityFlag, ...]:
+        """Describe missing semantic inputs without changing live behavior."""
+        flags: list[QualityFlag] = []
+        if not self._grid_inputs_fresh():
+            flags.append(QualityFlag.MISSING_GRID)
+        pv_entity = self.entry.data.get(CONF_PV_POWER_ENTITY)
+        if not pv_entity or not self._state_available(pv_entity):
+            flags.append(QualityFlag.MISSING_PV)
+        if not self._battery_measurement_available():
+            flags.append(QualityFlag.MISSING_BATTERY)
+        if self.entry.data.get(CONF_EV_POWER_ENTITY) and not self._ev_control_ready:
+            flags.append(QualityFlag.MISSING_EV)
+        return tuple(flags)
+
+    def _battery_measurement_available(self) -> bool:
+        """Return whether the battery power reconstruction has usable inputs."""
+        if self.entry.data.get(CONF_BATTERY_PROFILE) != BATTERY_PROFILE_ZENDURE:
+            entity = self.entry.data.get(CONF_BATTERY_POWER_ENTITY)
+            return bool(entity and self._state_available(entity))
+        entities = (
+            self.entry.data.get(CONF_ZENDURE_AC_MODE_ENTITY),
+            self.entry.data.get(CONF_ZENDURE_OUTPUT_PACK_POWER_ENTITY),
+            self.entry.data.get(CONF_ZENDURE_PACK_INPUT_POWER_ENTITY),
+            self.entry.data.get(CONF_ZENDURE_OUTPUT_HOME_POWER_ENTITY),
+            self.entry.data.get(CONF_ZENDURE_GRID_INPUT_POWER_ENTITY),
+        )
+        return all(entity and self._state_available(entity) for entity in entities)
 
     def _should_force_optimizer(self, now: dt.datetime) -> bool:
         """Return whether the optimizer should refresh around the current slot boundary."""

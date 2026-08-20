@@ -132,10 +132,10 @@ That module is a migration source, not the desired permanent boundary.
 
 ## Migration plan and gates
 
-Current status: Phase 1 is complete in release `0.2.0-beta.14`. The extracted
-forecasters are the sole production forecast path; the temporary inline
-calculation, parity gate and comparison trace have been removed after a stable
-observation window. Phase 2 is the next migration step.
+Current status: Phase 1 is complete. Phase 2 starts in release
+`0.2.0-beta.15` with a recorder-independent 15-minute feature store running as
+a non-authoritative observation path. Forecasting and control continue to use
+their existing production inputs during the observation gate.
 
 ### Phase 0: Baseline and contracts
 

@@ -4,6 +4,23 @@ All notable changes to Battery Strategy are documented here.
 
 ## Unreleased
 
+## [0.2.0-beta.15] - 2026-08-20
+
+### Added
+
+- Started Phase 2 with a recorder-independent, atomic gzip feature store that
+  aggregates irregular live measurements into canonical UTC 15-minute energy
+  slots and retains at most 180 days.
+- Added quality metadata for coverage, restart gaps and missing grid, PV,
+  battery, EV or price inputs, plus bounded store-health diagnostics.
+
+### Safety
+
+- The feature store is explicitly non-authoritative and is never read by the
+  forecaster, optimizer, plan compiler, live controller or actuator.
+- Aggregation and persistence errors are isolated and reported without
+  interrupting battery control. Disk writes occur only for finalized slots.
+
 ## [0.2.0-beta.14] - 2026-08-20
 
 ### Changed

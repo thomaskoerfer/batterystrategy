@@ -67,6 +67,12 @@ provided by the same release.
 
 The current actual-savings metric is intentionally a gross battery metric: measured charge energy is split into PV and grid energy, while every measured discharge-counter delta is credited at the applicable import price. Battery export and EV consumption are not yet removed from the discharge credit.
 
+The integration also maintains `battery_strategy_features.json.gz`: a compact,
+atomic 15-minute observation store with 180-day retention. During the Phase-2
+observation window it is diagnostic only and cannot affect forecasts, plans or
+battery commands. Store health and growth are included in integration
+diagnostics; raw feature records are intentionally not exposed as HA entities.
+
 ## Troubleshooting
 
 Before opening an issue, enable debug tracing temporarily and include Home Assistant diagnostics, the integration version, battery model, price source and relevant entity units. Remove addresses, serial numbers and other private data.

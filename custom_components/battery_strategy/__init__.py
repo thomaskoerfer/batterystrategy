@@ -19,6 +19,7 @@ from .optimizer_state import runtime_snapshot
 try:
     from .coordinator import (
         COMMAND_TRACE_FILE,
+        FEATURE_STORE_FILE,
         OPTIMIZER_STATE_FILE,
         BatteryStrategyCoordinator,
         _load_last_known_soc_pct,
@@ -26,6 +27,7 @@ try:
 except ImportError:  # pragma: no cover - unit tests run without Home Assistant.
     BatteryStrategyCoordinator = None
     COMMAND_TRACE_FILE = "battery_strategy_command_trace.jsonl"
+    FEATURE_STORE_FILE = "battery_strategy_features.json.gz"
     OPTIMIZER_STATE_FILE = "battery_strategy_optimizer_state.json"
     _load_last_known_soc_pct = None
 
@@ -46,12 +48,17 @@ async def async_setup_entry(hass, entry) -> bool:
         runtime_snapshot,
         Path(hass.config.path(OPTIMIZER_STATE_FILE)),
     )
+    from .feature_store import CompressedFeatureStore, ExecutorFeatureStore
+
+    feature_store = CompressedFeatureStore(Path(hass.config.path(FEATURE_STORE_FILE)))
+    await hass.async_add_executor_job(feature_store.initialize)
     coordinator = BatteryStrategyCoordinator(
         hass,
         entry,
         update_interval=timedelta(seconds=10),
         last_known_soc_pct=last_known_soc_pct,
         last_optimizer_output=last_optimizer_output,
+        feature_store=ExecutorFeatureStore(feature_store, hass.async_add_executor_job),
     )
     await coordinator.async_config_entry_first_refresh()
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator

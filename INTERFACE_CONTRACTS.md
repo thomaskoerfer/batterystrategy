@@ -49,7 +49,8 @@ carry `CONTRACT_SCHEMA_VERSION` and be migrated explicitly.
 6. House-load forecasts exclude EV charging. PV forecasts represent generation
    before battery and grid decisions.
 7. Missing values use `None`; `NaN`, infinity and magic numeric sentinels are
-   invalid. Missing or estimated observations carry `DataQuality` metadata.
+   invalid. Missing or estimated observations carry `DataQuality` metadata,
+   including an explicit missing-price flag when slot valuation is unavailable.
 8. Producers return immutable, sorted slot tuples. Consumers must reject
    duplicate or misaligned grids rather than silently interpolate them.
 9. All time-dependent functions receive `as_of_ms` explicitly. Pure layers do

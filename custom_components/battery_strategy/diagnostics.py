@@ -66,5 +66,6 @@ async def async_get_config_entry_diagnostics(hass, entry) -> dict:
                 "forecast_model_version",
             }
         },
+        "feature_store": data.get("feature_store"),
         "strategy_enabled": data.get("strategy_enabled"),
     }
