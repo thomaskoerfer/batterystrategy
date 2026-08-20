@@ -626,6 +626,92 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertEqual(attrs["pv_actual_power"], [[1_800_000_000_000, 120.0]])
         self.assertEqual(attrs["house_actual_power"], [[1_800_000_000_000, 230.0]])
 
+    def test_plan_slot_attrs_split_planned_charge_like_plan_to_live(self):
+        plan = StrategyPlan(
+            points=[
+                PlanPoint(
+                    ts_ms=1_800_000_000_000,
+                    date="2027-01-15",
+                    price_ct=31.234,
+                    load_fc_w=500,
+                    pv_fc_w=1400,
+                    grid_import_fc_w=300,
+                    grid_export_fc_w=0,
+                    grid_net_fc_w=300,
+                    mode=COMMAND_INPUT,
+                    power_w=1200,
+                    charge_fc_w=1200,
+                    discharge_fc_w=0,
+                    soc_pct=42.26,
+                ),
+                PlanPoint(
+                    ts_ms=1_800_000_900_000,
+                    date="2027-01-15",
+                    price_ct=40.0,
+                    load_fc_w=800,
+                    pv_fc_w=0,
+                    grid_import_fc_w=200,
+                    grid_export_fc_w=0,
+                    grid_net_fc_w=200,
+                    mode=COMMAND_OUTPUT,
+                    power_w=600,
+                    charge_fc_w=0,
+                    discharge_fc_w=600,
+                    soc_pct=46.0,
+                ),
+            ],
+            current_mode=COMMAND_INPUT,
+            current_power_w=1200,
+            reason="test",
+        )
+
+        attrs = battery_sensor._plan_slot_attrs({"plan": plan})
+
+        self.assertEqual(
+            attrs["rows"],
+            [
+                [1_800_000_000, 31.23, 0, 1200, 900, 300, 42.3],
+                [1_800_000_900, 40.0, 600, 0, 0, 0, 46.0],
+            ],
+        )
+
+    def test_plan_slot_attrs_fit_home_assistant_attribute_limit(self):
+        start = 1_800_000_000_000
+        plan = StrategyPlan(
+            points=[
+                PlanPoint(
+                    ts_ms=start + index * 900_000,
+                    date="2027-01-15",
+                    price_ct=39.99,
+                    load_fc_w=2400,
+                    pv_fc_w=2000,
+                    grid_import_fc_w=2400,
+                    grid_export_fc_w=0,
+                    grid_net_fc_w=2400,
+                    mode=COMMAND_INPUT,
+                    power_w=2400,
+                    charge_fc_w=2400,
+                    discharge_fc_w=0,
+                    soc_pct=99.9,
+                )
+                for index in range(192)
+            ],
+            current_mode=COMMAND_INPUT,
+            current_power_w=2400,
+            reason="test",
+        )
+
+        encoded = json.dumps(
+            battery_sensor._plan_slot_attrs({"plan": plan}),
+            separators=(",", ":"),
+        ).encode()
+
+        self.assertLess(len(encoded), 16_384)
+        self.assertEqual(
+            battery_sensor.BatteryStrategySensor._unrecorded_attributes,
+            frozenset({"columns", "rows"}),
+        )
+
     def test_optimizer_discharge_budget_sensor_is_separate_from_live_remaining_budget(
         self,
     ):
@@ -2136,6 +2222,16 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertTrue(references)
         self.assertEqual(references - supported, set())
         self.assertIn("switch.battery_strategy_control_pv_to_ev_first", references)
+        paths = [view["path"] for view in dashboard["views"]]
+        self.assertLess(paths.index("planprofile"), paths.index("plan-table"))
+        self.assertLess(paths.index("plan-table"), paths.index("costs"))
+        plan_table = next(
+            view for view in dashboard["views"] if view["path"] == "plan-table"
+        )
+        self.assertIn(
+            "sensor.battery_strategy_plan_slots",
+            plan_table["cards"][0]["content"],
+        )
 
     def test_live_discharge_budget_uses_current_soc_instead_of_stale_plan_soc(self):
         now = dt.datetime(2026, 7, 21, 20, tzinfo=dt.timezone.utc)

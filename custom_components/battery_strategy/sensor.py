@@ -382,7 +382,46 @@ SENSORS: tuple[BatteryStrategySensorDescription, ...] = (
         value_fn=lambda data: len(_plan(data).points),
         attr_fn=lambda data: _profile_attrs(data, None),
     ),
+    BatteryStrategySensorDescription(
+        key="plan_slots",
+        name="Plan Slots",
+        value_fn=lambda data: len(_plan(data).points),
+        attr_fn=lambda data: _plan_slot_attrs(data),
+    ),
 )
+
+
+def _plan_slot_attrs(data):
+    """Return a compact, presentation-only view of future optimizer slots."""
+    rows = []
+    for point in _plan(data).points:
+        charge_w = max(0, int(round(float(point.charge_fc_w))))
+        pv_surplus_w = max(0, int(round(float(point.pv_fc_w) - float(point.load_fc_w))))
+        pv_charge_w = min(charge_w, pv_surplus_w)
+        grid_charge_w = max(0, charge_w - pv_charge_w)
+        rows.append(
+            [
+                int(point.ts_ms // 1000),
+                round(float(point.price_ct), 2),
+                max(0, int(round(float(point.discharge_fc_w)))),
+                charge_w,
+                pv_charge_w,
+                grid_charge_w,
+                round(float(point.soc_pct), 1),
+            ]
+        )
+    return {
+        "columns": [
+            "slot_start",
+            "price_ct_per_kwh",
+            "planned_discharge_w",
+            "planned_charge_w",
+            "planned_pv_charge_w",
+            "planned_grid_charge_w",
+            "planned_soc_pct",
+        ],
+        "rows": rows,
+    }
 
 
 def _profile_attrs(data, date):
@@ -468,6 +507,11 @@ async def async_setup_entry(hass, entry, async_add_entities) -> None:
 
 class BatteryStrategySensor(BatteryStrategyEntity, SensorEntity):
     """Battery Strategy sensor backed by the coordinator."""
+
+    # Plan table rows are current presentation data, not history. Keeping them
+    # out of Recorder avoids duplicating the full planning horizon every time
+    # the optimizer publishes a revised plan.
+    _unrecorded_attributes = frozenset({"columns", "rows"})
 
     def __init__(self, coordinator, description: BatteryStrategySensorDescription):
         """Initialize sensor."""

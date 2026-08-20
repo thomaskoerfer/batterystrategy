@@ -4,6 +4,20 @@ All notable changes to Battery Strategy are documented here.
 
 ## Unreleased
 
+## [0.2.0-beta.16] - 2026-08-20
+
+### Added
+
+- Added a compact future-slot table with price, planned charge and discharge,
+  PV/grid charge split and planned SoC for the full planning horizon.
+- Added the table as a full-width dashboard view between plan charts and cost
+  reporting.
+
+### Data retention
+
+- Marked the table's presentation-only rows and column metadata as unrecorded
+  attributes so revised plans do not increase Recorder storage.
+
 ## [0.2.0-beta.15] - 2026-08-20
 
 ### Added
