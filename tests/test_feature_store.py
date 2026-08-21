@@ -83,7 +83,19 @@ class FeatureAggregatorTests(unittest.TestCase):
         )
         self.assertAlmostEqual(slot.load_components[0].energy_kwh, 0.025)
         self.assertEqual(slot.load_components[0].component_key, "heat_pump")
+        self.assertEqual(slot.load_components[0].quality.coverage, 1.0)
         self.assertGreater(slot.house_load_no_ev_kwh, slot.load_components[0].energy_kwh)
+
+    def test_component_meter_mismatch_is_flagged_instead_of_rejected(self):
+        aggregator = FeatureAggregator()
+        slot = complete_slot(
+            aggregator,
+            load_components_w=(("heat_pump", 2_000.0),),
+        )
+        self.assertIn(
+            QualityFlag.COMPONENT_MISMATCH,
+            slot.load_components[0].quality.flags,
+        )
 
     def test_long_gap_is_not_integrated_and_is_quality_flagged(self):
         aggregator = FeatureAggregator()
@@ -166,7 +178,7 @@ class CompressedFeatureStoreTests(unittest.TestCase):
             self.assertEqual(reloaded.load(0, 3 * 86_400_000), (second,))
             self.assertFalse(reloaded.diagnostics()["authoritative"])
 
-    def test_version_one_store_is_read_and_upgraded_on_next_write(self):
+    def test_version_one_store_is_fully_migrated_and_can_be_downgraded(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "features.json.gz"
             payload = {
@@ -194,9 +206,13 @@ class CompressedFeatureStoreTests(unittest.TestCase):
             loaded = store.load(0, SLOT_MS)
             self.assertEqual(len(loaded), 1)
             self.assertEqual(loaded[0].load_components, ())
-            store.upsert(loaded)
             upgraded = json.loads(gzip.decompress(path.read_bytes()))
             self.assertEqual(upgraded["schema_version"], 2)
+            self.assertTrue(Path(str(path) + ".schema1.bak").exists())
+            store.downgrade_to_schema_one()
+            downgraded = json.loads(gzip.decompress(path.read_bytes()))
+            self.assertEqual(downgraded["schema_version"], 1)
+            self.assertNotIn("load_components", downgraded["slots"][0])
 
 
 class FeatureCoordinatorAdapterTests(unittest.TestCase):

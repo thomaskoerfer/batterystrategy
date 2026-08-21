@@ -7,9 +7,9 @@ optimization, history access, plan directives, or live battery control.
 The normative units, data semantics and executable layer boundaries are defined
 in [INTERFACE_CONTRACTS.md](INTERFACE_CONTRACTS.md) and the `contracts` package.
 They are binding migration guidelines, but deliberately evolvable. Any contract
-change requires the impact analysis defined there before implementations are
-adapted. Local workarounds that bypass a boundary are not an acceptable form of
-contract evolution.
+change requires the impact analysis and explicit owner approval defined there
+before implementations are adapted. Local workarounds that bypass a boundary
+are not an acceptable form of contract evolution.
 
 ## Safety invariant
 
@@ -62,9 +62,10 @@ Home Assistant object, entity ID, or storage path.
 ### Forecasting
 
 `LoadForecaster` predicts house load without EV. `PvForecaster` predicts PV
-generation and owns PV-capacity normalization, weather adjustment and learned
-slot bias. Both return point estimates, uncertainty and data-quality metadata in
-a shared `ForecastBundle`.
+generation and owns current plant limits, weather adjustment and learned slot
+bias. Historical plant changes belong to explicit backtest preparation, not the
+operational forecast contract. Both forecasters return point estimates,
+uncertainty and data-quality metadata in a shared `ForecastBundle`.
 
 Forecasting does not know electricity prices, battery SoC, battery limits or a
 planned battery schedule. Net load is derived from load minus PV; it is not a
@@ -133,9 +134,10 @@ That module is a migration source, not the desired permanent boundary.
 ## Migration plan and gates
 
 Current status: Phase 2 collection runs since release `0.2.0-beta.15`. Phase 3
-starts as a strictly non-authoritative shadow in `0.2.0-beta.19`; production
-forecasting and control continue to use their existing Recorder-derived inputs
-until the Phase-3 observation gate passes.
+is prepared and contract-approved in `0.2.0-beta.19`, but is not deployed yet.
+Its observation window starts only after deployment and confirmed shadow
+diagnostics. Production forecasting and control continue to use their existing
+Recorder-derived inputs until the Phase-3 observation gate passes.
 
 ### Phase 0: Baseline and contracts
 
@@ -193,6 +195,8 @@ no effect on commands, forecasts or savings.
 ### Phase 3: Shadow recorder-independent forecasting
 
 - Feed the extracted forecasters from the feature store in shadow mode.
+- Invoke the shadow forecaster directly from a dedicated runner; feature history
+  and shadow results never pass through optimization.
 - Compare history-derived and feature-store-derived forecasts and backtests.
 - Repair discrepancies in aggregation, restart handling and unit conversion.
 - Keep load and PV implementations, configuration and error diagnostics
@@ -200,8 +204,11 @@ no effect on commands, forecasts or savings.
   separately metered devices can later evolve without changing PV or unrelated
   base-load logic.
 
-Gate: seven to fourteen days of acceptable forecast parity and no unexplained
-energy imbalance.
+Gate: at least seven complete days including weekdays and a weekend. Load and PV
+are assessed independently against identical actual slots by lead time, time of
+day, MAE, bias and daily energy. Missing data is excluded rather than treated as
+zero. Phase 4 requires a separate owner approval after joint review; it never
+starts automatically.
 
 ### Phase 4: Cut forecasting over to the feature store
 

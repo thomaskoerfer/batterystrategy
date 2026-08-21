@@ -20,6 +20,13 @@ not be bypassed locally to accommodate such a finding. Change the contract
 deliberately, document the impact, update affected producers and consumers, and
 then migrate them through the normal release gates.
 
+Every semantic contract change follows four explicit states: **Proposed**,
+**Approved**, **Implemented** and **Observed**. An impact analysis is required but
+is not approval. The owner must explicitly approve the described semantics before
+the change can be released or deployed. Restoring already approved semantics is
+a bug fix; changing a boundary, invariant or meaning starts a new approval cycle.
+The approval date and scope are recorded in the associated impact analysis.
+
 Documentation and the executable types form one contract. If they disagree,
 the change is incomplete; neither representation silently overrides the other.
 
@@ -68,9 +75,11 @@ carry `CONTRACT_SCHEMA_VERSION` and be migrated explicitly.
 are energy, including house load without EV, PV generation, EV charging, grid
 flows and battery flows. `DataQuality.coverage` records observed time coverage;
 flags explain counter resets, restart gaps, estimation or missing inputs.
-Optional named load components are measured subsets of EV-free whole-house load;
-their sum cannot exceed the total. An empty tuple means no device-level history
-was supplied, not zero device consumption.
+Optional named load components are measured subsets of EV-free whole-house load.
+Each component carries its own quality because device meters can be stale or
+misaligned independently. Measurement mismatch is quality metadata, not a reason
+to reject an otherwise usable whole-house slot. An empty tuple means no
+device-level history was supplied, not zero device consumption.
 
 The feature store may upsert a slot after late data repair, but consumers only
 receive one version of each sorted slot key.
@@ -102,12 +111,24 @@ stable semantic names, all component grids match the total grid, and component
 P50 values sum exactly to total P50. The optimizer consumes only that validated
 total. PV has no dependency on load components or load context; load forecasters
 have no dependency on PV configuration, weather scaling or PV bias.
+Each modeled component carries its model version, own training cutoff and
+slot-level quality. Components share the total forecast's generation timestamp
+and grid, and no component may use data newer than that timestamp.
 
 Current device measurements that can explain near-term load are supplied as an
 extensible `LoadForecastContext`. Adapters map entities to stable semantic
 driver keys; the forecaster may ignore unknown drivers. The whole-house load
 without EV remains the forecast target, and optional device measurements must
 not be subtracted from it a second time.
+
+### Forecasting to evaluation
+
+Production and shadow forecasters both return `ForecastBundle`. Evaluation
+receives aligned bundles and later finalized actual slots through typed
+`ForecastEvaluationRun` and `ForecastEvaluationPoint` values. These values contain
+only forecast, actual, timestamp, lead-time and quality data. They contain no
+price, battery, plan, live-command or actuator reference. Evaluation is always
+non-authoritative and persists compact lead-time samples outside HA Recorder.
 
 ### Forecasting and market data to optimization
 
@@ -174,7 +195,7 @@ the requested power.
 | Recorder bootstrap and feature persistence | Feature store adapter |
 | EV-free house-load reconstruction | Feature engineering |
 | Load model and load bias | Load forecaster |
-| PV capacity, weather model and PV bias | PV forecaster |
+| Current PV/inverter limits, weather model and PV bias | PV forecaster |
 | Price spread, RTE, terminal value and PV headroom | Optimizer |
 | Slot budgets and required-charge translation | Plan compiler |
 | EV policy, meter following and stale-input safety | Live controller |
@@ -186,6 +207,9 @@ the requested power.
 - Every contract change requires an impact analysis in its pull request or
   commit description. Small additive changes may use a short analysis; breaking
   changes require an explicit migration and rollback plan.
+- A contract change cannot leave **Proposed** until the owner explicitly approves
+  its documented semantics. Merge readiness, release readiness and deployment
+  readiness are separate from that approval.
 - Additive optional fields with unchanged semantics are allowed within a
   contract schema version. Producers must not assume that all consumers use the
   field until their migration is complete.

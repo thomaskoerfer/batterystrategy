@@ -43,6 +43,8 @@ def build_legacy_load_forecast(
     if len(request.slots) != len(targets):
         raise ValueError("load targets must match requested grid")
     timezone = ZoneInfo(config.timezone)
+    # Transitional parity input: a separately modeled heat-pump component will
+    # replace this short-horizon context only through an approved contract change.
     heat_pump_w = next(
         (
             driver.power_w
@@ -84,7 +86,9 @@ def build_legacy_load_forecast(
         model_version="legacy-load-v1",
         slots=slots,
         components=(
-            LoadForecastComponent("general_house_load", "legacy-load-v1", slots),
+            LoadForecastComponent(
+                "general_house_load", "legacy-load-v1", cutoff, slots
+            ),
         ),
     )
 

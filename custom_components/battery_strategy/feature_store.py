@@ -5,6 +5,7 @@ from __future__ import annotations
 import gzip
 import json
 import os
+import shutil
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -20,6 +21,7 @@ from .contracts import (
 from .contracts.common import CONTRACT_SCHEMA_VERSION, SLOT_MS
 
 FEATURE_STORE_RETENTION_DAYS = 180
+FEATURE_STORE_SCHEMA1_BACKUP_SUFFIX = ".schema1.bak"
 MAX_CONTINUOUS_SAMPLE_GAP_MS = 120_000
 
 
@@ -159,6 +161,13 @@ class FeatureAggregator:
         flags = set(self._active.flags)
         if coverage < 0.999:
             flags.add(QualityFlag.ESTIMATED)
+        component_flags = set()
+        if coverage < 0.999:
+            component_flags.add(QualityFlag.ESTIMATED)
+        if sum(self._active.load_components_kwh.values()) > (
+            self._active.house_load_no_ev_kwh + 1e-9
+        ):
+            component_flags.add(QualityFlag.COMPONENT_MISMATCH)
         price = (
             self._active.price_weighted_ct_ms / self._active.price_covered_ms
             if self._active.price_covered_ms
@@ -176,7 +185,13 @@ class FeatureAggregator:
             price_ct_per_kwh=price,
             quality=DataQuality(coverage, tuple(sorted(flags, key=str))),
             load_components=tuple(
-                LoadComponentEnergy(key, value)
+                LoadComponentEnergy(
+                    key,
+                    value,
+                    DataQuality(
+                        coverage, tuple(sorted(component_flags, key=str))
+                    ),
+                )
                 for key, value in sorted(self._active.load_components_kwh.items())
             ),
         )
@@ -203,7 +218,10 @@ class CompressedFeatureStore:
     def initialize(self) -> None:
         """Load and validate an existing store without failing integration setup."""
         try:
-            self._slots = {slot.slot.start_ms: slot for slot in self._read()}
+            slots, schema_version = self._read()
+            self._slots = {slot.slot.start_ms: slot for slot in slots}
+            if schema_version == 1:
+                self._migrate_schema_one_to_two()
             self.last_error = None
         except (
             OSError,
@@ -269,14 +287,47 @@ class CompressedFeatureStore:
             "authoritative": False,
         }
 
-    def _read(self) -> tuple[HistoricalFeatureSlot, ...]:
+    def _read(self) -> tuple[tuple[HistoricalFeatureSlot, ...], int]:
         if not self.path.exists():
-            return ()
+            return (), CONTRACT_SCHEMA_VERSION
         raw = gzip.decompress(self.path.read_bytes())
         envelope = json.loads(raw.decode("utf-8"))
-        if envelope.get("schema_version") not in (1, CONTRACT_SCHEMA_VERSION):
+        schema_version = int(envelope.get("schema_version", 0))
+        if schema_version not in (1, CONTRACT_SCHEMA_VERSION):
             raise ValueError("unsupported feature store schema")
-        return tuple(_deserialize(item) for item in envelope.get("slots", []))
+        return (
+            tuple(_deserialize(item) for item in envelope.get("slots", [])),
+            schema_version,
+        )
+
+    def _migrate_schema_one_to_two(self) -> None:
+        """Atomically migrate the complete store while preserving rollback data."""
+        backup = self.path.with_name(self.path.name + FEATURE_STORE_SCHEMA1_BACKUP_SUFFIX)
+        if not backup.exists():
+            shutil.copy2(self.path, backup)
+        self._write_envelope(CONTRACT_SCHEMA_VERSION)
+
+    def downgrade_to_schema_one(self, destination: str | Path | None = None) -> Path:
+        """Write a complete schema-1 store, dropping only component metadata."""
+        target = Path(destination) if destination is not None else self.path
+        self._write_envelope(1, target=target)
+        return target
+
+    def _write_envelope(self, schema_version: int, *, target: Path | None = None) -> None:
+        target = target or self.path
+        envelope = {
+            "schema_version": int(schema_version),
+            "retention_days": self.retention_days,
+            "slots": [
+                _serialize(self._slots[key], include_components=schema_version >= 2)
+                for key in sorted(self._slots)
+            ],
+        }
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp = target.with_name(f"{target.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+        with gzip.open(tmp, "wb", compresslevel=6) as handle:
+            handle.write(json.dumps(envelope, separators=(",", ":")).encode("utf-8"))
+        os.replace(tmp, target)
 
     def _file_size(self) -> int:
         try:
@@ -320,8 +371,10 @@ def _slot_start(timestamp_ms: int) -> int:
     return int(timestamp_ms) // SLOT_MS * SLOT_MS
 
 
-def _serialize(slot: HistoricalFeatureSlot) -> dict[str, object]:
-    return {
+def _serialize(
+    slot: HistoricalFeatureSlot, *, include_components: bool = True
+) -> dict[str, object]:
+    result = {
         "start_ms": slot.slot.start_ms,
         "house_load_no_ev_kwh": slot.house_load_no_ev_kwh,
         "pv_generation_kwh": slot.pv_generation_kwh,
@@ -333,11 +386,18 @@ def _serialize(slot: HistoricalFeatureSlot) -> dict[str, object]:
         "price_ct_per_kwh": slot.price_ct_per_kwh,
         "coverage": slot.quality.coverage,
         "flags": [flag.value for flag in slot.quality.flags],
-        "load_components": [
-            {"key": item.component_key, "energy_kwh": item.energy_kwh}
-            for item in slot.load_components
-        ],
     }
+    if include_components:
+        result["load_components"] = [
+            {
+                "key": item.component_key,
+                "energy_kwh": item.energy_kwh,
+                "coverage": item.quality.coverage,
+                "flags": [flag.value for flag in item.quality.flags],
+            }
+            for item in slot.load_components
+        ]
+    return result
 
 
 def _deserialize(item: dict) -> HistoricalFeatureSlot:
@@ -361,7 +421,14 @@ def _deserialize(item: dict) -> HistoricalFeatureSlot:
             tuple(QualityFlag(value) for value in item.get("flags", [])),
         ),
         load_components=tuple(
-            LoadComponentEnergy(str(item["key"]), float(item["energy_kwh"]))
+            LoadComponentEnergy(
+                str(item["key"]),
+                float(item["energy_kwh"]),
+                DataQuality(
+                    float(item.get("coverage", 0.0)),
+                    tuple(QualityFlag(value) for value in item.get("flags", [])),
+                ),
+            )
             for item in item.get("load_components", [])
         ),
     )

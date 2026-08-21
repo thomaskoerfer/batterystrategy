@@ -54,6 +54,7 @@ from .feature_store import (
     FeatureAggregator,
     FeatureObservation,
 )
+from .forecast_shadow_runner import ForecastShadowRunner
 from .models import StrategyCommand, StrategyInputs, StrategyOptions
 from .optimizer_adapter import OptimizerEngineAdapter
 from .optimizer_state import last_known_soc_pct
@@ -71,6 +72,7 @@ SOC_BRIDGE_MAX_AGE_S = 300
 EV_POWER_BRIDGE_MAX_AGE_S = 180
 OPTIMIZER_STATE_FILE = "battery_strategy_optimizer_state.json"
 FEATURE_STORE_FILE = "battery_strategy_features.json.gz"
+FORECAST_SHADOW_TRACE_FILE = "battery_strategy_forecast_shadow.json.gz"
 COMMAND_TRACE_FILE = "battery_strategy_command_trace.jsonl"
 COMMAND_TRACE_MAX_BYTES = 64 * 1024 * 1024
 COMMAND_TRACE_RETAIN_LINES = 50000
@@ -105,8 +107,12 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         self._manual_mode = MANUAL_OFF
         self._manual_power_w = 0.0
         self._manual_until: dt.datetime | None = None
-        self._optimizer_engine = OptimizerEngineAdapter(hass, entry)
-        self._optimizer_engine.set_shadow_feature_history(shadow_feature_history)
+        self._forecast_shadow_runner = ForecastShadowRunner(
+            Path(hass.config.path(FORECAST_SHADOW_TRACE_FILE)), shadow_feature_history
+        )
+        self._optimizer_engine = OptimizerEngineAdapter(
+            hass, entry, shadow_runner=self._forecast_shadow_runner
+        )
         self._optimizer_engine.hydrate_output(last_optimizer_output)
         self._planner = BackgroundPlanner(hass, self._optimizer_engine)
         self._optimizer_attrs: dict = {}
@@ -313,7 +319,7 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
                 shadow_history = await self._feature_store.load(
                     0, int(now.timestamp() * 1000) + 1
                 )
-                self._optimizer_engine.set_shadow_feature_history(shadow_history)
+                self._forecast_shadow_runner.set_history(shadow_history)
             except (OSError, ValueError, TypeError) as err:
                 self._feature_store.last_error = f"{type(err).__name__}: {err}"
                 LOGGER.warning("Feature-store shadow write failed: %s", err)

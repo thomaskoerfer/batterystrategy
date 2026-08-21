@@ -20,6 +20,7 @@ class LoadComponentEnergy:
 
     component_key: str
     energy_kwh: float
+    quality: DataQuality = DataQuality()
 
     def __post_init__(self) -> None:
         if not self.component_key:
@@ -59,10 +60,6 @@ class HistoricalFeatureSlot:
         keys = tuple(item.component_key for item in self.load_components)
         if len(set(keys)) != len(keys):
             raise ValueError("historical load component keys must be unique")
-        if sum(item.energy_kwh for item in self.load_components) > (
-            self.house_load_no_ev_kwh + 1e-9
-        ):
-            raise ValueError("load components cannot exceed whole-house load")
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,11 +168,14 @@ class LoadForecastComponent:
 
     component_key: str
     model_version: str
+    training_cutoff_ms: int
     slots: tuple[ForecastSlot, ...]
 
     def __post_init__(self) -> None:
         if not self.component_key or not self.model_version:
             raise ValueError("load forecast component identity is required")
+        if self.training_cutoff_ms < 0:
+            raise ValueError("component training cutoff must be non-negative")
         require_slots_sorted_unique(tuple(item.slot for item in self.slots))
 
 
@@ -196,6 +196,8 @@ class LoadForecast:
         if len(set(keys)) != len(keys):
             raise ValueError("load forecast component keys must be unique")
         for component in self.components:
+            if component.training_cutoff_ms > self.generated_at_ms:
+                raise ValueError("component training cutoff cannot be in the future")
             if tuple(item.slot for item in component.slots) != tuple(
                 item.slot for item in self.slots
             ):

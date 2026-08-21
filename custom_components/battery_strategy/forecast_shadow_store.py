@@ -8,10 +8,10 @@ import os
 import uuid
 from pathlib import Path
 
-from .contracts import HistoricalFeatureSlot, QualityFlag
+from .contracts import ForecastEvaluationRun, HistoricalFeatureSlot, QualityFlag
 from .contracts.common import SLOT_MS
 
-SHADOW_TRACE_SCHEMA_VERSION = 1
+SHADOW_TRACE_SCHEMA_VERSION = 2
 SHADOW_TRACE_RETENTION_DAYS = 14
 
 
@@ -45,17 +45,17 @@ class ForecastShadowTraceStore:
 
     def record(
         self,
-        comparison: dict[str, object],
+        comparison: ForecastEvaluationRun,
         history: tuple[HistoricalFeatureSlot, ...],
     ) -> dict[str, object]:
         """Persist one comparison and mature pending next-slot evaluations."""
         if not self._initialized:
             self.initialize()
-        generated_at_ms = int(comparison["generated_at_ms"])
+        generated_at_ms = int(comparison.generated_at_ms)
         generation_slot = generated_at_ms // SLOT_MS * SLOT_MS
         changed = False
         if generation_slot not in self._entries:
-            item = dict(comparison)
+            item = _serialize_run(comparison)
             item["generation_slot_start_ms"] = generation_slot
             self._entries[generation_slot] = item
             changed = True
@@ -75,10 +75,11 @@ class ForecastShadowTraceStore:
         """Return bounded parity and matured forecast-accuracy diagnostics."""
         ordered = [self._entries[key] for key in sorted(self._entries)]
         latest = ordered[-1] if ordered else {}
+        records = [record for item in ordered for record in item.get("points", [])]
         matured = [
-            item
-            for item in ordered
-            if "actual_load_kwh" in item or "actual_pv_kwh" in item
+            record
+            for record in records
+            if "actual_load_kwh" in record or "actual_pv_kwh" in record
         ]
         return {
             "authoritative": False,
@@ -90,12 +91,13 @@ class ForecastShadowTraceStore:
             "load_usable_slots": latest.get("load_usable_slots", 0),
             "pv_usable_slots": latest.get("pv_usable_slots", 0),
             "history_span_days": latest.get("history_span_days", 0.0),
-            "load_parity_mae_w": latest.get("load_mae_delta_w"),
-            "pv_parity_mae_w": latest.get("pv_mae_delta_w"),
+            "load_parity_mae_w": latest.get("load_parity_mae_w"),
+            "pv_parity_mae_w": latest.get("pv_parity_mae_w"),
             "production_load_mae_kwh": _mae(matured, "production_load_error_kwh"),
             "shadow_load_mae_kwh": _mae(matured, "shadow_load_error_kwh"),
             "production_pv_mae_kwh": _mae(matured, "production_pv_error_kwh"),
             "shadow_pv_mae_kwh": _mae(matured, "shadow_pv_error_kwh"),
+            "lead_metrics": _lead_metrics(matured),
             "file_size_bytes": self._file_size(),
             "last_error": self.last_error,
         }
@@ -104,46 +106,45 @@ class ForecastShadowTraceStore:
         actual_by_start = {item.slot.start_ms: item for item in history}
         changed = False
         for item in self._entries.values():
-            if item.get("actual_evaluation_complete"):
-                continue
-            target = item.get("evaluation_slot_start_ms")
-            actual = actual_by_start.get(int(target)) if target is not None else None
-            if actual is None or actual.quality.coverage < 0.999:
-                continue
-            flags = set(actual.quality.flags)
-            if QualityFlag.RESTART_GAP in flags:
-                continue
-            load_valid = not flags & {
-                QualityFlag.MISSING_GRID,
-                QualityFlag.MISSING_PV,
-                QualityFlag.MISSING_BATTERY,
-                QualityFlag.MISSING_EV,
-            }
-            if load_valid:
-                actual_load = actual.house_load_no_ev_kwh
-                item["actual_load_kwh"] = actual_load
-                item["production_load_error_kwh"] = abs(
-                    float(item["production_load_kwh"]) - actual_load
-                )
-                item["shadow_load_error_kwh"] = abs(
-                    float(item["shadow_load_kwh"]) - actual_load
-                )
+            for point in item.get("points", []):
+                if point.get("actual_evaluation_complete"):
+                    continue
+                target = point.get("target_start_ms")
+                actual = actual_by_start.get(int(target)) if target is not None else None
+                if actual is None or actual.quality.coverage < 0.999:
+                    continue
+                flags = set(actual.quality.flags)
+                if QualityFlag.RESTART_GAP in flags:
+                    continue
+                load_valid = not flags & {
+                    QualityFlag.MISSING_GRID,
+                    QualityFlag.MISSING_PV,
+                    QualityFlag.MISSING_BATTERY,
+                    QualityFlag.MISSING_EV,
+                }
+                if load_valid:
+                    actual_load = actual.house_load_no_ev_kwh
+                    point["actual_load_kwh"] = actual_load
+                    point["production_load_error_kwh"] = abs(
+                        float(point["production_load_kwh"]) - actual_load
+                    )
+                    point["shadow_load_error_kwh"] = abs(
+                        float(point["shadow_load_kwh"]) - actual_load
+                    )
+                pv_valid = QualityFlag.MISSING_PV not in flags
+                if pv_valid:
+                    actual_pv = actual.pv_generation_kwh
+                    point["actual_pv_kwh"] = actual_pv
+                    point["production_pv_error_kwh"] = abs(
+                        float(point["production_pv_kwh"]) - actual_pv
+                    )
+                    point["shadow_pv_error_kwh"] = abs(
+                        float(point["shadow_pv_kwh"]) - actual_pv
+                    )
+                point["actual_evaluation_complete"] = True
+                point["actual_load_valid"] = load_valid
+                point["actual_pv_valid"] = pv_valid
                 changed = True
-            pv_valid = QualityFlag.MISSING_PV not in flags
-            if pv_valid:
-                actual_pv = actual.pv_generation_kwh
-                item["actual_pv_kwh"] = actual_pv
-                item["production_pv_error_kwh"] = abs(
-                    float(item["production_pv_kwh"]) - actual_pv
-                )
-                item["shadow_pv_error_kwh"] = abs(
-                    float(item["shadow_pv_kwh"]) - actual_pv
-                )
-                changed = True
-            item["actual_evaluation_complete"] = True
-            item["actual_load_valid"] = load_valid
-            item["actual_pv_valid"] = pv_valid
-            changed = True
         return changed
 
     def _read(self) -> tuple[dict[str, object], ...]:
@@ -181,3 +182,45 @@ class ForecastShadowTraceStore:
 def _mae(items: list[dict[str, object]], key: str) -> float | None:
     values = [float(item[key]) for item in items if item.get(key) is not None]
     return round(sum(values) / len(values), 5) if values else None
+
+
+def _serialize_run(run: ForecastEvaluationRun) -> dict[str, object]:
+    return {
+        "generated_at_ms": run.generated_at_ms,
+        "status": run.status,
+        "reason": run.reason,
+        "authoritative": run.authoritative,
+        "history_slot_count": run.history_slot_count,
+        "load_usable_slots": run.load_usable_slots,
+        "pv_usable_slots": run.pv_usable_slots,
+        "history_span_days": run.history_span_days,
+        "load_parity_mae_w": run.load_parity_mae_w,
+        "load_parity_bias_w": run.load_parity_bias_w,
+        "pv_parity_mae_w": run.pv_parity_mae_w,
+        "pv_parity_bias_w": run.pv_parity_bias_w,
+        "points": [
+            {
+                "target_start_ms": point.target.start_ms,
+                "lead_minutes": point.lead_minutes,
+                "production_load_kwh": point.production_load_kwh,
+                "shadow_load_kwh": point.shadow_load_kwh,
+                "production_pv_kwh": point.production_pv_kwh,
+                "shadow_pv_kwh": point.shadow_pv_kwh,
+            }
+            for point in run.points
+        ],
+    }
+
+
+def _lead_metrics(items: list[dict[str, object]]) -> dict[str, object]:
+    result = {}
+    for lead in sorted({int(item["lead_minutes"]) for item in items}):
+        selected = [item for item in items if int(item["lead_minutes"]) == lead]
+        result[str(lead)] = {
+            "count": len(selected),
+            "production_load_mae_kwh": _mae(selected, "production_load_error_kwh"),
+            "shadow_load_mae_kwh": _mae(selected, "shadow_load_error_kwh"),
+            "production_pv_mae_kwh": _mae(selected, "production_pv_error_kwh"),
+            "shadow_pv_mae_kwh": _mae(selected, "shadow_pv_error_kwh"),
+        }
+    return result

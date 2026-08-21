@@ -15,6 +15,9 @@ from custom_components.battery_strategy.contracts import (
     LoadForecastContext,
     SlotKey,
 )
+from custom_components.battery_strategy.forecast_shadow_runner import (
+    ForecastShadowRunner,
+)
 from custom_components.battery_strategy.forecast_shadow_store import (
     ForecastShadowTraceStore,
 )
@@ -89,7 +92,8 @@ class ForecastShadowTests(unittest.TestCase):
             current_pv_w=None,
             tomorrow_date="2099-01-01",
             tomorrow_energy_kwh=None,
-            capacity_events=(("2000-01-01T00:00:00+00:00", 2.3, 2.0),),
+            pv_capacity_kwp=2.3,
+            pv_inverter_kw=2.0,
         )
 
     def test_load_and_pv_modules_do_not_import_each_other(self):
@@ -147,22 +151,32 @@ class ForecastShadowTests(unittest.TestCase):
             context=self.context,
             config=self.config,
         )
-        self.assertEqual(comparison["status"], "ready")
-        self.assertEqual(comparison["history_slot_count"], 7 * 96 + 48)
-        self.assertFalse(comparison["authoritative"])
+        self.assertEqual(comparison.status, "ready")
+        self.assertEqual(comparison.history_slot_count, 7 * 96 + 48)
+        self.assertFalse(comparison.authoritative)
+        self.assertEqual(
+            tuple(point.lead_minutes for point in comparison.points),
+            (15, 60),
+        )
 
     def test_trace_is_deduplicated_and_matures_against_actual_slot(self):
-        comparison = {
-            "generated_at_ms": self.as_of_ms + 1,
-            "status": "ready",
-            "reason": None,
-            "evaluation_slot_start_ms": self.as_of_ms + SLOT_MS,
-            "production_load_kwh": 0.2,
-            "shadow_load_kwh": 0.1,
-            "production_pv_kwh": 0.01,
-            "shadow_pv_kwh": 0.04,
-        }
-        actual = feature(self.as_of_ms + SLOT_MS, load_kwh=0.1, pv_kwh=0.04)
+        production = build_legacy_forecast(
+            self.request, self.samples, self.targets, self.context, self.config
+        )
+        comparison = evaluate_feature_store_shadow(
+            production=production,
+            request=self.request,
+            history=self.history,
+            targets=self.targets,
+            context=self.context,
+            config=self.config,
+        )
+        point = comparison.points[0]
+        actual = feature(
+            point.target.start_ms,
+            load_kwh=point.shadow_load_kwh,
+            pv_kwh=point.shadow_pv_kwh,
+        )
         with tempfile.TemporaryDirectory() as temp_dir:
             store = ForecastShadowTraceStore(Path(temp_dir) / "shadow.json.gz")
             first = store.record(comparison, (actual,))
@@ -174,17 +188,29 @@ class ForecastShadowTests(unittest.TestCase):
         self.assertEqual(second["shadow_pv_mae_kwh"], 0.0)
 
     def test_trace_retention_is_bounded_to_fourteen_days(self):
-        base = {
-            "status": "warming_up",
-            "reason": "test",
-        }
+        production = build_legacy_forecast(
+            self.request, self.samples, self.targets, self.context, self.config
+        )
+        base = evaluate_feature_store_shadow(
+            production=production,
+            request=self.request,
+            history=self.history,
+            targets=self.targets,
+            context=self.context,
+            config=self.config,
+        )
         with tempfile.TemporaryDirectory() as temp_dir:
             store = ForecastShadowTraceStore(Path(temp_dir) / "shadow.json.gz")
-            store.record({**base, "generated_at_ms": 1}, ())
-            diagnostics = store.record(
-                {**base, "generated_at_ms": 15 * 86_400_000}, ()
-            )
+            store.record(replace(base, generated_at_ms=1), ())
+            diagnostics = store.record(replace(base, generated_at_ms=15 * 86_400_000), ())
         self.assertEqual(diagnostics["trace_count"], 1)
+
+    def test_runner_failure_remains_non_authoritative_diagnostics(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runner = ForecastShadowRunner(Path(temp_dir) / "shadow.json.gz")
+            diagnostics = runner.evaluate({"invalid": True})
+        self.assertEqual(diagnostics["status"], "error")
+        self.assertFalse(diagnostics["authoritative"])
 
 
 if __name__ == "__main__":

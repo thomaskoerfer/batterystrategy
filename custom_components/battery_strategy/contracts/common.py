@@ -21,6 +21,7 @@ class QualityFlag(StrEnum):
     MISSING_PRICE = "missing_price"
     COUNTER_RESET = "counter_reset"
     RESTART_GAP = "restart_gap"
+    COMPONENT_MISMATCH = "component_mismatch"
 
 
 @dataclass(frozen=True, slots=True)

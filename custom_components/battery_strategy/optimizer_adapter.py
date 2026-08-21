@@ -9,7 +9,6 @@ import json
 import logging
 import threading
 import time
-from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from homeassistant.helpers import entity_registry as er
@@ -26,7 +25,7 @@ from .const import (
     CONF_PV_POWER_ENTITY,
     DOMAIN,
 )
-from .forecast_shadow_store import ForecastShadowTraceStore
+from .forecast_shadow_runner import ForecastShadowRunner
 from .models import StrategyInputs, StrategyOptions
 from .plan_models import DailyCost, PlanPoint, StrategyPlan
 
@@ -34,13 +33,12 @@ CACHE_TTL_S = 240
 SLOT_MS = 15 * 60 * 1000
 _ENGINE_RUN_LOCK = threading.Lock()
 LOGGER = logging.getLogger(__name__)
-FORECAST_SHADOW_TRACE_FILE = "battery_strategy_forecast_shadow.json.gz"
 
 
 class OptimizerEngineAdapter:
     """Run the high-quality optimizer inside the HACS integration."""
 
-    def __init__(self, hass=None, entry=None) -> None:
+    def __init__(self, hass=None, entry=None, shadow_runner=None) -> None:
         """Initialize adapter cache."""
         self._hass = hass
         self._entry = entry
@@ -48,12 +46,7 @@ class OptimizerEngineAdapter:
         self._last_output: dict | None = None
         self._last_options: StrategyOptions | None = None
         self._timezone = dt.timezone.utc
-        self._shadow_feature_history = ()
-        self._shadow_trace_store: ForecastShadowTraceStore | None = None
-
-    def set_shadow_feature_history(self, history) -> None:
-        """Replace the immutable feature snapshot used only by shadow forecasting."""
-        self._shadow_feature_history = tuple(history)
+        self._shadow_runner: ForecastShadowRunner | None = shadow_runner
 
     def hydrate_output(self, output: dict | None) -> None:
         """Hydrate the cache from an already loaded startup snapshot."""
@@ -113,7 +106,7 @@ class OptimizerEngineAdapter:
                 engine.main()
         raw = buf.getvalue().strip().splitlines()
         output = json.loads(raw[-1]) if raw else {}
-        self._record_shadow_comparison(output, runtime_context or {})
+        self._record_shadow_comparison(output)
         self._last_output = output
         self._last_options = options
         self._last_run_ts = now
@@ -199,40 +192,18 @@ class OptimizerEngineAdapter:
             "feed_in_tariff_ct_per_kwh": options.feed_in_tariff_ct_per_kwh,
             "pv_capacity_kwp": options.pv_capacity_kwp,
             "pv_inverter_power_kw": options.pv_inverter_power_kw,
-            "pv_capacity_events": list(
-                self._entry.options.get("pv_capacity_events") or []
-            ),
             "pv_charging": options.pv_charging,
             "grid_charging": options.grid_charging,
             "discharge": options.discharge,
             "planning_horizon_h": options.planning_horizon_h,
-            "shadow_feature_history": self._shadow_feature_history,
         }
 
-    def _record_shadow_comparison(self, output: dict, runtime_context: dict) -> None:
+    def _record_shadow_comparison(self, output: dict) -> None:
         """Persist shadow metrics while keeping any failure outside control."""
-        comparison = output.pop("_shadow_forecast_comparison", None)
-        if not isinstance(comparison, dict):
+        snapshot = output.pop("_forecast_shadow_input", None)
+        if not isinstance(snapshot, dict) or self._shadow_runner is None:
             return
-        try:
-            config_dir = str(runtime_context.get("config_dir") or "/config")
-            path = Path(config_dir) / FORECAST_SHADOW_TRACE_FILE
-            if (
-                self._shadow_trace_store is None
-                or self._shadow_trace_store.path != path
-            ):
-                self._shadow_trace_store = ForecastShadowTraceStore(path)
-                self._shadow_trace_store.initialize()
-            diagnostics = self._shadow_trace_store.record(
-                comparison, self._shadow_feature_history
-            )
-        except Exception as err:  # noqa: BLE001 - diagnostics cannot stop control.
-            LOGGER.warning("Forecast shadow trace failed: %s", err)
-            diagnostics = {
-                "authoritative": False,
-                "status": "trace_error",
-                "reason": f"{type(err).__name__}: {err}",
-            }
+        diagnostics = self._shadow_runner.evaluate(snapshot)
         for key, value in diagnostics.items():
             output[f"forecast_shadow_{key}"] = value
 

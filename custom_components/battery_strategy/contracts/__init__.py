@@ -14,6 +14,7 @@ from .control import (
     PlanLiveDirective,
     SlotProgress,
 )
+from .evaluation import ForecastEvaluationPoint, ForecastEvaluationRun
 from .forecasting import (
     ForecastBundle,
     ForecastRequest,
@@ -57,6 +58,8 @@ __all__ = [
     "DataQuality",
     "FeatureStore",
     "ForecastBundle",
+    "ForecastEvaluationPoint",
+    "ForecastEvaluationRun",
     "ForecastRequest",
     "ForecastSlot",
     "HistoricalFeatureSlot",

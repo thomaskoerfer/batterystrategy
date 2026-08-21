@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 from custom_components.battery_strategy.contracts import (
@@ -132,11 +133,13 @@ class ContractTests(unittest.TestCase):
         general = LoadForecastComponent(
             "general_house_load",
             "general-v1",
+            0,
             (ForecastSlot(slot(0), QuantileEnergy(0.2)),),
         )
         heat_pump = LoadForecastComponent(
             "heat_pump",
             "heat-pump-v1",
+            0,
             (ForecastSlot(slot(0), QuantileEnergy(0.1)),),
         )
         forecast = LoadForecast(
@@ -156,6 +159,15 @@ class ContractTests(unittest.TestCase):
                 "composite-v1",
                 total,
                 (general,),
+            )
+        with self.assertRaisesRegex(ValueError, "future"):
+            LoadForecast(
+                "load-3",
+                0,
+                0,
+                "composite-v1",
+                total,
+                (replace(general, training_cutoff_ms=1, slots=total),),
             )
 
     def test_forecast_bundle_rejects_misaligned_load_and_pv(self):

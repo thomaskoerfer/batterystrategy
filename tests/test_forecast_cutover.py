@@ -69,14 +69,17 @@ class ForecastProductionTests(unittest.TestCase):
                     }
                 )
         self.old_timezone = optimizer_engine.OPEN_METEO_TZ
-        self.old_capacity_events = optimizer_engine.PV_CAPACITY_EVENTS
+        self.old_capacity_kwp = optimizer_engine.PV_CAPACITY_KWP
+        self.old_inverter_kw = optimizer_engine.PV_INVERTER_KW
         optimizer_engine.OPEN_METEO_TZ = self.timezone
-        optimizer_engine.PV_CAPACITY_EVENTS = [("2000-01-01T00:00:00+00:00", 2.3, 2.0)]
+        optimizer_engine.PV_CAPACITY_KWP = 2.3
+        optimizer_engine.PV_INVERTER_KW = 2.0
         optimizer_engine.local_dt_from_ts.cache_clear()
 
     def tearDown(self) -> None:
         optimizer_engine.OPEN_METEO_TZ = self.old_timezone
-        optimizer_engine.PV_CAPACITY_EVENTS = self.old_capacity_events
+        optimizer_engine.PV_CAPACITY_KWP = self.old_capacity_kwp
+        optimizer_engine.PV_INVERTER_KW = self.old_inverter_kw
         optimizer_engine.local_dt_from_ts.cache_clear()
 
     def _plan(self, **changes):
@@ -147,18 +150,10 @@ class ForecastProductionTests(unittest.TestCase):
             ):
                 self._plan()
 
-    def test_shadow_failure_does_not_change_production_plan(self):
-        baseline = self._plan()
-        with patch.object(
-            optimizer_engine,
-            "evaluate_feature_store_shadow",
-            side_effect=RuntimeError("isolated shadow failure"),
-        ):
-            shadowed = self._plan(shadow_history=(object(),))
-        self.assertEqual(baseline["points"], shadowed["points"])
-        comparison = shadowed["forecast_diagnostics"]["shadow_comparison"]
-        self.assertEqual(comparison["status"], "error")
-        self.assertIn("isolated shadow failure", comparison["reason"])
+    def test_optimizer_has_no_shadow_history_or_evaluation_dependency(self):
+        source = Path(optimizer_engine.__file__).read_text(encoding="utf-8")
+        self.assertNotIn("shadow_history", source)
+        self.assertNotIn("evaluate_feature_store_shadow", source)
 
     def test_load_state_removes_obsolete_comparison_traces(self):
         with tempfile.TemporaryDirectory() as temp_dir:

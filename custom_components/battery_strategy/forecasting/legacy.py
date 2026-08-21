@@ -23,7 +23,8 @@ class LegacyForecastConfig:
     current_pv_w: float | None
     tomorrow_date: str
     tomorrow_energy_kwh: float | None
-    capacity_events: tuple[tuple[str, float, float], ...]
+    pv_capacity_kwp: float
+    pv_inverter_kw: float
 
     def load_config(self) -> LegacyLoadForecastConfig:
         """Return only state owned by the load model."""
@@ -41,7 +42,8 @@ class LegacyForecastConfig:
             self.current_pv_w,
             self.tomorrow_date,
             self.tomorrow_energy_kwh,
-            self.capacity_events,
+            self.pv_capacity_kwp,
+            self.pv_inverter_kw,
         )
 
 

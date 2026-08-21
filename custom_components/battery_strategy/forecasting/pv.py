@@ -23,13 +23,14 @@ class LegacyPvForecastConfig:
     current_pv_w: float | None
     tomorrow_date: str
     tomorrow_energy_kwh: float | None
-    capacity_events: tuple[tuple[str, float, float], ...]
+    pv_capacity_kwp: float
+    pv_inverter_kw: float
 
     def __post_init__(self) -> None:
         if len(self.pv_slot_biases) != 96:
             raise ValueError("PV slot bias array must contain 96 values")
-        if not self.capacity_events:
-            raise ValueError("PV capacity events are required")
+        if self.pv_capacity_kwp <= 0.0 or self.pv_inverter_kw <= 0.0:
+            raise ValueError("current PV and inverter capacity are required")
 
 
 def build_legacy_pv_forecast(
@@ -53,7 +54,7 @@ def build_legacy_pv_forecast(
                 timezone,
                 target.weather_factor * config.pv_global_bias,
                 config.pv_slot_biases[_slot_index(target.local_start)],
-                config.capacity_events,
+                config.pv_inverter_kw,
             ),
             target,
         )
@@ -105,12 +106,9 @@ def build_legacy_pv_forecast(
     )
 
 
-def _forecast_pv_w(
-    samples, target, timezone, weather_factor, slot_bias, capacity_events
-) -> float:
+def _forecast_pv_w(samples, target, timezone, weather_factor, slot_bias, inverter_kw) -> float:
     target_slot = _slot_index(target)
     target_is_weekend = target.weekday() >= 5
-    target_kwp, target_inverter_kw = _capacity_at(target, timezone, capacity_events)
     same_slot, same_weektype = [], []
     for sample in samples[-6000:]:
         sample_local = dt.datetime.fromtimestamp(
@@ -122,11 +120,9 @@ def _forecast_pv_w(
             or _slot_index(sample_local) != target_slot
         ):
             continue
-        sample_kwp, _ = _capacity_at(sample_local, timezone, capacity_events)
-        normalized = sample.pv_w * (target_kwp / max(0.1, sample_kwp))
-        same_slot.append(normalized)
+        same_slot.append(sample.pv_w)
         if (sample_local.weekday() >= 5) == target_is_weekend:
-            same_weektype.append(normalized)
+            same_weektype.append(sample.pv_w)
     pv_w = 0.65 * _median(
         same_weektype[-30:], _median(same_slot[-60:], 0.0)
     ) + 0.35 * _median(same_slot[-60:], 0.0)
@@ -134,7 +130,7 @@ def _forecast_pv_w(
         pv_w = 0.0
     return min(
         max(0.0, pv_w * weather_factor * _clamp(slot_bias, 0.6, 1.5)),
-        max(0.0, target_inverter_kw * 1000.0),
+        max(0.0, inverter_kw * 1000.0),
     )
 
 
@@ -151,16 +147,6 @@ def _tomorrow_scale(preliminary, config) -> float:
         if forecast_kwh <= 0.05
         else _clamp(config.tomorrow_energy_kwh / forecast_kwh, 0.25, 4.0)
     )
-
-
-def _capacity_at(value, timezone, events):
-    target = value.astimezone(timezone)
-    generator_kwp, inverter_kw = float(events[0][1]), float(events[0][2])
-    for event_iso, event_kwp, event_inverter_kw in events:
-        if target < dt.datetime.fromisoformat(event_iso).astimezone(timezone):
-            break
-        generator_kwp, inverter_kw = float(event_kwp), float(event_inverter_kw)
-    return generator_kwp, inverter_kw
 
 
 def _slot_index(value) -> int:
