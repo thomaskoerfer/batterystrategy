@@ -10,7 +10,13 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .contracts import DataQuality, HistoricalFeatureSlot, QualityFlag, SlotKey
+from .contracts import (
+    DataQuality,
+    HistoricalFeatureSlot,
+    LoadComponentEnergy,
+    QualityFlag,
+    SlotKey,
+)
 from .contracts.common import CONTRACT_SCHEMA_VERSION, SLOT_MS
 
 FEATURE_STORE_RETENTION_DAYS = 180
@@ -29,6 +35,7 @@ class FeatureObservation:
     ev_charge_w: float
     price_ct_per_kwh: float | None
     quality_flags: tuple[QualityFlag, ...] = ()
+    load_components_w: tuple[tuple[str, float], ...] = ()
 
 
 @dataclass(slots=True)
@@ -45,6 +52,7 @@ class _Accumulator:
     price_weighted_ct_ms: float = 0.0
     price_covered_ms: int = 0
     flags: set[QualityFlag] = field(default_factory=set)
+    load_components_kwh: dict[str, float] = field(default_factory=dict)
 
 
 class FeatureAggregator:
@@ -60,7 +68,10 @@ class FeatureAggregator:
         """Consume one observation and return newly finalized slots."""
         if observation.timestamp_ms < 0:
             raise ValueError("observation timestamp must be non-negative")
-        if self._previous is None or observation.timestamp_ms <= self._previous.timestamp_ms:
+        if (
+            self._previous is None
+            or observation.timestamp_ms <= self._previous.timestamp_ms
+        ):
             self._previous = observation
             self._active = _Accumulator(_slot_start(observation.timestamp_ms))
             if observation.timestamp_ms > self._active.start_ms:
@@ -73,7 +84,10 @@ class FeatureAggregator:
             self._active = _Accumulator(_slot_start(previous.timestamp_ms))
             self._active.flags.add(QualityFlag.RESTART_GAP)
 
-        if observation.timestamp_ms - previous.timestamp_ms > MAX_CONTINUOUS_SAMPLE_GAP_MS:
+        if (
+            observation.timestamp_ms - previous.timestamp_ms
+            > MAX_CONTINUOUS_SAMPLE_GAP_MS
+        ):
             return self._advance(previous.timestamp_ms, observation.timestamp_ms, None)
         return self._advance(previous.timestamp_ms, observation.timestamp_ms, previous)
 
@@ -126,6 +140,11 @@ class FeatureAggregator:
         self._active.battery_discharge_kwh += max(0.0, battery_w) * hours / 1000.0
         self._active.ev_charge_kwh += ev_w * hours / 1000.0
         self._active.flags.update(sample.quality_flags)
+        for component_key, power_w in sample.load_components_w:
+            self._active.load_components_kwh[component_key] = (
+                self._active.load_components_kwh.get(component_key, 0.0)
+                + max(0.0, float(power_w)) * hours / 1000.0
+            )
         if sample.price_ct_per_kwh is None:
             self._active.flags.add(QualityFlag.MISSING_PRICE)
         else:
@@ -156,6 +175,10 @@ class FeatureAggregator:
             ev_charge_kwh=self._active.ev_charge_kwh,
             price_ct_per_kwh=price,
             quality=DataQuality(coverage, tuple(sorted(flags, key=str))),
+            load_components=tuple(
+                LoadComponentEnergy(key, value)
+                for key, value in sorted(self._active.load_components_kwh.items())
+            ),
         )
 
     @property
@@ -169,7 +192,9 @@ class FeatureAggregator:
 class CompressedFeatureStore:
     """Atomic compressed persistence for finalized feature slots."""
 
-    def __init__(self, path: str | Path, retention_days: int = FEATURE_STORE_RETENTION_DAYS):
+    def __init__(
+        self, path: str | Path, retention_days: int = FEATURE_STORE_RETENTION_DAYS
+    ):
         self.path = Path(path)
         self.retention_days = max(1, int(retention_days))
         self._slots: dict[int, HistoricalFeatureSlot] = {}
@@ -180,16 +205,20 @@ class CompressedFeatureStore:
         try:
             self._slots = {slot.slot.start_ms: slot for slot in self._read()}
             self.last_error = None
-        except (OSError, EOFError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as err:
+        except (
+            OSError,
+            EOFError,
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+            ValueError,
+        ) as err:
             self._slots = {}
             self.last_error = f"{type(err).__name__}: {err}"
 
     def load(self, start_ms: int, end_ms: int) -> tuple[HistoricalFeatureSlot, ...]:
         """Return sorted finalized slots in the half-open requested range."""
         return tuple(
-            self._slots[key]
-            for key in sorted(self._slots)
-            if start_ms <= key < end_ms
+            self._slots[key] for key in sorted(self._slots) if start_ms <= key < end_ms
         )
 
     def upsert(self, slots: tuple[HistoricalFeatureSlot, ...]) -> None:
@@ -201,7 +230,9 @@ class CompressedFeatureStore:
         newest_end_ms = max(item.slot.end_ms for item in self._slots.values())
         cutoff_ms = newest_end_ms - self.retention_days * 86_400_000
         self._slots = {
-            key: value for key, value in self._slots.items() if value.slot.end_ms > cutoff_ms
+            key: value
+            for key, value in self._slots.items()
+            if value.slot.end_ms > cutoff_ms
         }
         envelope = {
             "schema_version": CONTRACT_SCHEMA_VERSION,
@@ -229,7 +260,9 @@ class CompressedFeatureStore:
             "oldest_slot_start_ms": ordered[0].slot.start_ms if ordered else None,
             "newest_slot_start_ms": last.slot.start_ms if last else None,
             "last_slot_coverage": last.quality.coverage if last else None,
-            "last_slot_flags": [flag.value for flag in last.quality.flags] if last else [],
+            "last_slot_flags": [flag.value for flag in last.quality.flags]
+            if last
+            else [],
             "active_slot_coverage": round(float(active_coverage), 4),
             "file_size_bytes": self._file_size(),
             "last_error": self.last_error,
@@ -241,7 +274,7 @@ class CompressedFeatureStore:
             return ()
         raw = gzip.decompress(self.path.read_bytes())
         envelope = json.loads(raw.decode("utf-8"))
-        if envelope.get("schema_version") != CONTRACT_SCHEMA_VERSION:
+        if envelope.get("schema_version") not in (1, CONTRACT_SCHEMA_VERSION):
             raise ValueError("unsupported feature store schema")
         return tuple(_deserialize(item) for item in envelope.get("slots", []))
 
@@ -300,6 +333,10 @@ def _serialize(slot: HistoricalFeatureSlot) -> dict[str, object]:
         "price_ct_per_kwh": slot.price_ct_per_kwh,
         "coverage": slot.quality.coverage,
         "flags": [flag.value for flag in slot.quality.flags],
+        "load_components": [
+            {"key": item.component_key, "energy_kwh": item.energy_kwh}
+            for item in slot.load_components
+        ],
     }
 
 
@@ -315,10 +352,16 @@ def _deserialize(item: dict) -> HistoricalFeatureSlot:
         battery_discharge_kwh=float(item["battery_discharge_kwh"]),
         ev_charge_kwh=float(item["ev_charge_kwh"]),
         price_ct_per_kwh=(
-            None if item.get("price_ct_per_kwh") is None else float(item["price_ct_per_kwh"])
+            None
+            if item.get("price_ct_per_kwh") is None
+            else float(item["price_ct_per_kwh"])
         ),
         quality=DataQuality(
             float(item.get("coverage", 0.0)),
             tuple(QualityFlag(value) for value in item.get("flags", [])),
+        ),
+        load_components=tuple(
+            LoadComponentEnergy(str(item["key"]), float(item["energy_kwh"]))
+            for item in item.get("load_components", [])
         ),
     )

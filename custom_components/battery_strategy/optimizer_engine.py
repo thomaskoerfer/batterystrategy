@@ -27,6 +27,7 @@ from .forecasting import (
     LegacyForecastSample,
     LegacyForecastTarget,
     build_legacy_forecast,
+    evaluate_feature_store_shadow,
 )
 from .optimizer_state import load_state_document, save_state_document
 
@@ -37,6 +38,7 @@ _RUNTIME_STATES = {}
 _RUNTIME_PRICE_INTERVALS = []
 _ENTITY_MAP = {}
 _ENTITY_SCALE = {}
+_SHADOW_FEATURE_HISTORY = ()
 
 E_PRICE_CURRENT = "price_current"
 E_PRICE_EUR = "price_eur"
@@ -135,6 +137,7 @@ def configure_runtime(context):
     """Apply one config-entry runtime context before an optimizer run."""
     global STATE_FILE, _DB_ENGINE
     global _RUNTIME_STATES, _RUNTIME_PRICE_INTERVALS, _ENTITY_MAP, _ENTITY_SCALE
+    global _SHADOW_FEATURE_HISTORY
     global CAP_KWH, SOC_MIN, SOC_MAX, MIN_E_KWH, MAX_E_KWH, MAX_P_W, MAX_E_SLOT_KWH
     global MAX_CHARGE_P_W, MAX_DISCHARGE_P_W, MAX_CHARGE_E_SLOT_KWH, MAX_DISCHARGE_E_SLOT_KWH
     global PV_CHARGING_ENABLED, GRID_CHARGING_ENABLED, DISCHARGE_ENABLED, PLANNING_HORIZON_H
@@ -152,6 +155,7 @@ def configure_runtime(context):
         for key, value in (context.get("entity_scale") or {}).items()
         if value is not None
     }
+    _SHADOW_FEATURE_HISTORY = tuple(context.get("shadow_feature_history") or ())
 
     CAP_KWH = max(0.5, float(context.get("battery_capacity_kwh") or 6.0))
     SOC_MIN = max(0.0, min(100.0, float(context.get("min_soc_pct") or 0.0)))
@@ -1388,6 +1392,7 @@ def build_production_forecast(
     pv_now_actual_w,
     pv_global_bias,
     capacity_events,
+    shadow_history=(),
 ):
     """Build the sole production forecast from immutable inputs."""
     started = time.perf_counter()
@@ -1442,12 +1447,30 @@ def build_production_forecast(
     pv_w = [slot.energy.p50_kwh / SLOT_H * 1000.0 for slot in forecast.pv.slots]
     if len(load_w) != len(intervals) or len(pv_w) != len(intervals):
         raise ValueError("production forecast does not match requested slot grid")
-    return load_w, pv_w, {
+    diagnostics = {
         "source": "extracted",
         "slot_count": len(request.slots),
         "runtime_ms": round((time.perf_counter() - started) * 1000.0, 3),
         "model_version": "legacy-extracted-v1",
     }
+    if shadow_history:
+        try:
+            diagnostics["shadow_comparison"] = evaluate_feature_store_shadow(
+                production=forecast,
+                request=request,
+                history=tuple(shadow_history),
+                targets=tuple(targets),
+                context=context,
+                config=config,
+            )
+        except Exception as err:  # noqa: BLE001 - shadow must never affect control.
+            diagnostics["shadow_comparison"] = {
+                "generated_at_ms": request.as_of_ms,
+                "status": "error",
+                "reason": f"{type(err).__name__}: {err}",
+                "authoritative": False,
+            }
+    return load_w, pv_w, diagnostics
 
 
 def _future_higher_value_load_reserve_kwh(
@@ -1523,7 +1546,7 @@ def _pv_spill_recovery_budget_ac_kwh(
     return threatened_storage_kwh * ETA_D
 
 
-def build_virtual_plan(intervals, samples, start_energy_kwh, weather_factor, forecast_tomorrow_kwh, load_bias, load_bias_slots, pv_bias_slots, initial_mode=0, weather_hourly=None, pv_now_actual_w=None, now_local=None, pv_global_bias=1.0, eex_days=None, inventory_discharge_floor_ct=None):
+def build_virtual_plan(intervals, samples, start_energy_kwh, weather_factor, forecast_tomorrow_kwh, load_bias, load_bias_slots, pv_bias_slots, initial_mode=0, weather_hourly=None, pv_now_actual_w=None, now_local=None, pv_global_bias=1.0, eex_days=None, inventory_discharge_floor_ct=None, shadow_history=()):
     if not intervals:
         return {"points": [], "today": {}, "tomorrow": {}, "end_soc": 50.0, "price_stats": {}, "daily_costs": {}}
 
@@ -1559,6 +1582,7 @@ def build_virtual_plan(intervals, samples, start_energy_kwh, weather_factor, for
         pv_now_actual_w=pv_now_actual_w,
         pv_global_bias=pv_global_bias,
         capacity_events=PV_CAPACITY_EVENTS,
+        shadow_history=shadow_history,
     )
     forecast_pre = [
         (it, load_w, pv_w, target.weather_factor)
@@ -2845,6 +2869,7 @@ def main():
         pv_global_bias=pv_bias,
         eex_days=eex_days,
         inventory_discharge_floor_ct=inventory_discharge_floor_ct,
+        shadow_history=_SHADOW_FEATURE_HISTORY,
     )
     forecast_diagnostics = plan.get("forecast_diagnostics", {})
     future_points = plan["points"]
@@ -3109,8 +3134,11 @@ def main():
         "timestamp": now.isoformat(),
     }
 
+    shadow_comparison = forecast_diagnostics.get("shadow_comparison")
     data["last_output"] = out
     save_state(data)
+    if shadow_comparison:
+        out["_shadow_forecast_comparison"] = shadow_comparison
     print(json.dumps(out, ensure_ascii=False))
 
 

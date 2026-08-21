@@ -92,6 +92,7 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         last_known_soc_pct: float | None = None,
         last_optimizer_output: dict | None = None,
         feature_store: ExecutorFeatureStore | None = None,
+        shadow_feature_history=(),
     ):
         """Initialize coordinator."""
         super().__init__(
@@ -105,6 +106,7 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         self._manual_power_w = 0.0
         self._manual_until: dt.datetime | None = None
         self._optimizer_engine = OptimizerEngineAdapter(hass, entry)
+        self._optimizer_engine.set_shadow_feature_history(shadow_feature_history)
         self._optimizer_engine.hydrate_output(last_optimizer_output)
         self._planner = BackgroundPlanner(hass, self._optimizer_engine)
         self._optimizer_attrs: dict = {}
@@ -308,6 +310,10 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         if finalized_features:
             try:
                 await self._feature_store.upsert(finalized_features)
+                shadow_history = await self._feature_store.load(
+                    0, int(now.timestamp() * 1000) + 1
+                )
+                self._optimizer_engine.set_shadow_feature_history(shadow_history)
             except (OSError, ValueError, TypeError) as err:
                 self._feature_store.last_error = f"{type(err).__name__}: {err}"
                 LOGGER.warning("Feature-store shadow write failed: %s", err)

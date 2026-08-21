@@ -15,6 +15,19 @@ from .common import (
 
 
 @dataclass(frozen=True, slots=True)
+class LoadComponentEnergy:
+    """Measured energy for one named subset of whole-house load."""
+
+    component_key: str
+    energy_kwh: float
+
+    def __post_init__(self) -> None:
+        if not self.component_key:
+            raise ValueError("load component key is required")
+        require_nonnegative("energy_kwh", self.energy_kwh)
+
+
+@dataclass(frozen=True, slots=True)
 class HistoricalFeatureSlot:
     """Finalized actual energy flows for one slot, all in kWh."""
 
@@ -28,6 +41,7 @@ class HistoricalFeatureSlot:
     ev_charge_kwh: float
     price_ct_per_kwh: float | None
     quality: DataQuality = DataQuality()
+    load_components: tuple[LoadComponentEnergy, ...] = ()
 
     def __post_init__(self) -> None:
         for name in (
@@ -42,6 +56,13 @@ class HistoricalFeatureSlot:
             require_nonnegative(name, getattr(self, name))
         if self.price_ct_per_kwh is not None:
             require_finite("price_ct_per_kwh", self.price_ct_per_kwh)
+        keys = tuple(item.component_key for item in self.load_components)
+        if len(set(keys)) != len(keys):
+            raise ValueError("historical load component keys must be unique")
+        if sum(item.energy_kwh for item in self.load_components) > (
+            self.house_load_no_ev_kwh + 1e-9
+        ):
+            raise ValueError("load components cannot exceed whole-house load")
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,6 +166,20 @@ class ForecastSlot:
 
 
 @dataclass(frozen=True, slots=True)
+class LoadForecastComponent:
+    """Independent contribution to the total EV-free load forecast."""
+
+    component_key: str
+    model_version: str
+    slots: tuple[ForecastSlot, ...]
+
+    def __post_init__(self) -> None:
+        if not self.component_key or not self.model_version:
+            raise ValueError("load forecast component identity is required")
+        require_slots_sorted_unique(tuple(item.slot for item in self.slots))
+
+
+@dataclass(frozen=True, slots=True)
 class LoadForecast:
     """House-load forecast excluding EV consumption."""
 
@@ -153,9 +188,25 @@ class LoadForecast:
     training_cutoff_ms: int
     model_version: str
     slots: tuple[ForecastSlot, ...]
+    components: tuple[LoadForecastComponent, ...] = ()
 
     def __post_init__(self) -> None:
         _validate_forecast_series(self)
+        keys = tuple(item.component_key for item in self.components)
+        if len(set(keys)) != len(keys):
+            raise ValueError("load forecast component keys must be unique")
+        for component in self.components:
+            if tuple(item.slot for item in component.slots) != tuple(
+                item.slot for item in self.slots
+            ):
+                raise ValueError("load forecast components must use the total grid")
+        if self.components:
+            for index, total in enumerate(self.slots):
+                component_total = sum(
+                    item.slots[index].energy.p50_kwh for item in self.components
+                )
+                if abs(component_total - total.energy.p50_kwh) > 1e-9:
+                    raise ValueError("load forecast components must sum to total P50")
 
 
 @dataclass(frozen=True, slots=True)

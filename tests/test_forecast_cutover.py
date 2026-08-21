@@ -71,9 +71,7 @@ class ForecastProductionTests(unittest.TestCase):
         self.old_timezone = optimizer_engine.OPEN_METEO_TZ
         self.old_capacity_events = optimizer_engine.PV_CAPACITY_EVENTS
         optimizer_engine.OPEN_METEO_TZ = self.timezone
-        optimizer_engine.PV_CAPACITY_EVENTS = [
-            ("2000-01-01T00:00:00+00:00", 2.3, 2.0)
-        ]
+        optimizer_engine.PV_CAPACITY_EVENTS = [("2000-01-01T00:00:00+00:00", 2.3, 2.0)]
         optimizer_engine.local_dt_from_ts.cache_clear()
 
     def tearDown(self) -> None:
@@ -81,7 +79,7 @@ class ForecastProductionTests(unittest.TestCase):
         optimizer_engine.PV_CAPACITY_EVENTS = self.old_capacity_events
         optimizer_engine.local_dt_from_ts.cache_clear()
 
-    def _plan(self):
+    def _plan(self, **changes):
         return optimizer_engine.build_virtual_plan(
             self.intervals,
             self.samples,
@@ -94,6 +92,7 @@ class ForecastProductionTests(unittest.TestCase):
             now_local=self.start,
             pv_now_actual_w=600.0,
             pv_global_bias=1.0,
+            **changes,
         )
 
     def test_extracted_forecast_is_the_only_plan_input(self):
@@ -118,9 +117,17 @@ class ForecastProductionTests(unittest.TestCase):
                     + 2.0 * optimizer_engine.SLOT_H / 1000.0,
                 ),
             )
+            shifted_component = replace(
+                bundle.load.components[0],
+                slots=(shifted_first, *bundle.load.components[0].slots[1:]),
+            )
             return replace(
                 bundle,
-                load=replace(bundle.load, slots=(shifted_first, *bundle.load.slots[1:])),
+                load=replace(
+                    bundle.load,
+                    slots=(shifted_first, *bundle.load.slots[1:]),
+                    components=(shifted_component,),
+                ),
             )
 
         with patch.object(
@@ -139,6 +146,19 @@ class ForecastProductionTests(unittest.TestCase):
                 RuntimeError, "production forecast test failure"
             ):
                 self._plan()
+
+    def test_shadow_failure_does_not_change_production_plan(self):
+        baseline = self._plan()
+        with patch.object(
+            optimizer_engine,
+            "evaluate_feature_store_shadow",
+            side_effect=RuntimeError("isolated shadow failure"),
+        ):
+            shadowed = self._plan(shadow_history=(object(),))
+        self.assertEqual(baseline["points"], shadowed["points"])
+        comparison = shadowed["forecast_diagnostics"]["shadow_comparison"]
+        self.assertEqual(comparison["status"], "error")
+        self.assertIn("isolated shadow failure", comparison["reason"])
 
     def test_load_state_removes_obsolete_comparison_traces(self):
         with tempfile.TemporaryDirectory() as temp_dir:

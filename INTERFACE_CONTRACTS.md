@@ -68,6 +68,9 @@ carry `CONTRACT_SCHEMA_VERSION` and be migrated explicitly.
 are energy, including house load without EV, PV generation, EV charging, grid
 flows and battery flows. `DataQuality.coverage` records observed time coverage;
 flags explain counter resets, restart gaps, estimation or missing inputs.
+Optional named load components are measured subsets of EV-free whole-house load;
+their sum cannot exceed the total. An empty tuple means no device-level history
+was supplied, not zero device consumption.
 
 The feature store may upsert a slot after late data repair, but consumers only
 receive one version of each sorted slot key.
@@ -93,6 +96,12 @@ P50 is the required point forecast. P10 and P90 are added as a pair only after
 they can be calibrated from matured forecast residuals; missing quantiles mean
 "not calibrated", not zero uncertainty. A `ForecastBundle` is valid only when
 load and PV use the identical slot grid.
+
+`LoadForecast` may expose independently modeled components. Component keys are
+stable semantic names, all component grids match the total grid, and component
+P50 values sum exactly to total P50. The optimizer consumes only that validated
+total. PV has no dependency on load components or load context; load forecasters
+have no dependency on PV configuration, weather scaling or PV bias.
 
 Current device measurements that can explain near-term load are supplied as an
 extensible `LoadForecastContext`. Adapters map entities to stable semantic

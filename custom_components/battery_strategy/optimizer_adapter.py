@@ -6,8 +6,10 @@ import contextlib
 import datetime as dt
 import io
 import json
+import logging
 import threading
 import time
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from homeassistant.helpers import entity_registry as er
@@ -24,12 +26,15 @@ from .const import (
     CONF_PV_POWER_ENTITY,
     DOMAIN,
 )
+from .forecast_shadow_store import ForecastShadowTraceStore
 from .models import StrategyInputs, StrategyOptions
 from .plan_models import DailyCost, PlanPoint, StrategyPlan
 
 CACHE_TTL_S = 240
 SLOT_MS = 15 * 60 * 1000
 _ENGINE_RUN_LOCK = threading.Lock()
+LOGGER = logging.getLogger(__name__)
+FORECAST_SHADOW_TRACE_FILE = "battery_strategy_forecast_shadow.json.gz"
 
 
 class OptimizerEngineAdapter:
@@ -43,6 +48,12 @@ class OptimizerEngineAdapter:
         self._last_output: dict | None = None
         self._last_options: StrategyOptions | None = None
         self._timezone = dt.timezone.utc
+        self._shadow_feature_history = ()
+        self._shadow_trace_store: ForecastShadowTraceStore | None = None
+
+    def set_shadow_feature_history(self, history) -> None:
+        """Replace the immutable feature snapshot used only by shadow forecasting."""
+        self._shadow_feature_history = tuple(history)
 
     def hydrate_output(self, output: dict | None) -> None:
         """Hydrate the cache from an already loaded startup snapshot."""
@@ -102,6 +113,7 @@ class OptimizerEngineAdapter:
                 engine.main()
         raw = buf.getvalue().strip().splitlines()
         output = json.loads(raw[-1]) if raw else {}
+        self._record_shadow_comparison(output, runtime_context or {})
         self._last_output = output
         self._last_options = options
         self._last_run_ts = now
@@ -194,7 +206,35 @@ class OptimizerEngineAdapter:
             "grid_charging": options.grid_charging,
             "discharge": options.discharge,
             "planning_horizon_h": options.planning_horizon_h,
+            "shadow_feature_history": self._shadow_feature_history,
         }
+
+    def _record_shadow_comparison(self, output: dict, runtime_context: dict) -> None:
+        """Persist shadow metrics while keeping any failure outside control."""
+        comparison = output.pop("_shadow_forecast_comparison", None)
+        if not isinstance(comparison, dict):
+            return
+        try:
+            config_dir = str(runtime_context.get("config_dir") or "/config")
+            path = Path(config_dir) / FORECAST_SHADOW_TRACE_FILE
+            if (
+                self._shadow_trace_store is None
+                or self._shadow_trace_store.path != path
+            ):
+                self._shadow_trace_store = ForecastShadowTraceStore(path)
+                self._shadow_trace_store.initialize()
+            diagnostics = self._shadow_trace_store.record(
+                comparison, self._shadow_feature_history
+            )
+        except Exception as err:  # noqa: BLE001 - diagnostics cannot stop control.
+            LOGGER.warning("Forecast shadow trace failed: %s", err)
+            diagnostics = {
+                "authoritative": False,
+                "status": "trace_error",
+                "reason": f"{type(err).__name__}: {err}",
+            }
+        for key, value in diagnostics.items():
+            output[f"forecast_shadow_{key}"] = value
 
     def _power_scale(self, entity_id: str | None) -> float:
         """Return the recorder-history scale needed to normalize power to watts."""

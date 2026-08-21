@@ -4,6 +4,34 @@ All notable changes to Battery Strategy are documented here.
 
 ## Unreleased
 
+## [0.2.0-beta.19] - 2026-08-21
+
+### Added
+
+- Added Phase-3 recorder-independent forecast shadowing from finalized feature
+  slots, with readiness, load/PV parity and matured next-slot MAE diagnostics.
+- Added a bounded atomic 14-day comparison trace outside Home Assistant
+  Recorder.
+- Added optional named historical and forecast load components, initially
+  publishing `general_house_load`, so separately measured devices can be added
+  without coupling them to PV or unrelated load logic.
+
+### Changed
+
+- Split the extracted house-load and PV forecast implementations and their
+  configuration into independently owned modules while retaining numerically
+  identical production output.
+- Advanced the feature-store envelope to schema 2. Existing schema-1 files are
+  read without reset and upgraded on the next normal write.
+
+### Safety
+
+- Production forecasting remains authoritative and continues to use its
+  existing Recorder-derived history. Shadow outputs cannot reach optimization,
+  plan compilation, live control or actuation.
+- Load, PV and trace failures are isolated and cannot change the cached
+  production plan or command.
+
 ## [0.2.0-beta.18] - 2026-08-21
 
 ### Changed

@@ -20,6 +20,7 @@ from custom_components.battery_strategy.contracts import (
     ForecastSlot,
     LoadDriverSnapshot,
     LoadForecast,
+    LoadForecastComponent,
     LoadForecastContext,
     MarketSlot,
     OptimizationProblem,
@@ -124,6 +125,37 @@ class ContractTests(unittest.TestCase):
                     LoadDriverSnapshot("heat_pump", 300.0),
                     LoadDriverSnapshot("heat_pump", 400.0),
                 ),
+            )
+
+    def test_load_components_are_explicit_and_must_sum_to_total(self):
+        total = (ForecastSlot(slot(0), QuantileEnergy(0.3)),)
+        general = LoadForecastComponent(
+            "general_house_load",
+            "general-v1",
+            (ForecastSlot(slot(0), QuantileEnergy(0.2)),),
+        )
+        heat_pump = LoadForecastComponent(
+            "heat_pump",
+            "heat-pump-v1",
+            (ForecastSlot(slot(0), QuantileEnergy(0.1)),),
+        )
+        forecast = LoadForecast(
+            "load-1",
+            0,
+            0,
+            "composite-v1",
+            total,
+            (general, heat_pump),
+        )
+        self.assertEqual(len(forecast.components), 2)
+        with self.assertRaisesRegex(ValueError, "sum to total"):
+            LoadForecast(
+                "load-2",
+                0,
+                0,
+                "composite-v1",
+                total,
+                (general,),
             )
 
     def test_forecast_bundle_rejects_misaligned_load_and_pv(self):

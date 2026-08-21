@@ -132,10 +132,10 @@ That module is a migration source, not the desired permanent boundary.
 
 ## Migration plan and gates
 
-Current status: Phase 1 is complete. Phase 2 starts in release
-`0.2.0-beta.15` with a recorder-independent 15-minute feature store running as
-a non-authoritative observation path. Forecasting and control continue to use
-their existing production inputs during the observation gate.
+Current status: Phase 2 collection runs since release `0.2.0-beta.15`. Phase 3
+starts as a strictly non-authoritative shadow in `0.2.0-beta.19`; production
+forecasting and control continue to use their existing Recorder-derived inputs
+until the Phase-3 observation gate passes.
 
 ### Phase 0: Baseline and contracts
 
@@ -195,6 +195,10 @@ no effect on commands, forecasts or savings.
 - Feed the extracted forecasters from the feature store in shadow mode.
 - Compare history-derived and feature-store-derived forecasts and backtests.
 - Repair discrepancies in aggregation, restart handling and unit conversion.
+- Keep load and PV implementations, configuration and error diagnostics
+  independent. Compose total EV-free load from explicit named components so
+  separately metered devices can later evolve without changing PV or unrelated
+  base-load logic.
 
 Gate: seven to fourteen days of acceptable forecast parity and no unexplained
 energy imbalance.

@@ -37,9 +37,7 @@ def observation(timestamp_ms: int, **changes) -> FeatureObservation:
     return FeatureObservation(timestamp_ms=timestamp_ms, **values)
 
 
-def complete_slot(
-    aggregator: FeatureAggregator, **changes
-):
+def complete_slot(aggregator: FeatureAggregator, **changes):
     """Feed one slot with realistic minute-level observations."""
     aggregator.observe(observation(0, **changes))
     finalized = ()
@@ -76,6 +74,16 @@ class FeatureAggregatorTests(unittest.TestCase):
         self.assertAlmostEqual(slot.house_load_no_ev_kwh, 0.125)
         self.assertAlmostEqual(slot.battery_charge_kwh, 0.05)
         self.assertAlmostEqual(slot.grid_export_kwh, 0.025)
+
+    def test_named_load_components_are_aggregated_separately(self):
+        aggregator = FeatureAggregator()
+        slot = complete_slot(
+            aggregator,
+            load_components_w=(("heat_pump", 100.0),),
+        )
+        self.assertAlmostEqual(slot.load_components[0].energy_kwh, 0.025)
+        self.assertEqual(slot.load_components[0].component_key, "heat_pump")
+        self.assertGreater(slot.house_load_no_ev_kwh, slot.load_components[0].energy_kwh)
 
     def test_long_gap_is_not_integrated_and_is_quality_flagged(self):
         aggregator = FeatureAggregator()
@@ -150,13 +158,45 @@ class CompressedFeatureStoreTests(unittest.TestCase):
 
             self.assertEqual(store.load(0, 3 * 86_400_000), (second,))
             envelope = json.loads(gzip.decompress(path.read_bytes()))
-            self.assertEqual(envelope["schema_version"], 1)
+            self.assertEqual(envelope["schema_version"], 2)
             self.assertEqual(len(envelope["slots"]), 1)
 
             reloaded = CompressedFeatureStore(path, retention_days=1)
             reloaded.initialize()
             self.assertEqual(reloaded.load(0, 3 * 86_400_000), (second,))
             self.assertFalse(reloaded.diagnostics()["authoritative"])
+
+    def test_version_one_store_is_read_and_upgraded_on_next_write(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "features.json.gz"
+            payload = {
+                "schema_version": 1,
+                "retention_days": 180,
+                "slots": [
+                    {
+                        "start_ms": 0,
+                        "house_load_no_ev_kwh": 0.1,
+                        "pv_generation_kwh": 0.0,
+                        "grid_import_kwh": 0.1,
+                        "grid_export_kwh": 0.0,
+                        "battery_charge_kwh": 0.0,
+                        "battery_discharge_kwh": 0.0,
+                        "ev_charge_kwh": 0.0,
+                        "price_ct_per_kwh": 30.0,
+                        "coverage": 1.0,
+                        "flags": [],
+                    }
+                ],
+            }
+            path.write_bytes(gzip.compress(json.dumps(payload).encode()))
+            store = CompressedFeatureStore(path)
+            store.initialize()
+            loaded = store.load(0, SLOT_MS)
+            self.assertEqual(len(loaded), 1)
+            self.assertEqual(loaded[0].load_components, ())
+            store.upsert(loaded)
+            upgraded = json.loads(gzip.decompress(path.read_bytes()))
+            self.assertEqual(upgraded["schema_version"], 2)
 
 
 class FeatureCoordinatorAdapterTests(unittest.TestCase):

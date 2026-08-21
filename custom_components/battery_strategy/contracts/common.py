@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 SLOT_MS = 15 * 60 * 1000
-CONTRACT_SCHEMA_VERSION = 1
+CONTRACT_SCHEMA_VERSION = 2
 
 
 class QualityFlag(StrEnum):
