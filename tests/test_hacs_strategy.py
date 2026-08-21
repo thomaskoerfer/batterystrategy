@@ -658,6 +658,7 @@ class HacsStrategyTests(unittest.TestCase):
                     charge_fc_w=0,
                     discharge_fc_w=600,
                     soc_pct=46.0,
+                    discharge_budget_kwh=0.3,
                 ),
             ],
             current_mode=COMMAND_INPUT,
@@ -670,8 +671,8 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertEqual(
             attrs["rows"],
             [
-                [1_800_000_000, 31.23, 0.0, 0.3, 0.225, 0.075, 0.075, 42.3],
-                [1_800_000_900, 40.0, 0.15, 0.0, 0.0, 0.0, -0.05, 46.0],
+                [1_800_000_000, 31.23, -0.225, 0.0, 0.0, 0.3, 0.225, 0.075, 42.3],
+                [1_800_000_900, 40.0, 0.2, 0.3, 0.15, 0.0, 0.0, 0.0, 46.0],
             ],
         )
         self.assertEqual(
@@ -679,11 +680,12 @@ class HacsStrategyTests(unittest.TestCase):
             [
                 "slot_start",
                 "price_ct_per_kwh",
+                "planned_grid_net_before_battery_no_ev_kwh",
+                "discharge_budget_kwh",
                 "planned_discharge_kwh",
                 "planned_charge_kwh",
                 "planned_pv_charge_kwh",
                 "planned_grid_charge_kwh",
-                "planned_grid_net_no_ev_kwh",
                 "planned_soc_pct",
             ],
         )
@@ -2246,8 +2248,9 @@ class HacsStrategyTests(unittest.TestCase):
             plan_table["cards"][0]["content"],
         )
         self.assertIn(
-            "Netz netto ohne EV (kWh)", plan_table["cards"][0]["content"]
+            "Netz vor Batterie ohne EV (kWh)", plan_table["cards"][0]["content"]
         )
+        self.assertIn("Entladebudget (kWh)", plan_table["cards"][0]["content"])
         self.assertNotIn("Entladung (W)", plan_table["cards"][0]["content"])
 
     def test_live_discharge_budget_uses_current_soc_instead_of_stale_plan_soc(self):

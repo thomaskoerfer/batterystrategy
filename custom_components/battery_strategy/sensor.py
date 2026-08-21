@@ -403,11 +403,14 @@ def _plan_slot_attrs(data):
             [
                 int(point.ts_ms // 1000),
                 round(float(point.price_ct), 2),
+                _slot_energy_kwh(
+                    float(point.load_fc_w) - float(point.pv_fc_w), signed=True
+                ),
+                round(max(0.0, float(point.discharge_budget_kwh)), 3),
                 _slot_energy_kwh(point.discharge_fc_w),
                 _slot_energy_kwh(charge_w),
                 _slot_energy_kwh(pv_charge_w),
                 _slot_energy_kwh(grid_charge_w),
-                _slot_energy_kwh(point.grid_net_fc_w, signed=True),
                 round(float(point.soc_pct), 1),
             ]
         )
@@ -415,11 +418,12 @@ def _plan_slot_attrs(data):
         "columns": [
             "slot_start",
             "price_ct_per_kwh",
+            "planned_grid_net_before_battery_no_ev_kwh",
+            "discharge_budget_kwh",
             "planned_discharge_kwh",
             "planned_charge_kwh",
             "planned_pv_charge_kwh",
             "planned_grid_charge_kwh",
-            "planned_grid_net_no_ev_kwh",
             "planned_soc_pct",
         ],
         "rows": rows,

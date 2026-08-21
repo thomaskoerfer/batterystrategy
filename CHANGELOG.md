@@ -4,6 +4,15 @@ All notable changes to Battery Strategy are documented here.
 
 ## Unreleased
 
+## [0.2.0-beta.18] - 2026-08-21
+
+### Changed
+
+- Moved planned grid energy to the front of the future-slot table and changed
+  it to EV-free net load before battery action.
+- Added the commercial discharge budget before planned discharge so permission
+  and expected execution can be compared directly.
+
 ## [0.2.0-beta.17] - 2026-08-21
 
 ### Changed
