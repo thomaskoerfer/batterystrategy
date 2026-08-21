@@ -652,7 +652,7 @@ class HacsStrategyTests(unittest.TestCase):
                     pv_fc_w=0,
                     grid_import_fc_w=200,
                     grid_export_fc_w=0,
-                    grid_net_fc_w=200,
+                    grid_net_fc_w=-200,
                     mode=COMMAND_OUTPUT,
                     power_w=600,
                     charge_fc_w=0,
@@ -670,8 +670,21 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertEqual(
             attrs["rows"],
             [
-                [1_800_000_000, 31.23, 0, 1200, 900, 300, 42.3],
-                [1_800_000_900, 40.0, 600, 0, 0, 0, 46.0],
+                [1_800_000_000, 31.23, 0.0, 0.3, 0.225, 0.075, 0.075, 42.3],
+                [1_800_000_900, 40.0, 0.15, 0.0, 0.0, 0.0, -0.05, 46.0],
+            ],
+        )
+        self.assertEqual(
+            attrs["columns"],
+            [
+                "slot_start",
+                "price_ct_per_kwh",
+                "planned_discharge_kwh",
+                "planned_charge_kwh",
+                "planned_pv_charge_kwh",
+                "planned_grid_charge_kwh",
+                "planned_grid_net_no_ev_kwh",
+                "planned_soc_pct",
             ],
         )
 
@@ -2232,6 +2245,10 @@ class HacsStrategyTests(unittest.TestCase):
             "sensor.battery_strategy_plan_slots",
             plan_table["cards"][0]["content"],
         )
+        self.assertIn(
+            "Netz netto ohne EV (kWh)", plan_table["cards"][0]["content"]
+        )
+        self.assertNotIn("Entladung (W)", plan_table["cards"][0]["content"])
 
     def test_live_discharge_budget_uses_current_soc_instead_of_stale_plan_soc(self):
         now = dt.datetime(2026, 7, 21, 20, tzinfo=dt.timezone.utc)

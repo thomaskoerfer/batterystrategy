@@ -360,7 +360,7 @@
         {
           "type": "markdown",
           "title": "K\u00fcnftige 15-Minuten-Slots",
-          "content": "{% set rows = state_attr('sensor.battery_strategy_plan_slots', 'rows') or [] %}\n{% if rows %}\n| Slot | Preis (ct/kWh) | Entladung (W) | Ladung (W) | davon PV (W) | davon Netz (W) | SoC (%) |\n|:--|--:|--:|--:|--:|--:|--:|\n{% for row in rows -%}\n| {{ row[0] | timestamp_custom('%d.%m. %H:%M', true) }} | {{ row[1] }} | {{ row[2] }} | {{ row[3] }} | {{ row[4] }} | {{ row[5] }} | {{ row[6] }} |\n{% endfor %}\n{% else %}\nNoch kein Planungshorizont verf\u00fcgbar.\n{% endif %}"
+          "content": "{% set rows = state_attr('sensor.battery_strategy_plan_slots', 'rows') or [] %}\n{% if rows %}\n| Slot | Preis (ct/kWh) | Entladung (kWh) | Ladung (kWh) | davon PV (kWh) | davon Netzladung (kWh) | Netz netto ohne EV (kWh) | SoC Plan (%) |\n|:--|--:|--:|--:|--:|--:|--:|--:|\n{% for row in rows -%}\n| {{ row[0] | timestamp_custom('%d.%m. %H:%M', true) }} | {{ row[1] }} | {{ row[2] }} | {{ row[3] }} | {{ row[4] }} | {{ row[5] }} | {{ row[6] }} | {{ row[7] }} |\n{% endfor %}\n{% else %}\nNoch kein Planungshorizont verf\u00fcgbar.\n{% endif %}"
         }
       ],
       "icon": "mdi:table-clock",

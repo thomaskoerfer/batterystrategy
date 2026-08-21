@@ -4,6 +4,15 @@ All notable changes to Battery Strategy are documented here.
 
 ## Unreleased
 
+## [0.2.0-beta.17] - 2026-08-21
+
+### Changed
+
+- Changed all planned battery-flow columns in the future-slot table from watts
+  to slot energy in kWh.
+- Added planned net grid energy without EV, using positive values for import
+  and negative values for export.
+
 ## [0.2.0-beta.16] - 2026-08-20
 
 ### Added

@@ -395,18 +395,19 @@ def _plan_slot_attrs(data):
     """Return a compact, presentation-only view of future optimizer slots."""
     rows = []
     for point in _plan(data).points:
-        charge_w = max(0, int(round(float(point.charge_fc_w))))
-        pv_surplus_w = max(0, int(round(float(point.pv_fc_w) - float(point.load_fc_w))))
+        charge_w = max(0.0, float(point.charge_fc_w))
+        pv_surplus_w = max(0.0, float(point.pv_fc_w) - float(point.load_fc_w))
         pv_charge_w = min(charge_w, pv_surplus_w)
-        grid_charge_w = max(0, charge_w - pv_charge_w)
+        grid_charge_w = max(0.0, charge_w - pv_charge_w)
         rows.append(
             [
                 int(point.ts_ms // 1000),
                 round(float(point.price_ct), 2),
-                max(0, int(round(float(point.discharge_fc_w)))),
-                charge_w,
-                pv_charge_w,
-                grid_charge_w,
+                _slot_energy_kwh(point.discharge_fc_w),
+                _slot_energy_kwh(charge_w),
+                _slot_energy_kwh(pv_charge_w),
+                _slot_energy_kwh(grid_charge_w),
+                _slot_energy_kwh(point.grid_net_fc_w, signed=True),
                 round(float(point.soc_pct), 1),
             ]
         )
@@ -414,14 +415,21 @@ def _plan_slot_attrs(data):
         "columns": [
             "slot_start",
             "price_ct_per_kwh",
-            "planned_discharge_w",
-            "planned_charge_w",
-            "planned_pv_charge_w",
-            "planned_grid_charge_w",
+            "planned_discharge_kwh",
+            "planned_charge_kwh",
+            "planned_pv_charge_kwh",
+            "planned_grid_charge_kwh",
+            "planned_grid_net_no_ev_kwh",
             "planned_soc_pct",
         ],
         "rows": rows,
     }
+
+
+def _slot_energy_kwh(power_w, *, signed=False):
+    """Convert a slot-average power to energy for one 15-minute slot."""
+    value = float(power_w) * 0.25 / 1000.0
+    return round(value if signed else max(0.0, value), 3)
 
 
 def _profile_attrs(data, date):
