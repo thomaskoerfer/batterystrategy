@@ -4,6 +4,33 @@ All notable changes to Battery Strategy are documented here.
 
 ## Unreleased
 
+## [0.2.0-beta.20] - 2026-08-22
+
+### Added
+
+- Added configurable, weather-aware shadow load components for DHW, space
+  heating, shared-meter air conditioning and generic metered loads.
+- Advanced the feature store to schema 3 with component features, migrations,
+  backups and a tested schema-2 downgrade.
+
+### Fixed
+
+- Removed the rank-based fictional credit that could make cheap grid charging
+  appear less expensive than its real tariff.
+- Included round-trip loss and minimum margin before future grid charging may
+  release current battery inventory for earlier household load.
+- Kept historical battery acquisition cost as savings accounting instead of
+  allowing it to lower the forward-looking optimizer discharge floor.
+- Included configured export revenue in baseline and optimized plan costs.
+
+### Safety
+
+- The economic correction is confined to optimization and can only reduce
+  low-value discharge plans and budgets. Plan compilation, live meter following,
+  EV/PV policy, slot budget consumption and actuation are unchanged.
+- Weather-aware component forecasting remains Phase-3 shadow-only and cannot
+  reach optimization or battery commands.
+
 ## [0.2.0-beta.19] - 2026-08-21
 
 ### Added

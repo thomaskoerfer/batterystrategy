@@ -165,7 +165,13 @@ does not query configuration behind the contract. Planned discharge is expected
 execution and must be contained by that permission; a budget may be larger to
 cover unexpected live household load. Future recharge reduces inventory
 reserved for later higher-value load only by its expected deliverable energy;
-the presence of a charge slot alone never resets scarcity.
+the presence of a charge slot alone never resets scarcity. Grid recharge can
+release current inventory only when current avoided import covers replacement
+input cost, round-trip loss and minimum margin. Historical inventory acquisition
+cost is accounting metadata, not a forward-looking opportunity value.
+The economic objective contains real import cost, foregone export revenue and
+explicit policy margin only. Price ranks and planning heuristics must never
+enter it as fictional monetary credits.
 PV-recovery discharge permission requires a physical storage-headroom shortage:
 confidence-weighted future PV surplus must exceed remaining battery headroom and
 the uncertainty reserve. Forecast grid export is diagnostic optimizer output;

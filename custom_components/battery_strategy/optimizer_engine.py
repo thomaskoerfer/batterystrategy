@@ -96,8 +96,6 @@ EEX_CACHE_TTL_S = 6 * 3600
 OPEN_METEO_TZ = ZoneInfo("Europe/Berlin")
 TERMINAL_RANK_THRESHOLD = 0.35
 TERMINAL_VALUE_CAP_CT = 25.0
-CHEAP_CHARGE_RANK_THRESHOLD = 0.35
-CHEAP_CHARGE_BONUS_CAP_CT = 12.0
 MICROCYCLE_LOOKBACK_SLOTS = 8
 CHARGE_DEFERRAL_MARGIN_CT = 0.5
 PV_RECOVERY_LOOKAHEAD_H = 18.0
@@ -1485,13 +1483,27 @@ def _future_higher_value_load_reserve_kwh(
     current_idx,
     *,
     pv_recovery_confidence=PV_RECOVERY_CONFIDENCE,
+    eta_rt=None,
+    min_margin_ct=None,
+    pv_export_opportunity_ct=None,
 ):
     """Return later high-value load not covered by planned recharge.
 
     A future charge is replacement energy, not a binary reset of inventory
-    scarcity. Grid charge is treated as firm; forecast PV charge receives the
-    same confidence discount as the existing PV-recovery budget.
+    scarcity. Replacement is credited only when using it after discharging in
+    the current slot is economic after round-trip losses and minimum margin.
+    Forecast PV charge receives the same confidence discount as the existing
+    PV-recovery budget.
     """
+    eta_rt = ETA_RT if eta_rt is None else max(1e-9, float(eta_rt))
+    min_margin_ct = (
+        MIN_MARGIN_CT if min_margin_ct is None else max(0.0, float(min_margin_ct))
+    )
+    pv_export_opportunity_ct = (
+        PV_EXPORT_OPPORTUNITY_CT
+        if pv_export_opportunity_ct is None
+        else max(0.0, float(pv_export_opportunity_ct))
+    )
     current_price_ct = float(slots[current_idx]["price_ct"])
     replacement_ac_kwh = 0.0
     reserved_kwh = 0.0
@@ -1503,9 +1515,23 @@ def _future_higher_value_load_reserve_kwh(
         surplus_kwh = max(0.0, float(slots[future_idx].get("surplus_kwh", 0.0)))
         pv_charge_kwh = min(charge_kwh, surplus_kwh)
         grid_charge_kwh = max(0.0, charge_kwh - pv_charge_kwh)
-        replacement_ac_kwh += (
-            grid_charge_kwh + pv_charge_kwh * pv_recovery_confidence
-        ) * ETA_RT
+        future_price_ct = float(slots[future_idx]["price_ct"])
+        if _replacement_is_economic_for_current_discharge(
+            current_price_ct,
+            future_price_ct,
+            eta_rt=eta_rt,
+            min_margin_ct=min_margin_ct,
+        ):
+            replacement_ac_kwh += grid_charge_kwh * eta_rt
+        if _replacement_is_economic_for_current_discharge(
+            current_price_ct,
+            pv_export_opportunity_ct,
+            eta_rt=eta_rt,
+            min_margin_ct=min_margin_ct,
+        ):
+            replacement_ac_kwh += (
+                pv_charge_kwh * max(0.0, float(pv_recovery_confidence)) * eta_rt
+            )
 
         if float(slots[future_idx]["price_ct"]) <= current_price_ct + 1e-9:
             continue
@@ -1522,6 +1548,49 @@ def _future_higher_value_load_reserve_kwh(
         replacement_ac_kwh -= replacement_used_kwh
         reserved_kwh += future_load_kwh - replacement_used_kwh
     return reserved_kwh
+
+
+def _replacement_is_economic_for_current_discharge(
+    current_price_ct,
+    replacement_input_price_ct,
+    *,
+    eta_rt=None,
+    min_margin_ct=None,
+):
+    """Return whether later input can economically replace current AC output."""
+    eta_rt = ETA_RT if eta_rt is None else max(1e-9, float(eta_rt))
+    min_margin_ct = (
+        MIN_MARGIN_CT if min_margin_ct is None else max(0.0, float(min_margin_ct))
+    )
+    replacement_break_even_ct = (
+        max(0.0, float(replacement_input_price_ct)) / eta_rt
+    ) + min_margin_ct
+    return float(current_price_ct) + 1e-9 >= replacement_break_even_ct
+
+
+def _economic_step_cost_eur(
+    *,
+    grid_import_kwh,
+    grid_export_kwh,
+    discharge_out_kwh,
+    import_price_ct,
+    export_price_ct=None,
+    min_margin_ct=None,
+):
+    """Return one slot's real energy cost plus the discharge policy margin."""
+    export_price_ct = (
+        PV_EXPORT_OPPORTUNITY_CT
+        if export_price_ct is None
+        else max(0.0, float(export_price_ct))
+    )
+    min_margin_ct = (
+        MIN_MARGIN_CT if min_margin_ct is None else max(0.0, float(min_margin_ct))
+    )
+    return (
+        max(0.0, float(grid_import_kwh)) * float(import_price_ct)
+        - max(0.0, float(grid_export_kwh)) * export_price_ct
+        + max(0.0, float(discharge_out_kwh)) * min_margin_ct
+    ) / 100.0
 
 
 def _pv_spill_recovery_budget_ac_kwh(
@@ -1552,7 +1621,7 @@ def _pv_spill_recovery_budget_ac_kwh(
     return threatened_storage_kwh * ETA_D
 
 
-def build_virtual_plan(intervals, samples, start_energy_kwh, weather_factor, forecast_tomorrow_kwh, load_bias, load_bias_slots, pv_bias_slots, initial_mode=0, weather_hourly=None, pv_now_actual_w=None, now_local=None, pv_global_bias=1.0, eex_days=None, inventory_discharge_floor_ct=None):
+def build_virtual_plan(intervals, samples, start_energy_kwh, weather_factor, forecast_tomorrow_kwh, load_bias, load_bias_slots, pv_bias_slots, initial_mode=0, weather_hourly=None, pv_now_actual_w=None, now_local=None, pv_global_bias=1.0, eex_days=None):
     if not intervals:
         return {"points": [], "today": {}, "tomorrow": {}, "end_soc": 50.0, "price_stats": {}, "daily_costs": {}}
 
@@ -1624,7 +1693,10 @@ def build_virtual_plan(intervals, samples, start_energy_kwh, weather_factor, for
             }
         )
         daily.setdefault(d, {"base": 0.0, "with_bat": 0.0})
-        daily[d]["base"] += net_pos_kwh * price_eur
+        daily[d]["base"] += (
+            net_pos_kwh * price_eur
+            - surplus_kwh * (PV_EXPORT_OPPORTUNITY_CT / 100.0)
+        )
 
     tomorrow_date = intervals[0]["dt"].date() + dt.timedelta(days=1)
     tomorrow_prices = [float(s["price_ct"]) for s in slots if s["date"] == tomorrow]
@@ -1679,11 +1751,6 @@ def build_virtual_plan(intervals, samples, start_energy_kwh, weather_factor, for
                 if cheap_anchor_ct is None or horizon_min_ct < cheap_anchor_ct:
                     cheap_anchor_ct = horizon_min_ct
                     cheap_anchor_rank = horizon_min_rank
-    if inventory_discharge_floor_ct is not None:
-        # Existing inventory has its own cost basis. A future cheap recharge floor
-        # must not block discharging already cheap stored energy in higher-price slots.
-        discharge_floor_ct = min(float(inventory_discharge_floor_ct), float(discharge_floor_ct or inventory_discharge_floor_ct))
-
     for sl in slots:
         # The automatic strategy only values serving forecast household load.
         # Battery discharge must not create forecast export unless explicit
@@ -1724,7 +1791,6 @@ def build_virtual_plan(intervals, samples, start_energy_kwh, weather_factor, for
 
     def transition_candidate(t, e_now, prev_mode, e_next):
         sl = slots[t]
-        price = sl["price_eur"]
         price_ct = sl["price_ct"]
         net_pos = sl["net_pos_kwh"]
         surplus = sl["surplus_kwh"]
@@ -1750,9 +1816,12 @@ def build_virtual_plan(intervals, samples, start_energy_kwh, weather_factor, for
                 return None
             if discharge_out > MAX_DISCHARGE_E_SLOT_KWH + 1e-9:
                 return None
+            # Keep the conservative replacement-cost floor as a feasibility
+            # guard. The monetary objective below independently prices RTE and
+            # minimum margin; this guard prevents horizon-value heuristics from
+            # exposing inventory below its cheapest credible replacement cost.
             if discharge_floor_ct is not None and price_ct < discharge_floor_ct:
                 return None
-
         mode_now = 0
         if charge_in > 1e-4:
             mode_now = 1
@@ -1788,13 +1857,16 @@ def build_virtual_plan(intervals, samples, start_energy_kwh, weather_factor, for
                 if later_cheaper_charge_capacity_kwh >= (additional_profitable_charge_in_kwh - 1e-6):
                     return None
         grid_import = max(0.0, net_pos - min(discharge_out, net_pos)) + charge_from_grid
-        cheap_charge_credit = 0.0
-        weekday_rank = sl.get("weekday_rank")
-        if charge_from_grid > 1e-9 and weekday_rank is not None and weekday_rank <= CHEAP_CHARGE_RANK_THRESHOLD:
-            cheapness = clamp((CHEAP_CHARGE_RANK_THRESHOLD - weekday_rank) / CHEAP_CHARGE_RANK_THRESHOLD, 0.0, 1.0)
-            bonus_ct = clamp((p_high - price_ct) * (0.5 + cheapness), 0.0, CHEAP_CHARGE_BONUS_CAP_CT)
-            cheap_charge_credit = charge_from_grid * (bonus_ct / 100.0)
-        step_cost = (grid_import * price) + switch_cost - cheap_charge_credit
+        grid_export = max(0.0, surplus - charge_in) + max(
+            0.0, discharge_out - net_pos
+        )
+        step_cost = _economic_step_cost_eur(
+            grid_import_kwh=grid_import,
+            grid_export_kwh=grid_export,
+            discharge_out_kwh=discharge_out,
+            import_price_ct=price_ct,
+        )
+        step_cost += switch_cost
         return step_cost, charge_in, discharge_out, grid_import, mode_now
 
     for t in range(n_slots):
@@ -1985,7 +2057,13 @@ def build_virtual_plan(intervals, samples, start_energy_kwh, weather_factor, for
         d = p.get("date")
         daily_with_bat.setdefault(d, 0.0)
         grid_import_kwh = max(0.0, float(p.get("grid_import_fc_w", 0.0)) / 1000.0 * SLOT_H)
-        daily_with_bat[d] += grid_import_kwh * (float(p.get("price_ct", 0.0)) / 100.0)
+        grid_export_kwh = max(
+            0.0, float(p.get("grid_export_fc_w", 0.0)) / 1000.0 * SLOT_H
+        )
+        daily_with_bat[d] += (
+            grid_import_kwh * (float(p.get("price_ct", 0.0)) / 100.0)
+            - grid_export_kwh * (PV_EXPORT_OPPORTUNITY_CT / 100.0)
+        )
 
     daily_costs = {}
     for d, vals in daily.items():
@@ -2849,7 +2927,7 @@ def main():
         initial_plan_mode = mode_to_plan_seed(data.get("virtual_last_mode"))
 
     load_bias_plan = clamp(float(data.get("load_bias", load_bias)), 0.6, 1.6)
-    inventory_discharge_floor_ct = None
+    inventory_accounting_floor_ct = None
     if actual_inventory_cost_ct_per_kwh is None:
         actual_today_charge_in_kwh = float(actual_today_stats.get("charge_grid_kwh", 0.0)) + float(actual_today_stats.get("charge_pv_kwh", 0.0))
         actual_today_charge_cost_eur = float(actual_today_stats.get("charge_cost_eur", 0.0))
@@ -2858,7 +2936,7 @@ def main():
                 actual_today_charge_cost_eur / max(1e-9, actual_today_charge_in_kwh * ETA_RT)
             ) * 100.0
     if actual_inventory_cost_ct_per_kwh is not None:
-        inventory_discharge_floor_ct = actual_inventory_cost_ct_per_kwh + MIN_MARGIN_CT
+        inventory_accounting_floor_ct = actual_inventory_cost_ct_per_kwh + MIN_MARGIN_CT
     plan = build_virtual_plan(
         intervals,
         data["samples"],
@@ -2874,7 +2952,6 @@ def main():
         now_local=local_now,
         pv_global_bias=pv_bias,
         eex_days=eex_days,
-        inventory_discharge_floor_ct=inventory_discharge_floor_ct,
     )
     forecast_diagnostics = plan.get("forecast_diagnostics", {})
     future_points = plan["points"]
@@ -3082,7 +3159,7 @@ def main():
         "actual_savings_lifetime_eur": actual_savings_lifetime_eur,
         "actual_inventory_deliverable_kwh": actual_inventory_deliverable_kwh,
         "actual_inventory_cost_ct_per_kwh": actual_inventory_cost_ct_per_kwh,
-        "inventory_discharge_floor_ct": round(inventory_discharge_floor_ct, 3) if inventory_discharge_floor_ct is not None else None,
+        "inventory_accounting_floor_ct": round(inventory_accounting_floor_ct, 3) if inventory_accounting_floor_ct is not None else None,
         "actual_battery_charge_grid_today_kwh": float(actual_daily_savings.get(today, {}).get("charge_grid_kwh", 0.0)),
         "actual_battery_charge_pv_today_kwh": float(actual_daily_savings.get(today, {}).get("charge_pv_kwh", 0.0)),
         "actual_battery_discharge_credited_today_kwh": float(actual_daily_savings.get(today, {}).get("discharge_used_kwh", 0.0)),
