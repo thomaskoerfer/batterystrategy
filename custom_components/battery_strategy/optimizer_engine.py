@@ -1109,6 +1109,9 @@ def merge_actual_and_future_profile(actual_points, future_points, date_str, now_
         "soc": [[p["ts_ms"], p["soc_pct"]] for p in merged if "soc_pct" in p],
         "power": [[p["ts_ms"], p["power_w"]] for p in merged if "power_w" in p],
         "charge_power": [[p["ts_ms"], p["charge_fc_w"]] for p in merged if "charge_fc_w" in p],
+        "pv_charge_power": [[p["ts_ms"], p.get("pv_charge_fc_w", 0.0)] for p in merged],
+        "grid_charge_power": [[p["ts_ms"], p.get("grid_charge_fc_w", 0.0)] for p in merged],
+        "required_charge_power": [[p["ts_ms"], p.get("required_charge_fc_w", 0.0)] for p in merged],
         "discharge_power": [[p["ts_ms"], p["discharge_fc_w"]] for p in merged if "discharge_fc_w" in p],
         "discharge_budget_kwh": [[p["ts_ms"], p.get("discharge_budget_kwh", 0.0)] for p in merged],
     }
@@ -1620,6 +1623,11 @@ def _economic_path_is_better(
     )
 
 
+def _minimum_grid_charge_commitment_kwh():
+    """Return one complete AC-side optimizer energy quantum."""
+    return ENERGY_STEP_KWH / ETA_C
+
+
 def _pv_spill_recovery_budget_ac_kwh(
     future_surplus_kwh,
     baseline_energy_kwh,
@@ -1961,7 +1969,15 @@ def build_virtual_plan(intervals, samples, start_energy_kwh, weather_factor, for
                         dp_grid_charge_time_score[t + 1][j][mode_now_idx] = (
                             cand_grid_charge_time_score
                         )
-                        prev[t + 1][j][mode_now_idx] = (i, prev_mode_idx, charge_in, discharge_out, grid_import, mode_now)
+                        prev[t + 1][j][mode_now_idx] = (
+                            i,
+                            prev_mode_idx,
+                            charge_in,
+                            discharge_out,
+                            grid_import,
+                            charge_from_grid,
+                            mode_now,
+                        )
 
     def terminal_adjusted_cost(i, mi):
         end_energy_above_min = max(0.0, energies[i] - MIN_E_KWH)
@@ -2003,8 +2019,24 @@ def build_virtual_plan(intervals, samples, start_energy_kwh, weather_factor, for
     for t in range(n_slots, 0, -1):
         rec = prev[t][cur][cur_mode_idx]
         if rec is None:
-            rec = (cur, mode_to_idx[0], 0.0, 0.0, slots[t - 1]["net_pos_kwh"], 0)
-        prev_idx, prev_mode_idx, charge_in, discharge_out, grid_import, mode_now = rec
+            rec = (
+                cur,
+                mode_to_idx[0],
+                0.0,
+                0.0,
+                slots[t - 1]["net_pos_kwh"],
+                0.0,
+                0,
+            )
+        (
+            prev_idx,
+            prev_mode_idx,
+            charge_in,
+            discharge_out,
+            grid_import,
+            charge_from_grid,
+            mode_now,
+        ) = rec
         sl = slots[t - 1]
         idx = t - 1
         path_before_idx[idx] = prev_idx
@@ -2026,6 +2058,18 @@ def build_virtual_plan(intervals, samples, start_energy_kwh, weather_factor, for
             "soc_pct": round((energies[prev_idx] / CAP_KWH) * 100.0, 2),
             "power_w": round(p_bat_w, 1),
             "charge_fc_w": round(max(0.0, p_bat_w), 1),
+            "pv_charge_fc_w": round(
+                (max(0.0, charge_in - charge_from_grid) / SLOT_H) * 1000.0,
+                1,
+            ),
+            "grid_charge_fc_w": round(
+                (max(0.0, charge_from_grid) / SLOT_H) * 1000.0,
+                1,
+            ),
+            "required_charge_fc_w": round(
+                (charge_in / SLOT_H) * 1000.0 if charge_from_grid > 1e-9 else 0.0,
+                1,
+            ),
             "discharge_fc_w": round(max(0.0, -p_bat_w), 1),
             "mode": mode,
             "load_fc_w": round((sl["load_kwh"] / SLOT_H) * 1000.0, 1),
@@ -2039,6 +2083,7 @@ def build_virtual_plan(intervals, samples, start_energy_kwh, weather_factor, for
         cur_mode_idx = prev_mode_idx
 
     points = suppress_uneconomic_micro_cycles(points, start_energy_kwh)
+    points = defer_subquantum_grid_remainders(points, start_energy_kwh)
 
     recovery_lookahead_slots = max(1, int(round(PV_RECOVERY_LOOKAHEAD_H / SLOT_H)))
     def recovery_window_end_idx(t):
@@ -2305,6 +2350,21 @@ def suppress_uneconomic_micro_cycles(points, start_energy_kwh):
 
         p["power_w"] = round(p_bat_w, 1)
         p["charge_fc_w"] = round(max(0.0, p_bat_w), 1)
+        grid_charge_in = max(0.0, charge_in - surplus_kwh)
+        p["pv_charge_fc_w"] = round(
+            (max(0.0, charge_in - grid_charge_in) / SLOT_H) * 1000.0,
+            1,
+        )
+        p["grid_charge_fc_w"] = round(
+            (grid_charge_in / SLOT_H) * 1000.0,
+            1,
+        )
+        p["required_charge_fc_w"] = round(
+            (charge_in / SLOT_H) * 1000.0
+            if grid_charge_in > 1e-9
+            else 0.0,
+            1,
+        )
         p["discharge_fc_w"] = round(max(0.0, -p_bat_w), 1)
         p["mode"] = "charge" if p_bat_w > 1e-3 else ("discharge" if p_bat_w < -1e-3 else "idle")
         p["grid_import_fc_w"] = round((grid_import / SLOT_H) * 1000.0, 1)
@@ -2314,6 +2374,93 @@ def suppress_uneconomic_micro_cycles(points, start_energy_kwh):
         energy = clamp(energy + charge_in * ETA_C - (discharge_out / ETA_D), MIN_E_KWH, MAX_E_KWH)
 
     return points
+
+
+def defer_subquantum_grid_remainders(points, start_energy_kwh):
+    """Move PV lattice remainders into existing cheaper grid commitments."""
+    if not points or not GRID_CHARGING_ENABLED:
+        return points
+
+    grid_quantum_kwh = _minimum_grid_charge_commitment_kwh()
+
+    def charge_kwh(point):
+        return max(0.0, float(point.get("charge_fc_w", 0.0))) * SLOT_H / 1000.0
+
+    def surplus_kwh(point):
+        load = max(0.0, float(point.get("load_fc_w", 0.0))) * SLOT_H / 1000.0
+        pv = max(0.0, float(point.get("pv_fc_w", 0.0))) * SLOT_H / 1000.0
+        return max(0.0, pv - load)
+
+    def grid_charge_kwh(point):
+        return max(0.0, charge_kwh(point) - surplus_kwh(point))
+
+    for source_idx, source in enumerate(points):
+        source_charge_kwh = charge_kwh(source)
+        source_surplus_kwh = surplus_kwh(source)
+        source_grid_kwh = max(0.0, source_charge_kwh - source_surplus_kwh)
+        if (
+            source_surplus_kwh <= 1e-9
+            or source_grid_kwh <= 1e-9
+            or source_grid_kwh >= (grid_quantum_kwh - 1e-9)
+        ):
+            continue
+
+        deadline_idx = next(
+            (
+                idx
+                for idx in range(source_idx + 1, len(points))
+                if float(points[idx].get("discharge_fc_w", 0.0)) > 1e-6
+            ),
+            len(points),
+        )
+        candidates = []
+        for target_idx in range(source_idx + 1, deadline_idx):
+            target = points[target_idx]
+            target_grid_kwh = grid_charge_kwh(target)
+            if target_grid_kwh < (grid_quantum_kwh - 1e-9):
+                continue
+            if float(target.get("price_ct", 0.0)) >= (
+                float(source.get("price_ct", 0.0)) - 1e-9
+            ):
+                continue
+            capacity_kwh = max(0.0, MAX_CHARGE_E_SLOT_KWH - charge_kwh(target))
+            if capacity_kwh > 1e-9:
+                candidates.append(
+                    (
+                        float(target.get("price_ct", 0.0)),
+                        -target_idx,
+                        target_idx,
+                        capacity_kwh,
+                    )
+                )
+
+        if sum(item[3] for item in candidates) + 1e-9 < source_grid_kwh:
+            continue
+
+        source["charge_fc_w"] = round(
+            (source_surplus_kwh / SLOT_H) * 1000.0,
+            1,
+        )
+        source["power_w"] = source["charge_fc_w"]
+        remaining_kwh = source_grid_kwh
+        for _price, _late_order, target_idx, capacity_kwh in sorted(candidates):
+            moved_kwh = min(remaining_kwh, capacity_kwh)
+            if moved_kwh <= 1e-9:
+                continue
+            target = points[target_idx]
+            target["charge_fc_w"] = round(
+                float(target.get("charge_fc_w", 0.0))
+                + (moved_kwh / SLOT_H) * 1000.0,
+                1,
+            )
+            target["power_w"] = target["charge_fc_w"]
+            target["mode"] = "charge"
+            remaining_kwh -= moved_kwh
+            if remaining_kwh <= 1e-9:
+                break
+
+    # Rebuild SoC and every published flow from the final canonical actions.
+    return suppress_uneconomic_micro_cycles(points, start_energy_kwh)
 
 
 def build_anchored_hourly_series(hourly_points, key, now_ts_ms, anchor_w=None):
@@ -2438,6 +2585,9 @@ def split_profile(points, date_str):
         "soc": [[p["ts_ms"], p["soc_pct"]] for p in arr],
         "power": [[p["ts_ms"], p["power_w"]] for p in arr],
         "charge_power": [[p["ts_ms"], p["charge_fc_w"]] for p in arr],
+        "pv_charge_power": [[p["ts_ms"], p.get("pv_charge_fc_w", 0.0)] for p in arr],
+        "grid_charge_power": [[p["ts_ms"], p.get("grid_charge_fc_w", 0.0)] for p in arr],
+        "required_charge_power": [[p["ts_ms"], p.get("required_charge_fc_w", 0.0)] for p in arr],
         "discharge_power": [[p["ts_ms"], p["discharge_fc_w"]] for p in arr],
         "discharge_budget_kwh": [[p["ts_ms"], p.get("discharge_budget_kwh", 0.0)] for p in arr],
         "load_fc_power": [[p["ts_ms"], p["load_fc_w"]] for p in arr],
@@ -2475,7 +2625,12 @@ def derive_planned_dispatch(first_plan, discharge_ctx):
     plan_power = int(round(abs(float(first_plan.get("power_w", 0.0)))))
 
     if plan_mode == "charge":
-        return "charge_grid", plan_power
+        charge_mode = (
+            "charge_grid"
+            if float(first_plan.get("grid_charge_fc_w", 0.0)) > 0.0
+            else "charge_pv_surplus"
+        )
+        return charge_mode, plan_power
     if plan_mode == "discharge":
         return discharge_ctx.get("mode", "discharge_limited"), plan_power
     if discharge_ctx.get("mode") == "discharge_blocked" and float(discharge_ctx.get("remaining_discharge_budget_kwh", 0.0) or 0.0) > 0.0:
@@ -3257,6 +3412,9 @@ def main():
         "profile_today_soc": profile_today["soc"],
         "profile_today_power": profile_today["power"],
         "profile_today_charge_power": profile_today["charge_power"],
+        "profile_today_pv_charge_power": profile_today["pv_charge_power"],
+        "profile_today_grid_charge_power": profile_today["grid_charge_power"],
+        "profile_today_required_charge_power": profile_today["required_charge_power"],
         "profile_today_discharge_power": profile_today["discharge_power"],
         "profile_today_discharge_budget_kwh": profile_today["discharge_budget_kwh"],
         "profile_today_pv_fc_power": profile_today["pv_fc_power"],
@@ -3267,6 +3425,9 @@ def main():
         "profile_tomorrow_soc": profile_tomorrow["soc"],
         "profile_tomorrow_power": profile_tomorrow["power"],
         "profile_tomorrow_charge_power": profile_tomorrow["charge_power"],
+        "profile_tomorrow_pv_charge_power": profile_tomorrow["pv_charge_power"],
+        "profile_tomorrow_grid_charge_power": profile_tomorrow["grid_charge_power"],
+        "profile_tomorrow_required_charge_power": profile_tomorrow["required_charge_power"],
         "profile_tomorrow_discharge_power": profile_tomorrow["discharge_power"],
         "profile_tomorrow_discharge_budget_kwh": profile_tomorrow["discharge_budget_kwh"],
         "profile_tomorrow_pv_fc_power": profile_tomorrow["pv_fc_power"],
@@ -3281,6 +3442,15 @@ def main():
         ],
         "profile_48h_charge_fc_power": [
             [p["ts_ms"], p["charge_fc_w"]] for p in future_points
+        ],
+        "profile_48h_pv_charge_fc_power": [
+            [p["ts_ms"], p.get("pv_charge_fc_w", 0.0)] for p in future_points
+        ],
+        "profile_48h_grid_charge_fc_power": [
+            [p["ts_ms"], p.get("grid_charge_fc_w", 0.0)] for p in future_points
+        ],
+        "profile_48h_required_charge_fc_power": [
+            [p["ts_ms"], p.get("required_charge_fc_w", 0.0)] for p in future_points
         ],
         "profile_48h_discharge_fc_power": [
             [p["ts_ms"], p["discharge_fc_w"]] for p in future_points

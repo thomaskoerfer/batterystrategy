@@ -90,10 +90,12 @@ wall clock.
 The plan compiler converts the economic `BatteryPlan` into explicit slot-bound
 `PlanLiveDirective` values: PV charge permission, required charge, grid-charge
 permission, discharge budget, SoC bounds and validity timestamps. The live
-controller must not infer commercial intent from planned power or prices. The
-compiler accounts for measured progress but does not defer an optimizer action
-to another slot; equal-value scheduling and uncertainty-aware optionality belong
-to the optimizer so the published plan remains executable.
+controller must not infer commercial intent or charge sources from planned power,
+forecast PV or prices. The optimizer publishes PV charge, grid charge and the
+required total charge separately. The compiler accounts for measured progress
+but does not defer an optimizer action to another slot; equal-value scheduling
+and uncertainty-aware optionality belong to the optimizer so the published plan
+remains executable.
 
 ### Live controller
 

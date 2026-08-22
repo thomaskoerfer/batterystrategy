@@ -174,23 +174,16 @@ def plan_live_directive_from_plan(
     slot_end_ts = slot_start_ts + int(SLOT_H * 3600 * 1000) if slot_start_ts else 0
     slot_id = str(slot_start_ts) if slot_start_ts else "current"
     pv_charge_allowed = options.pv_charging == PV_CHARGING_ON and not manual
-    planned_pv_surplus_w = (
-        max(0.0, float(current_point.pv_fc_w) - float(current_point.load_fc_w))
-        if current_point is not None
-        else 0.0
-    )
-    required_grid_charge_w = (
-        _planned_grid_charge_kwh(current_point) / SLOT_H * 1000.0
-        if current_point is not None
-        else 0.0
-    )
+    planned_grid_charge_w = _planned_grid_charge_w(current_point)
+    required_charge_w = _required_charge_w(current_point)
     grid_charge_allowed = bool(
         options.grid_charging == GRID_CHARGING_PRICE_SENSITIVE
-        and required_grid_charge_w >= float(options.min_command_power_w)
+        and planned_grid_charge_w >= float(options.min_command_power_w)
+        and required_charge_w >= float(options.min_command_power_w)
         and not manual
     )
     must_charge_w = (
-        int(round(min(float(options.max_charge_power_w), planned_pv_surplus_w + required_grid_charge_w)))
+        int(round(min(float(options.max_charge_power_w), required_charge_w)))
         if grid_charge_allowed
         else 0
     )
@@ -317,9 +310,31 @@ def _planned_discharge_budget_kwh(
 
 
 def _planned_grid_charge_kwh(point) -> float:
+    return _power_w_to_slot_kwh_precise(_planned_grid_charge_w(point))
+
+
+def _planned_grid_charge_w(point) -> float:
+    if point is None:
+        return 0.0
+    explicit = getattr(point, "grid_charge_fc_w", None)
+    if explicit is not None:
+        return max(0.0, float(explicit))
     planned_charge_w = max(0.0, float(point.charge_fc_w))
     planned_pv_surplus_w = max(0.0, float(point.pv_fc_w) - float(point.load_fc_w))
-    return _power_w_to_slot_kwh_precise(max(0.0, planned_charge_w - planned_pv_surplus_w))
+    return max(0.0, planned_charge_w - planned_pv_surplus_w)
+
+
+def _required_charge_w(point) -> float:
+    if point is None:
+        return 0.0
+    explicit = getattr(point, "required_charge_fc_w", None)
+    if explicit is not None:
+        return max(0.0, float(explicit))
+    return (
+        max(0.0, float(point.charge_fc_w))
+        if _planned_grid_charge_w(point) > 0.0
+        else 0.0
+    )
 
 
 def _power_w_to_slot_kwh_precise(power_w: float) -> float:

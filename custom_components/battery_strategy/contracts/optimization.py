@@ -135,6 +135,8 @@ class BatteryPlanSlot:
     discharge_budget_kwh: float
     expected_soc_start_pct: float
     expected_soc_end_pct: float
+    planned_pv_charge_kwh: float = 0.0
+    planned_grid_charge_kwh: float = 0.0
 
     def __post_init__(self) -> None:
         for name in (
@@ -142,6 +144,8 @@ class BatteryPlanSlot:
             "planned_discharge_kwh",
             "required_charge_kwh",
             "discharge_budget_kwh",
+            "planned_pv_charge_kwh",
+            "planned_grid_charge_kwh",
         ):
             require_nonnegative(name, getattr(self, name))
         require_percentage("expected_soc_start_pct", self.expected_soc_start_pct)
@@ -150,6 +154,16 @@ class BatteryPlanSlot:
             raise ValueError("a slot cannot plan charge and discharge simultaneously")
         if self.required_charge_kwh > self.planned_charge_kwh:
             raise ValueError("required charge cannot exceed planned charge")
+        if abs(
+            self.planned_charge_kwh
+            - self.planned_pv_charge_kwh
+            - self.planned_grid_charge_kwh
+        ) > 1e-9:
+            raise ValueError("planned charge must equal its PV and grid sources")
+        if self.planned_grid_charge_kwh > 0.0 and not self.grid_charge_allowed:
+            raise ValueError("planned grid charge requires grid permission")
+        if self.required_charge_kwh > 0.0 and self.planned_grid_charge_kwh <= 0.0:
+            raise ValueError("required charge requires a grid commitment")
         if self.mode == PlanMode.IDLE and (
             self.planned_charge_kwh > 0.0 or self.planned_discharge_kwh > 0.0
         ):

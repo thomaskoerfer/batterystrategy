@@ -71,6 +71,47 @@ from custom_components.battery_strategy.strategy import (
 
 
 class HacsStrategyTests(unittest.TestCase):
+    def _optimizer_runtime_context(self):
+        return {
+            "battery_capacity_kwh": optimizer_engine.CAP_KWH,
+            "min_soc_pct": optimizer_engine.SOC_MIN,
+            "max_soc_pct": optimizer_engine.SOC_MAX,
+            "max_charge_power_w": optimizer_engine.MAX_CHARGE_P_W,
+            "max_discharge_power_w": optimizer_engine.MAX_DISCHARGE_P_W,
+            "pv_charging": "on" if optimizer_engine.PV_CHARGING_ENABLED else "off",
+            "grid_charging": (
+                "price_sensitive" if optimizer_engine.GRID_CHARGING_ENABLED else "off"
+            ),
+            "discharge": (
+                "price_sensitive" if optimizer_engine.DISCHARGE_ENABLED else "off"
+            ),
+            "planning_horizon_h": optimizer_engine.PLANNING_HORIZON_H,
+            "round_trip_efficiency": optimizer_engine.ETA_RT,
+            "min_margin_ct_per_kwh": optimizer_engine.MIN_MARGIN_CT,
+            "feed_in_tariff_ct_per_kwh": optimizer_engine.PV_EXPORT_OPPORTUNITY_CT,
+            "timezone": str(optimizer_engine.OPEN_METEO_TZ),
+            "pv_capacity_kwp": optimizer_engine.PV_CAPACITY_KWP,
+            "pv_inverter_power_kw": optimizer_engine.PV_INVERTER_KW,
+        }
+
+    @staticmethod
+    def _configure_test_optimizer():
+        optimizer_engine.configure_runtime(
+            {
+                "battery_capacity_kwh": 6.0,
+                "min_soc_pct": 5.0,
+                "max_soc_pct": 100.0,
+                "max_charge_power_w": 2400.0,
+                "max_discharge_power_w": 2400.0,
+                "pv_charging": "on",
+                "grid_charging": "price_sensitive",
+                "discharge": "price_sensitive",
+                "round_trip_efficiency": 0.85,
+                "min_margin_ct_per_kwh": 1.0,
+                "timezone": "UTC",
+            }
+        )
+
     def test_optimizer_runtime_maps_recorded_battery_power_sensor(self):
         class Registry:
             @staticmethod
@@ -671,8 +712,8 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertEqual(
             attrs["rows"],
             [
-                [1_800_000_000, 31.23, -0.225, 0.0, 0.0, 0.3, 0.225, 0.075, 42.3],
-                [1_800_000_900, 40.0, 0.2, 0.3, 0.15, 0.0, 0.0, 0.0, 46.0],
+                [1_800_000_000, 31.23, -0.225, 0.0, 0.0, 0.3, 0.225, 0.075, 0.3, 42.3],
+                [1_800_000_900, 40.0, 0.2, 0.3, 0.15, 0.0, 0.0, 0.0, 0.0, 46.0],
             ],
         )
         self.assertEqual(
@@ -686,6 +727,7 @@ class HacsStrategyTests(unittest.TestCase):
                 "planned_charge_kwh",
                 "planned_pv_charge_kwh",
                 "planned_grid_charge_kwh",
+                "required_charge_kwh",
                 "planned_soc_pct",
             ],
         )
@@ -1174,6 +1216,88 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertEqual(directive.discharge_budget_kwh, 0.0)
         self.assertEqual(directive.battery_min_soc_pct, 5)
         self.assertEqual(directive.battery_max_soc_pct, 100)
+
+    def test_explicit_pv_only_slot_never_becomes_must_charge(self):
+        now = dt.datetime(2026, 8, 23, 10, 45, tzinfo=dt.timezone.utc)
+        point = PlanPoint(
+            ts_ms=int(now.timestamp() * 1000),
+            date=now.date().isoformat(),
+            price_ct=18.08,
+            load_fc_w=413,
+            pv_fc_w=751,
+            grid_import_fc_w=0,
+            grid_export_fc_w=12,
+            grid_net_fc_w=-12,
+            mode=COMMAND_INPUT,
+            power_w=326,
+            charge_fc_w=326,
+            discharge_fc_w=0,
+            soc_pct=7.7,
+            pv_charge_fc_w=326,
+            grid_charge_fc_w=0,
+            required_charge_fc_w=0,
+        )
+
+        directive = plan_live_directive_from_plan(
+            StrategyPlan([point], COMMAND_INPUT, 326, "pv only"),
+            StrategyOptions(
+                pv_charging=PV_CHARGING_ON,
+                grid_charging=GRID_CHARGING_PRICE_SENSITIVE,
+                discharge=DISCHARGE_PRICE_SENSITIVE,
+                min_command_power_w=20,
+            ),
+        )
+
+        self.assertFalse(directive.grid_charge_allowed)
+        self.assertEqual(directive.must_charge_w, 0)
+        self.assertEqual(directive.must_charge_remaining_kwh, 0.0)
+
+    def test_required_mixed_charge_keeps_total_target_across_pv_error(self):
+        now = dt.datetime(2026, 8, 23, 13, tzinfo=dt.timezone.utc)
+        point = PlanPoint(
+            ts_ms=int(now.timestamp() * 1000),
+            date=now.date().isoformat(),
+            price_ct=17.55,
+            load_fc_w=500,
+            pv_fc_w=1000,
+            grid_import_fc_w=1200,
+            grid_export_fc_w=0,
+            grid_net_fc_w=1200,
+            mode=COMMAND_INPUT,
+            power_w=1700,
+            charge_fc_w=1700,
+            discharge_fc_w=0,
+            soc_pct=50.0,
+            pv_charge_fc_w=500,
+            grid_charge_fc_w=1200,
+            required_charge_fc_w=1700,
+        )
+        options = StrategyOptions(
+            pv_charging=PV_CHARGING_ON,
+            grid_charging=GRID_CHARGING_PRICE_SENSITIVE,
+            discharge=DISCHARGE_PRICE_SENSITIVE,
+            max_charge_power_w=2400,
+        )
+        plan = StrategyPlan([point], COMMAND_INPUT, 1700, "required mixed charge")
+
+        for actual_pv_surplus_w, expected_power_w in (
+            (0, 1700),
+            (500, 1700),
+            (2000, 2000),
+        ):
+            inputs = StrategyInputs(
+                grid_import_w=0,
+                grid_export_w=actual_pv_surplus_w,
+                pv_w=actual_pv_surplus_w,
+                battery_power_w=0,
+                ev_power_w=0,
+                soc_pct=50,
+            )
+            diagnostics = calculate_command(inputs, options)
+            command = live_command_from_plan(plan, diagnostics, inputs, options)
+            self.assertEqual(command.mode, COMMAND_INPUT)
+            self.assertEqual(command.power_w, expected_power_w)
+            self.assertEqual(command.reason, "must_charge")
 
     def test_price_sensitive_discharge_uses_plan_budget_not_soc_floor(self):
         now = dt.datetime(2026, 5, 29, 18, tzinfo=dt.timezone.utc)
@@ -3316,6 +3440,89 @@ class HacsStrategyTests(unittest.TestCase):
                 0.0,
             )
         )
+
+    def test_subquantum_grid_remainder_moves_without_changing_total_energy(self):
+        points = [
+            {
+                "ts_ms": 0,
+                "date": "2026-08-23",
+                "price_ct": 18.08,
+                "soc_pct": 10.0,
+                "power_w": 434.0,
+                "charge_fc_w": 434.0,
+                "discharge_fc_w": 0.0,
+                "mode": "charge",
+                "load_fc_w": 413.0,
+                "pv_fc_w": 751.0,
+            },
+            {
+                "ts_ms": 900_000,
+                "date": "2026-08-23",
+                "price_ct": 17.55,
+                "soc_pct": 12.0,
+                "power_w": 1000.0,
+                "charge_fc_w": 1000.0,
+                "discharge_fc_w": 0.0,
+                "mode": "charge",
+                "load_fc_w": 500.0,
+                "pv_fc_w": 0.0,
+            },
+        ]
+        before_kwh = sum(point["charge_fc_w"] for point in points) * 0.25 / 1000.0
+
+        result = optimizer_engine.defer_subquantum_grid_remainders(points, 0.6)
+
+        after_kwh = sum(point["charge_fc_w"] for point in result) * 0.25 / 1000.0
+        self.assertAlmostEqual(after_kwh, before_kwh, places=5)
+        self.assertEqual(result[0]["grid_charge_fc_w"], 0.0)
+        self.assertEqual(result[0]["required_charge_fc_w"], 0.0)
+        self.assertGreater(result[1]["grid_charge_fc_w"], 1000.0)
+        self.assertEqual(result[1]["required_charge_fc_w"], result[1]["charge_fc_w"])
+
+    def test_subquantum_grid_remainder_stays_before_intervening_discharge(self):
+        points = [
+            {
+                "ts_ms": 0,
+                "date": "2026-08-23",
+                "price_ct": 18.08,
+                "soc_pct": 10.0,
+                "power_w": 434.0,
+                "charge_fc_w": 434.0,
+                "discharge_fc_w": 0.0,
+                "mode": "charge",
+                "load_fc_w": 413.0,
+                "pv_fc_w": 751.0,
+            },
+            {
+                "ts_ms": 900_000,
+                "date": "2026-08-23",
+                "price_ct": 40.0,
+                "soc_pct": 12.0,
+                "power_w": -400.0,
+                "charge_fc_w": 0.0,
+                "discharge_fc_w": 400.0,
+                "mode": "discharge",
+                "load_fc_w": 1000.0,
+                "pv_fc_w": 0.0,
+            },
+            {
+                "ts_ms": 1_800_000,
+                "date": "2026-08-23",
+                "price_ct": 17.55,
+                "soc_pct": 10.0,
+                "power_w": 1000.0,
+                "charge_fc_w": 1000.0,
+                "discharge_fc_w": 0.0,
+                "mode": "charge",
+                "load_fc_w": 500.0,
+                "pv_fc_w": 0.0,
+            },
+        ]
+
+        result = optimizer_engine.defer_subquantum_grid_remainders(points, 0.6)
+
+        self.assertGreater(result[0]["grid_charge_fc_w"], 0.0)
+        self.assertGreater(result[0]["required_charge_fc_w"], 0.0)
         self.assertTrue(
             optimizer_engine._economic_path_is_better(
                 1.0,
@@ -3415,6 +3622,119 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertEqual(early_charge, [0.0, 0.0, 0.0])
         self.assertGreater(plan["points"][3]["charge_fc_w"], 0.0)
         self.assertGreater(plan["points"][4]["discharge_fc_w"], 0.0)
+
+    def test_optimizer_does_not_turn_pv_lattice_remainder_into_grid_commitment(self):
+        tz = dt.timezone.utc
+        start = dt.datetime(2026, 8, 23, 10, tzinfo=tz)
+        prices = [18.1, 18.0, 17.9, 17.5, 17.5, 40.0, 40.0, 40.0]
+        intervals = [
+            {"dt": start + dt.timedelta(minutes=15 * i), "price_eur": price / 100.0}
+            for i, price in enumerate(prices)
+        ]
+        samples = []
+        for weeks_ago in range(1, 8):
+            base = start - dt.timedelta(days=7 * weeks_ago)
+            for i, price in enumerate(prices):
+                pv_w = 338.0 if i == 0 else 0.0
+                load_w = 1200.0 if i >= 5 else 0.0
+                samples.append(
+                    {
+                        "ts": (base + dt.timedelta(minutes=15 * i)).timestamp(),
+                        "load_w": load_w,
+                        "house_w": load_w,
+                        "house_total_w": load_w,
+                        "wallbox_w": 0.0,
+                        "grid_import_w": load_w,
+                        "grid_export_w": max(0.0, pv_w - load_w),
+                        "pv_w": pv_w,
+                        "hp_w": 0.0,
+                        "price_ct": price,
+                    }
+                )
+
+        old_context = self._optimizer_runtime_context()
+        self._configure_test_optimizer()
+        try:
+            plan = optimizer_engine.build_virtual_plan(
+                intervals=intervals,
+                samples=samples,
+                start_energy_kwh=0.3,
+                weather_factor=1.0,
+                forecast_tomorrow_kwh=None,
+                load_bias=1.0,
+                load_bias_slots=[1.0] * optimizer_engine.SLOTS_PER_DAY,
+                pv_bias_slots=[1.0] * optimizer_engine.SLOTS_PER_DAY,
+                initial_mode=0,
+                weather_hourly={},
+                pv_now_actual_w=0.0,
+                now_local=start,
+                pv_global_bias=1.0,
+                eex_days={},
+            )
+        finally:
+            optimizer_engine.configure_runtime(old_context)
+
+        first = plan["points"][0]
+        self.assertGreater(first["pv_charge_fc_w"], 0.0)
+        self.assertEqual(first["grid_charge_fc_w"], 0.0)
+        self.assertEqual(first["required_charge_fc_w"], 0.0)
+        self.assertTrue(
+            all(point["grid_charge_fc_w"] == 0.0 for point in plan["points"][:3])
+        )
+        self.assertGreater(plan["points"][3]["required_charge_fc_w"], 0.0)
+
+    def test_optimizer_keeps_earlier_grid_commitment_when_later_capacity_is_short(self):
+        tz = dt.timezone.utc
+        start = dt.datetime(2026, 8, 23, 10, tzinfo=tz)
+        prices = [18.0, 17.0, 40.0, 40.0]
+        intervals = [
+            {"dt": start + dt.timedelta(minutes=15 * i), "price_eur": price / 100.0}
+            for i, price in enumerate(prices)
+        ]
+        samples = []
+        for weeks_ago in range(1, 8):
+            base = start - dt.timedelta(days=7 * weeks_ago)
+            for i, price in enumerate(prices):
+                load_w = 2400.0 if i >= 2 else 0.0
+                samples.append(
+                    {
+                        "ts": (base + dt.timedelta(minutes=15 * i)).timestamp(),
+                        "load_w": load_w,
+                        "house_w": load_w,
+                        "house_total_w": load_w,
+                        "wallbox_w": 0.0,
+                        "grid_import_w": load_w,
+                        "grid_export_w": 0.0,
+                        "pv_w": 0.0,
+                        "hp_w": 0.0,
+                        "price_ct": price,
+                    }
+                )
+
+        old_context = self._optimizer_runtime_context()
+        self._configure_test_optimizer()
+        try:
+            plan = optimizer_engine.build_virtual_plan(
+                intervals=intervals,
+                samples=samples,
+                start_energy_kwh=0.3,
+                weather_factor=1.0,
+                forecast_tomorrow_kwh=None,
+                load_bias=1.0,
+                load_bias_slots=[1.0] * optimizer_engine.SLOTS_PER_DAY,
+                pv_bias_slots=[1.0] * optimizer_engine.SLOTS_PER_DAY,
+                initial_mode=0,
+                weather_hourly={},
+                pv_now_actual_w=0.0,
+                now_local=start,
+                pv_global_bias=1.0,
+                eex_days={},
+            )
+        finally:
+            optimizer_engine.configure_runtime(old_context)
+
+        self.assertGreater(plan["points"][0]["required_charge_fc_w"], 0.0)
+        self.assertGreater(plan["points"][1]["required_charge_fc_w"], 0.0)
 
     def test_optimizer_does_not_discharge_before_unprofitable_grid_replacement(
         self,
@@ -3751,6 +4071,24 @@ class HacsStrategyTests(unittest.TestCase):
         }
         points = optimizer_adapter._points_from_output(output, now_ms=current_ts)
         self.assertEqual([point.ts_ms for point in points], [current_ts])
+
+    def test_optimizer_adapter_preserves_explicit_charge_sources_and_requirement(self):
+        ts = int(dt.datetime(2026, 8, 23, 13, tzinfo=dt.timezone.utc).timestamp() * 1000)
+        output = {
+            "profile_48h_price": [[ts, 17.55]],
+            "profile_48h_charge_fc_power": [[ts, 1700.0]],
+            "profile_48h_pv_charge_fc_power": [[ts, 500.0]],
+            "profile_48h_grid_charge_fc_power": [[ts, 1200.0]],
+            "profile_48h_required_charge_fc_power": [[ts, 1700.0]],
+            "profile_48h_pv_fc_power": [[ts, 1000.0]],
+            "profile_48h_house_fc_power": [[ts, 500.0]],
+        }
+
+        point = optimizer_adapter._points_from_output(output, now_ms=ts)[0]
+
+        self.assertEqual(point.pv_charge_fc_w, 500)
+        self.assertEqual(point.grid_charge_fc_w, 1200)
+        self.assertEqual(point.required_charge_fc_w, 1700)
 
     def test_optimizer_adapter_assigns_dates_in_home_assistant_timezone(self):
         ts = int(

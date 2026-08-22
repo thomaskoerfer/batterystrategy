@@ -311,6 +311,20 @@ def _points_from_output(
         _series(output.get("profile_today_charge_power")),
         _series(output.get("profile_tomorrow_charge_power")),
     )
+    pv_charge = _series(output.get("profile_48h_pv_charge_fc_power")) or _merge_series(
+        _series(output.get("profile_today_pv_charge_power")),
+        _series(output.get("profile_tomorrow_pv_charge_power")),
+    )
+    grid_charge = _series(output.get("profile_48h_grid_charge_fc_power")) or _merge_series(
+        _series(output.get("profile_today_grid_charge_power")),
+        _series(output.get("profile_tomorrow_grid_charge_power")),
+    )
+    required_charge = _series(
+        output.get("profile_48h_required_charge_fc_power")
+    ) or _merge_series(
+        _series(output.get("profile_today_required_charge_power")),
+        _series(output.get("profile_tomorrow_required_charge_power")),
+    )
     discharge = _series(output.get("profile_48h_discharge_fc_power")) or _merge_series(
         _series(output.get("profile_today_discharge_power")),
         _series(output.get("profile_tomorrow_discharge_power")),
@@ -334,6 +348,9 @@ def _points_from_output(
             *grid_export,
             *grid_net,
             *charge,
+            *pv_charge,
+            *grid_charge,
+            *required_charge,
             *discharge,
             *soc,
             *power,
@@ -343,6 +360,21 @@ def _points_from_output(
     for ts_ms in ts_values:
         ch = _at(charge, ts_ms)
         dis = _at(discharge, ts_ms)
+        forecast_surplus_w = max(0.0, _at(pv, ts_ms) - _at(load, ts_ms))
+        explicit_sources = bool(pv_charge or grid_charge or required_charge)
+        planned_pv_charge_w = (
+            _at(pv_charge, ts_ms) if explicit_sources else min(ch, forecast_surplus_w)
+        )
+        planned_grid_charge_w = (
+            _at(grid_charge, ts_ms)
+            if explicit_sources
+            else max(0.0, ch - planned_pv_charge_w)
+        )
+        required_charge_w = (
+            _at(required_charge, ts_ms)
+            if explicit_sources
+            else (ch if planned_grid_charge_w > 0.0 else 0.0)
+        )
         pow_w = _at(power, ts_ms) or max(ch, dis)
         mode = COMMAND_INPUT if ch > 0 else COMMAND_OUTPUT if dis > 0 else COMMAND_IDLE
         slot_dt = dt.datetime.fromtimestamp(ts_ms / 1000.0, tz=timezone)
@@ -362,6 +394,9 @@ def _points_from_output(
                 discharge_fc_w=int(round(dis)),
                 soc_pct=round(_at(soc, ts_ms), 2),
                 discharge_budget_kwh=round(_at(discharge_budget, ts_ms), 3),
+                pv_charge_fc_w=int(round(planned_pv_charge_w)),
+                grid_charge_fc_w=int(round(planned_grid_charge_w)),
+                required_charge_fc_w=int(round(required_charge_w)),
             )
         )
     now_ms = int(time.time() * 1000) if now_ms is None else int(now_ms)

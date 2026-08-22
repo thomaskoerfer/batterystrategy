@@ -157,8 +157,16 @@ problem's `as_of_ms`.
 
 The optimizer returns a `BatteryPlan`. It may plan either charge or discharge in
 one slot, never both. Every slot explicitly identifies whether PV and grid
-charging are commercially allowed. `required_charge_kwh` is the non-deferrable
-portion of planned charge and cannot exceed total planned charge.
+charging are commercially allowed. Planned charge is split explicitly into PV
+and grid energy; the two sources must sum to total planned charge.
+`required_charge_kwh` is the non-deferrable total battery input, cannot exceed
+planned charge and requires a real grid commitment. A pure forecast-PV slot has
+zero required charge and can never produce `must_charge`.
+Mixed PV/grid transitions whose paid remainder is smaller than one complete
+optimizer energy quantum are canonicalized into exact PV-only charge when that
+remainder can move into an already required, cheaper grid slot before the next
+planned discharge. The move must preserve total energy and fit real charge
+capacity; otherwise the earlier commitment remains.
 When several grid-charge schedules have identical primary economic cost, the
 optimizer resolves the tie deterministically toward less grid energy and then
 later feasible grid charging. This secondary ordering never overrides forecast
@@ -191,10 +199,10 @@ deviations become optimizer input at the next planning run instead.
 
 The plan compiler combines `BatteryPlan` with measured `SlotProgress`. It may
 reduce remaining required charge or discharge budget based on actual progress,
-but it does not re-optimize prices or move planned energy between slots. The
-current slot's published grid-charge component is required execution; any
-economic deferral must already be represented in `BatteryPlan` and its SoC
-trajectory.
+but it does not re-optimize prices, infer charge sources or move planned energy
+between slots. It publishes the optimizer's explicit required total charge only
+when that slot also contains an explicit grid commitment. Any economic deferral
+must already be represented in `BatteryPlan` and its SoC trajectory.
 
 If the battery SoC source becomes unavailable, the last measured SoC remains
 the displayed estimate. After the bounded startup bridge expires, actuation and

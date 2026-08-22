@@ -401,8 +401,21 @@ def _plan_slot_attrs(data):
     for point in _plan(data).points:
         charge_w = max(0.0, float(point.charge_fc_w))
         pv_surplus_w = max(0.0, float(point.pv_fc_w) - float(point.load_fc_w))
-        pv_charge_w = min(charge_w, pv_surplus_w)
-        grid_charge_w = max(0.0, charge_w - pv_charge_w)
+        pv_charge_w = (
+            min(charge_w, pv_surplus_w)
+            if point.pv_charge_fc_w is None
+            else max(0.0, float(point.pv_charge_fc_w))
+        )
+        grid_charge_w = (
+            max(0.0, charge_w - pv_charge_w)
+            if point.grid_charge_fc_w is None
+            else max(0.0, float(point.grid_charge_fc_w))
+        )
+        required_charge_w = (
+            charge_w if grid_charge_w > 0.0 else 0.0
+        )
+        if point.required_charge_fc_w is not None:
+            required_charge_w = max(0.0, float(point.required_charge_fc_w))
         rows.append(
             [
                 int(point.ts_ms // 1000),
@@ -415,6 +428,7 @@ def _plan_slot_attrs(data):
                 _slot_energy_kwh(charge_w),
                 _slot_energy_kwh(pv_charge_w),
                 _slot_energy_kwh(grid_charge_w),
+                _slot_energy_kwh(required_charge_w),
                 round(float(point.soc_pct), 1),
             ]
         )
@@ -428,6 +442,7 @@ def _plan_slot_attrs(data):
             "planned_charge_kwh",
             "planned_pv_charge_kwh",
             "planned_grid_charge_kwh",
+            "required_charge_kwh",
             "planned_soc_pct",
         ],
         "rows": rows,

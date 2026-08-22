@@ -23,6 +23,9 @@ class PlanPoint:
     discharge_fc_w: int
     soc_pct: float
     discharge_budget_kwh: float = 0.0
+    pv_charge_fc_w: int | None = None
+    grid_charge_fc_w: int | None = None
+    required_charge_fc_w: int | None = None
 
 
 @dataclass(frozen=True)

@@ -4,6 +4,17 @@ All notable changes to Battery Strategy are documented here.
 
 ## Unreleased
 
+## [0.2.0-beta.21] - 2026-08-22
+
+### Fixed
+
+- Published optimizer-native PV charge, grid charge and required total charge
+  instead of reconstructing charge sources from rounded forecast powers.
+- Prevented sub-quantum grid remnants in mixed PV slots from becoming paid
+  commitments or live `must_charge` commands.
+- Kept earlier grid commitments when later cheaper slots lack enough physical
+  charge capacity, while preserving PV-first execution under forecast error.
+
 ## [0.2.0-beta.20] - 2026-08-22
 
 ### Added

@@ -222,7 +222,18 @@ class ContractTests(unittest.TestCase):
     def test_market_prices_and_plan_costs_may_be_negative(self):
         market = MarketSlot(slot(0), -2.5, -1.0)
         plan_slot = BatteryPlanSlot(
-            slot(0), PlanMode.IDLE, True, False, 0.0, 0.0, 0.0, 0.0, 50.0, 50.0
+            slot(0),
+            PlanMode.IDLE,
+            True,
+            False,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            50.0,
+            50.0,
+            0.0,
+            0.0,
         )
         plan = BatteryPlan(
             "plan-1",
@@ -250,6 +261,8 @@ class ContractTests(unittest.TestCase):
                 discharge_budget_kwh=0.0,
                 expected_soc_start_pct=50.0,
                 expected_soc_end_pct=52.0,
+                planned_pv_charge_kwh=0.1,
+                planned_grid_charge_kwh=0.1,
             )
 
     def test_optimizer_plan_slot_requires_budget_for_planned_discharge(self):
@@ -265,6 +278,42 @@ class ContractTests(unittest.TestCase):
                 discharge_budget_kwh=0.05,
                 expected_soc_start_pct=50.0,
                 expected_soc_end_pct=48.0,
+                planned_pv_charge_kwh=0.0,
+                planned_grid_charge_kwh=0.0,
+            )
+
+    def test_optimizer_plan_slot_requires_explicit_charge_source_balance(self):
+        with self.assertRaisesRegex(ValueError, "PV and grid sources"):
+            BatteryPlanSlot(
+                slot(0),
+                PlanMode.CHARGE,
+                True,
+                True,
+                planned_charge_kwh=0.2,
+                planned_discharge_kwh=0.0,
+                required_charge_kwh=0.2,
+                discharge_budget_kwh=0.0,
+                expected_soc_start_pct=50.0,
+                expected_soc_end_pct=52.0,
+                planned_pv_charge_kwh=0.1,
+                planned_grid_charge_kwh=0.05,
+            )
+
+    def test_optimizer_plan_slot_requires_grid_commitment_for_required_charge(self):
+        with self.assertRaisesRegex(ValueError, "grid commitment"):
+            BatteryPlanSlot(
+                slot(0),
+                PlanMode.CHARGE,
+                True,
+                True,
+                planned_charge_kwh=0.2,
+                planned_discharge_kwh=0.0,
+                required_charge_kwh=0.2,
+                discharge_budget_kwh=0.0,
+                expected_soc_start_pct=50.0,
+                expected_soc_end_pct=52.0,
+                planned_pv_charge_kwh=0.2,
+                planned_grid_charge_kwh=0.0,
             )
 
     def test_directive_rejects_power_without_permission(self):
