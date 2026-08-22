@@ -55,6 +55,8 @@ async def async_get_config_entry_diagnostics(hass, entry) -> dict:
         },
         "actuation": data.get("actuation"),
         "optimizer_age_s": data.get("optimizer_age_s"),
+        "soc_control_ready": data.get("soc_control_ready"),
+        "soc_estimate_stale": data.get("soc_estimate_stale"),
         "forecast": {
             key.removeprefix("forecast_"): value
             for key, value in (data.get("optimizer_attrs") or {}).items()

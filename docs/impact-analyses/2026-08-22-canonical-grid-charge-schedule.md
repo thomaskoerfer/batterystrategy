@@ -15,6 +15,11 @@ optionality but created two schedules: the canonical optimizer table and an
 unpublished live deadline schedule. Planned SoC therefore described actions the
 live controller intentionally did not execute.
 
+The same trace exposed a separate input-integrity defect: after a battery-SoC
+sensor gap exceeded the five-minute control bridge, the coordinator supplied a
+hard-coded 50% placeholder to the planner. Live actuation was correctly blocked,
+but the placeholder could distort the published plan.
+
 ## Approved semantics
 
 The owner approved the correction on 2026-08-22. Deferral remains supported,
@@ -34,6 +39,11 @@ becomes required live charge and is reduced only by measured slot progress. The
 plan compiler no longer moves energy to another slot. Live PV remains first: it
 supplies the required battery input before grid power fills the remaining gap,
 and excess realized PV may still charge according to the existing live policy.
+
+During a longer SoC sensor gap, the last real measurement remains the stale
+display estimate. The coordinator blocks live actuation and new optimizer runs
+after the five-minute bridge; it never substitutes a nominal SoC. Recovery of a
+valid measurement forces an immediate replan.
 
 ## Contract and dependency impact
 
@@ -60,7 +70,9 @@ Regression coverage proves that:
 - measured progress reduces remaining required energy;
 - live PV supplies required input before grid power, and realized PV above the
   required rate does not create unnecessary grid import;
-- existing forecast, PV-spill, recharge-reserve, EV and safety tests remain green.
+- existing forecast, PV-spill, recharge-reserve, EV and safety tests remain green;
+- a stale SoC retains the last real value and blocks control, while sensor
+  recovery is marked for immediate replanning.
 
 ## Rollout and rollback
 

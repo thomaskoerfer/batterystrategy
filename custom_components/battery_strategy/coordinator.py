@@ -79,6 +79,7 @@ from .weather import OpenMeteoWeatherProvider
 LOGGER = logging.getLogger(__name__)
 OPTIMIZER_PREFETCH_LEAD_S = 60
 SOC_BRIDGE_MAX_AGE_S = 300
+SOC_COLD_START_PLACEHOLDER_PCT = 50.0
 EV_POWER_BRIDGE_MAX_AGE_S = 180
 OPTIMIZER_STATE_FILE = "battery_strategy_optimizer_state.json"
 FEATURE_STORE_FILE = "battery_strategy_features.json.gz"
@@ -138,6 +139,7 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         self._last_actual_battery_power_w: float | None = None
         self._last_known_soc_pct = last_known_soc_pct
         self._soc_control_ready = last_known_soc_pct is not None
+        self._soc_recovered = False
         self._last_valid_soc_at = (
             dt.datetime.now(dt.timezone.utc) if last_known_soc_pct is not None else None
         )
@@ -292,12 +294,15 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             self._feature_store.last_error = f"{type(err).__name__}: {err}"
             LOGGER.warning("Feature-store shadow aggregation failed: %s", err)
         self._account_actual_battery_power(now)
-        force_optimizer = self._should_force_optimizer(now)
+        force_optimizer = self._should_force_optimizer(now) or self._soc_recovered
+        self._soc_recovered = False
         simple_command = calculate_command(inputs, options)
-        runtime_context = self._optimizer_engine.runtime_context(inputs, options)
-        optimizer_scheduled = self._planner.maybe_schedule(
-            inputs, options, runtime_context, force=force_optimizer
-        )
+        optimizer_scheduled = False
+        if self._soc_control_ready:
+            runtime_context = self._optimizer_engine.runtime_context(inputs, options)
+            optimizer_scheduled = self._planner.maybe_schedule(
+                inputs, options, runtime_context, force=force_optimizer
+            )
         plan, self._optimizer_attrs = self._planner.current(inputs, options)
         directive = self._directive_with_progress(
             plan_live_directive_from_plan(
@@ -332,6 +337,8 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             "optimizer_scheduled": optimizer_scheduled,
             "optimizer_running": self._planner.running,
             "optimizer_error": self._planner.last_error,
+            "soc_control_ready": self._soc_control_ready,
+            "soc_estimate_stale": not self._soc_control_ready,
         }
         if strategy_enabled:
             self._strategy_was_enabled = True
@@ -555,7 +562,7 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         )
 
     def _battery_soc_pct(self) -> float:
-        """Return live SoC, bridging startup gaps with the last persisted value."""
+        """Return the last real SoC estimate and gate control when it is stale."""
         entity_id = self.entry.data.get(CONF_BATTERY_SOC_ENTITY)
         if entity_id:
             state = self.hass.states.get(entity_id)
@@ -570,22 +577,25 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
                 except (TypeError, ValueError):
                     value = None
                 if value is not None and 0.0 <= value <= 100.0:
+                    was_control_ready = self._soc_control_ready
                     self._last_known_soc_pct = value
                     self._soc_control_ready = True
+                    self._soc_recovered = not was_control_ready
                     self._last_valid_soc_at = dt.datetime.now(dt.timezone.utc)
                     return value
         last_valid_soc_at = getattr(
             self, "_last_valid_soc_at", dt.datetime.now(dt.timezone.utc)
         )
-        if (
-            self._last_known_soc_pct is not None
-            and last_valid_soc_at is not None
-            and (dt.datetime.now(dt.timezone.utc) - last_valid_soc_at).total_seconds()
-            <= SOC_BRIDGE_MAX_AGE_S
-        ):
+        if self._last_known_soc_pct is not None:
+            age_s = (
+                (dt.datetime.now(dt.timezone.utc) - last_valid_soc_at).total_seconds()
+                if last_valid_soc_at is not None
+                else float("inf")
+            )
+            self._soc_control_ready = age_s <= SOC_BRIDGE_MAX_AGE_S
             return float(self._last_known_soc_pct)
         self._soc_control_ready = False
-        return 50.0
+        return SOC_COLD_START_PLACEHOLDER_PCT
 
     def _grid_import_export(self) -> tuple[float, float]:
         mode = self.entry.data.get(CONF_GRID_MODE, GRID_MODE_THREE_PHASE)
@@ -992,6 +1002,8 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             "battery_power_w": round(inputs.battery_power_w),
             "ev_power_w": round(inputs.ev_power_w),
             "soc_pct": round(inputs.soc_pct, 1),
+            "soc_control_ready": data.get("soc_control_ready"),
+            "soc_estimate_stale": data.get("soc_estimate_stale"),
             "current_plan_points": len(plan.points),
             "optimizer_age_s": data.get("optimizer_age_s"),
             "plan_mode": plan.current_mode,

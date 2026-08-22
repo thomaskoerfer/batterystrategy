@@ -196,6 +196,12 @@ current slot's published grid-charge component is required execution; any
 economic deferral must already be represented in `BatteryPlan` and its SoC
 trajectory.
 
+If the battery SoC source becomes unavailable, the last measured SoC remains
+the displayed estimate. After the bounded startup bridge expires, actuation and
+new optimizer runs remain blocked; the estimate is explicitly stale and must
+not be replaced by a fabricated nominal SoC. A valid recovered measurement
+forces a new optimizer run.
+
 `PlanLiveDirective` contains every permission the live controller needs:
 allowed charge sources, source-specific power limits, remaining required charge,
 remaining discharge budget, SoC bounds and slot validity.

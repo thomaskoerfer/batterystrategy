@@ -26,6 +26,9 @@ All notable changes to Battery Strategy are documented here.
   so the future-slot table and planned SoC show the schedule that will execute.
 - Made the current slot's published grid component required live charge instead
   of silently moving it into unpublished future capacity.
+- Kept the last measured SoC as a visibly stale planning estimate during longer
+  sensor gaps instead of replacing it with an invented 50%, while continuing
+  to block actuation and optimizer refreshes until the sensor recovers.
 
 ### Safety
 

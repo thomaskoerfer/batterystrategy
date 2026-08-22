@@ -169,6 +169,10 @@ SENSORS: tuple[BatteryStrategySensorDescription, ...] = (
         key="soc",
         name="SoC",
         value_fn=lambda data: round(_inputs(data).soc_pct, 1),
+        attr_fn=lambda data: {
+            "estimate_stale": bool(data.get("soc_estimate_stale", False)),
+            "control_ready": bool(data.get("soc_control_ready", False)),
+        },
         native_unit_of_measurement=PERCENTAGE,
     ),
     BatteryStrategySensorDescription(

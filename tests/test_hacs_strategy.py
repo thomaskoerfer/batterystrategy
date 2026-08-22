@@ -2344,6 +2344,46 @@ class HacsStrategyTests(unittest.TestCase):
         coordinator._last_known_soc_pct = 37.0
         self.assertEqual(coordinator._battery_soc_pct(), 37.0)
 
+    def test_coordinator_keeps_stale_soc_but_blocks_control(self):
+        coordinator = object.__new__(BatteryStrategyCoordinator)
+        coordinator.entry = SimpleNamespace(
+            data={"battery_soc_entity": "sensor.battery_soc"}
+        )
+        coordinator.hass = SimpleNamespace(
+            states=SimpleNamespace(
+                get=lambda _entity_id: SimpleNamespace(state="unavailable")
+            )
+        )
+        coordinator._last_known_soc_pct = 37.0
+        coordinator._last_valid_soc_at = dt.datetime.now(
+            dt.timezone.utc
+        ) - dt.timedelta(seconds=301)
+        coordinator._soc_control_ready = True
+        coordinator._soc_recovered = False
+
+        self.assertEqual(coordinator._battery_soc_pct(), 37.0)
+        self.assertFalse(coordinator._soc_control_ready)
+        self.assertFalse(coordinator._soc_recovered)
+
+    def test_coordinator_marks_soc_recovery_for_immediate_replan(self):
+        coordinator = object.__new__(BatteryStrategyCoordinator)
+        coordinator.entry = SimpleNamespace(
+            data={"battery_soc_entity": "sensor.battery_soc"}
+        )
+        coordinator.hass = SimpleNamespace(
+            states=SimpleNamespace(get=lambda _entity_id: SimpleNamespace(state="41"))
+        )
+        coordinator._last_known_soc_pct = 37.0
+        coordinator._last_valid_soc_at = dt.datetime.now(
+            dt.timezone.utc
+        ) - dt.timedelta(seconds=301)
+        coordinator._soc_control_ready = False
+        coordinator._soc_recovered = False
+
+        self.assertEqual(coordinator._battery_soc_pct(), 41.0)
+        self.assertTrue(coordinator._soc_control_ready)
+        self.assertTrue(coordinator._soc_recovered)
+
     def test_manual_charge_is_override_but_respects_battery_limits(self):
         cmd = calculate_command(
             StrategyInputs(
