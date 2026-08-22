@@ -15,17 +15,35 @@ from .common import (
 
 
 @dataclass(frozen=True, slots=True)
+class LoadFeatureValue:
+    """One canonical numeric feature; the stable key includes its unit."""
+
+    feature_key: str
+    value: float
+    quality: DataQuality = DataQuality()
+
+    def __post_init__(self) -> None:
+        if not self.feature_key:
+            raise ValueError("load feature key is required")
+        require_finite("value", self.value)
+
+
+@dataclass(frozen=True, slots=True)
 class LoadComponentEnergy:
     """Measured energy for one named subset of whole-house load."""
 
     component_key: str
     energy_kwh: float
     quality: DataQuality = DataQuality()
+    features: tuple[LoadFeatureValue, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.component_key:
             raise ValueError("load component key is required")
         require_nonnegative("energy_kwh", self.energy_kwh)
+        keys = tuple(item.feature_key for item in self.features)
+        if len(set(keys)) != len(keys):
+            raise ValueError("load component feature keys must be unique")
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,11 +150,15 @@ class LoadDriverSnapshot:
     driver_key: str
     power_w: float
     quality: DataQuality = DataQuality()
+    features: tuple[LoadFeatureValue, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.driver_key:
             raise ValueError("load driver key is required")
         require_nonnegative("power_w", self.power_w)
+        keys = tuple(item.feature_key for item in self.features)
+        if len(set(keys)) != len(keys):
+            raise ValueError("load driver feature keys must be unique")
 
 
 @dataclass(frozen=True, slots=True)
@@ -259,6 +281,7 @@ class LoadForecaster(Protocol):
         request: ForecastRequest,
         history: tuple[HistoricalFeatureSlot, ...],
         context: LoadForecastContext,
+        weather: tuple[WeatherSlot, ...],
     ) -> LoadForecast: ...
 
 

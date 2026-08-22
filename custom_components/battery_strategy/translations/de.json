@@ -137,5 +137,77 @@
       "invalid_price_entity": "Diese Entity muss Viertelstundenpreise im Attribut data bereitstellen.",
       "invalid_soc_range": "Der minimale SoC muss kleiner als der maximale SoC sein."
     }
+  },
+  "config_subentries": {
+    "load_component": {
+      "entry_type": "Lastkomponente",
+      "abort": {
+        "reconfigure_successful": "Lastkomponente erfolgreich aktualisiert."
+      },
+      "error": {
+        "entity_not_found": "Diese Entity existiert nicht in Home Assistant.",
+        "invalid_power_unit": "Die Leistungs-Entity muss W, kW oder MW liefern.",
+        "invalid_time_windows": "Nutze kommaseparierte Tagesfenster wie 00:00-05:00,09:00-17:00.",
+        "invalid_component_key": "Nutze einen nicht leeren Kleinbuchstaben-Schluessel aus Buchstaben, Ziffern und Unterstrichen."
+      },
+      "step": {
+        "user": {
+          "title": "Lastkomponente hinzufuegen",
+          "description": "Waehle ein kompaktes Profil. Modellkoeffizienten werden gelernt und hier nicht konfiguriert.",
+          "data": {
+            "profile": "Profil"
+          }
+        },
+        "details": {
+          "title": "Lastkomponente konfigurieren",
+          "description": "Ordne nur Messwerte zu. Wetter wird zentral von Open-Meteo geladen.",
+          "data": {
+            "name": "Name",
+            "power_entity": "Gemeinsamer Leistungszaehler",
+            "component_key": "Stabiler Komponenten-Schluessel",
+            "activity_entity": "Waermepumpen-Aktivitaet",
+            "outdoor_temperature_entity": "Aussentemperatur",
+            "dhw_temperature_entity": "Warmwassertemperatur",
+            "dhw_target_entity": "Warmwasser-Solltemperatur",
+            "dhw_differential_entity": "Warmwasser-Hysterese",
+            "dhw_charging_entity": "Warmwasserbereitung aktiv",
+            "circulation_entity": "Warmwasser-Zirkulation",
+            "heating_active_entity": "Raumheizung aktiv",
+            "target_flow_temperature_entity": "Soll-Vorlauftemperatur",
+            "dhw_allowed_windows": "Erlaubte Warmwasser-Zeitfenster",
+            "climate_entities": "Klima-Innengeraete"
+          }
+        },
+        "reconfigure": {
+          "title": "Lastkomponente neu konfigurieren",
+          "description": "Aktualisiere Messwerte. Die Integration wird nach dem Speichern einmal neu geladen.",
+          "data": {
+            "name": "Name",
+            "power_entity": "Gemeinsamer Leistungszaehler",
+            "component_key": "Stabiler Komponenten-Schluessel",
+            "activity_entity": "Waermepumpen-Aktivitaet",
+            "outdoor_temperature_entity": "Aussentemperatur",
+            "dhw_temperature_entity": "Warmwassertemperatur",
+            "dhw_target_entity": "Warmwasser-Solltemperatur",
+            "dhw_differential_entity": "Warmwasser-Hysterese",
+            "dhw_charging_entity": "Warmwasserbereitung aktiv",
+            "circulation_entity": "Warmwasser-Zirkulation",
+            "heating_active_entity": "Raumheizung aktiv",
+            "target_flow_temperature_entity": "Soll-Vorlauftemperatur",
+            "dhw_allowed_windows": "Erlaubte Warmwasser-Zeitfenster",
+            "climate_entities": "Klima-Innengeraete"
+          }
+        }
+      }
+    }
+  },
+  "selector": {
+    "load_component_profile": {
+      "options": {
+        "ems_esp_heat_pump": "EMS-ESP-Waermepumpe",
+        "air_conditioning": "Klimaanlage mit gemeinsamem Zaehler",
+        "generic_metered": "Generischer gemessener Verbraucher"
+      }
+    }
   }
 }

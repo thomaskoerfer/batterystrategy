@@ -5,6 +5,27 @@ from __future__ import annotations
 DOMAIN = "battery_strategy"
 CONFIG_ENTRY_VERSION = 2
 
+SUBENTRY_TYPE_LOAD_COMPONENT = "load_component"
+CONF_LOAD_COMPONENT_PROFILE = "profile"
+CONF_LOAD_COMPONENT_NAME = "name"
+CONF_COMPONENT_POWER_ENTITY = "power_entity"
+CONF_COMPONENT_KEY = "component_key"
+CONF_HP_ACTIVITY_ENTITY = "activity_entity"
+CONF_HP_OUTDOOR_TEMP_ENTITY = "outdoor_temperature_entity"
+CONF_HP_DHW_TEMP_ENTITY = "dhw_temperature_entity"
+CONF_HP_DHW_TARGET_ENTITY = "dhw_target_entity"
+CONF_HP_DHW_DIFFERENTIAL_ENTITY = "dhw_differential_entity"
+CONF_HP_DHW_CHARGING_ENTITY = "dhw_charging_entity"
+CONF_HP_CIRCULATION_ENTITY = "circulation_entity"
+CONF_HP_HEATING_ACTIVE_ENTITY = "heating_active_entity"
+CONF_HP_TARGET_FLOW_TEMP_ENTITY = "target_flow_temperature_entity"
+CONF_DHW_ALLOWED_WINDOWS = "dhw_allowed_windows"
+CONF_CLIMATE_ENTITIES = "climate_entities"
+
+LOAD_PROFILE_HEAT_PUMP = "ems_esp_heat_pump"
+LOAD_PROFILE_AIR_CONDITIONING = "air_conditioning"
+LOAD_PROFILE_GENERIC = "generic_metered"
+
 CONF_GRID_MODE = "grid_mode"
 CONF_BATTERY_PROFILE = "battery_profile"
 CONF_SIGNED_GRID_POWER_ENTITY = "signed_grid_power_entity"

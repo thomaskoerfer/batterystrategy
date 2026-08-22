@@ -72,5 +72,6 @@ async def async_get_config_entry_diagnostics(hass, entry) -> dict:
             for key, value in (data.get("optimizer_attrs") or {}).items()
             if key.startswith("forecast_shadow_")
         },
+        "forecast_shadow_environment": data.get("forecast_shadow_environment"),
         "strategy_enabled": data.get("strategy_enabled"),
     }

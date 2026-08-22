@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 SLOT_MS = 15 * 60 * 1000
-CONTRACT_SCHEMA_VERSION = 2
+CONTRACT_SCHEMA_VERSION = 3
 
 
 class QualityFlag(StrEnum):
@@ -22,6 +22,8 @@ class QualityFlag(StrEnum):
     COUNTER_RESET = "counter_reset"
     RESTART_GAP = "restart_gap"
     COMPONENT_MISMATCH = "component_mismatch"
+    MISSING_COMPONENT = "missing_component"
+    MISSING_WEATHER = "missing_weather"
 
 
 @dataclass(frozen=True, slots=True)

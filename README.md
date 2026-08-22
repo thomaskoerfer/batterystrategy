@@ -48,6 +48,14 @@ Existing installations preserve their stored control state. A fresh installation
 Use **Reconfigure** to change mapped Home Assistant entities and **Configure**
 to change strategy options. Both paths perform one managed integration reload.
 
+Independently metered loads are added as **Load component** subentries on the
+Battery Strategy integration. Available profiles are EMS-ESP heat pump (DHW and
+space heating are separated), shared-meter air conditioning with multiple
+indoor climate entities, and a generic metered consumer. These profiles feed the
+recorder-independent Phase-3 shadow forecast only; they do not change battery
+control before the documented forecast cutover. Open-Meteo weather is loaded
+centrally from the Home Assistant location and requires no weather entity.
+
 ## Example dashboard
 
 The integration ships a complete Lovelace example at
@@ -68,10 +76,11 @@ provided by the same release.
 The current actual-savings metric is intentionally a gross battery metric: measured charge energy is split into PV and grid energy, while every measured discharge-counter delta is credited at the applicable import price. Battery export and EV consumption are not yet removed from the discharge credit.
 
 The integration also maintains `battery_strategy_features.json.gz`: a compact,
-atomic 15-minute observation store with 180-day retention. During the Phase-2
-observation window it is diagnostic only and cannot affect forecasts, plans or
-battery commands. Store health and growth are included in integration
-diagnostics; raw feature records are intentionally not exposed as HA entities.
+atomic 15-minute observation store with 180-day retention. During the Phase-3
+observation window it is diagnostic only and cannot affect production
+forecasts, plans or battery commands. Store health and growth are included in
+integration diagnostics; raw feature records are intentionally not exposed as
+HA entities.
 
 ## Troubleshooting
 

@@ -84,7 +84,25 @@ class FeatureAggregatorTests(unittest.TestCase):
         self.assertAlmostEqual(slot.load_components[0].energy_kwh, 0.025)
         self.assertEqual(slot.load_components[0].component_key, "heat_pump")
         self.assertEqual(slot.load_components[0].quality.coverage, 1.0)
-        self.assertGreater(slot.house_load_no_ev_kwh, slot.load_components[0].energy_kwh)
+        self.assertGreater(
+            slot.house_load_no_ev_kwh, slot.load_components[0].energy_kwh
+        )
+
+    def test_component_context_features_are_time_weighted_and_persisted(self):
+        aggregator = FeatureAggregator()
+        slot = complete_slot(
+            aggregator,
+            load_components_w=(("heat_pump_dhw", 100.0),),
+            load_component_features=(
+                ("heat_pump_dhw", (("dhw_temperature_c", 45.0),)),
+            ),
+        )
+        self.assertEqual(
+            slot.load_components[0].features[0].feature_key,
+            "dhw_temperature_c",
+        )
+        self.assertAlmostEqual(slot.load_components[0].features[0].value, 45.0)
+        self.assertEqual(slot.load_components[0].features[0].quality.coverage, 1.0)
 
     def test_component_meter_mismatch_is_flagged_instead_of_rejected(self):
         aggregator = FeatureAggregator()
@@ -170,7 +188,7 @@ class CompressedFeatureStoreTests(unittest.TestCase):
 
             self.assertEqual(store.load(0, 3 * 86_400_000), (second,))
             envelope = json.loads(gzip.decompress(path.read_bytes()))
-            self.assertEqual(envelope["schema_version"], 2)
+            self.assertEqual(envelope["schema_version"], 3)
             self.assertEqual(len(envelope["slots"]), 1)
 
             reloaded = CompressedFeatureStore(path, retention_days=1)
@@ -207,12 +225,54 @@ class CompressedFeatureStoreTests(unittest.TestCase):
             self.assertEqual(len(loaded), 1)
             self.assertEqual(loaded[0].load_components, ())
             upgraded = json.loads(gzip.decompress(path.read_bytes()))
-            self.assertEqual(upgraded["schema_version"], 2)
+            self.assertEqual(upgraded["schema_version"], 3)
             self.assertTrue(Path(str(path) + ".schema1.bak").exists())
             store.downgrade_to_schema_one()
             downgraded = json.loads(gzip.decompress(path.read_bytes()))
             self.assertEqual(downgraded["schema_version"], 1)
             self.assertNotIn("load_components", downgraded["slots"][0])
+
+    def test_version_two_store_migrates_and_can_be_downgraded_without_energy_loss(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "features.json.gz"
+            payload = {
+                "schema_version": 2,
+                "retention_days": 180,
+                "slots": [
+                    {
+                        "start_ms": 0,
+                        "house_load_no_ev_kwh": 0.2,
+                        "pv_generation_kwh": 0.0,
+                        "grid_import_kwh": 0.2,
+                        "grid_export_kwh": 0.0,
+                        "battery_charge_kwh": 0.0,
+                        "battery_discharge_kwh": 0.0,
+                        "ev_charge_kwh": 0.0,
+                        "price_ct_per_kwh": 30.0,
+                        "coverage": 1.0,
+                        "flags": [],
+                        "load_components": [
+                            {
+                                "key": "air_conditioning",
+                                "energy_kwh": 0.05,
+                                "coverage": 1.0,
+                                "flags": [],
+                            }
+                        ],
+                    }
+                ],
+            }
+            path.write_bytes(gzip.compress(json.dumps(payload).encode()))
+            store = CompressedFeatureStore(path)
+            store.initialize()
+            self.assertEqual(
+                store.load(0, SLOT_MS)[0].load_components[0].energy_kwh, 0.05
+            )
+            self.assertTrue(Path(str(path) + ".schema2.bak").exists())
+            store.downgrade_to_schema_two()
+            downgraded = json.loads(gzip.decompress(path.read_bytes()))
+            self.assertEqual(downgraded["schema_version"], 2)
+            self.assertNotIn("features", downgraded["slots"][0]["load_components"][0])
 
 
 class FeatureCoordinatorAdapterTests(unittest.TestCase):

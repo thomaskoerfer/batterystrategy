@@ -20,6 +20,7 @@ from custom_components.battery_strategy.contracts import (
     ForecastRequest,
     ForecastSlot,
     LoadDriverSnapshot,
+    LoadFeatureValue,
     LoadForecast,
     LoadForecastComponent,
     LoadForecastContext,
@@ -125,6 +126,23 @@ class ContractTests(unittest.TestCase):
                 (
                     LoadDriverSnapshot("heat_pump", 300.0),
                     LoadDriverSnapshot("heat_pump", 400.0),
+                ),
+            )
+
+    def test_load_features_are_finite_and_unique(self):
+        driver = LoadDriverSnapshot(
+            "heat_pump_dhw",
+            0.0,
+            features=(LoadFeatureValue("dhw_temperature_c", 45.0),),
+        )
+        self.assertEqual(driver.features[0].value, 45.0)
+        with self.assertRaisesRegex(ValueError, "unique"):
+            LoadDriverSnapshot(
+                "heat_pump_dhw",
+                0.0,
+                features=(
+                    LoadFeatureValue("dhw_temperature_c", 45.0),
+                    LoadFeatureValue("dhw_temperature_c", 46.0),
                 ),
             )
 

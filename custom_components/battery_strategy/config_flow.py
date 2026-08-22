@@ -13,6 +13,7 @@ except (
     config_entries = None
     selector = None
 
+from .component_config import DEFAULT_DHW_ALLOWED_WINDOWS, validate_allowed_windows
 from .const import (
     BATTERY_PROFILE_GENERIC,
     BATTERY_PROFILE_ZENDURE,
@@ -22,6 +23,10 @@ from .const import (
     CONF_BATTERY_POWER_ENTITY,
     CONF_BATTERY_PROFILE,
     CONF_BATTERY_SOC_ENTITY,
+    CONF_CLIMATE_ENTITIES,
+    CONF_COMPONENT_KEY,
+    CONF_COMPONENT_POWER_ENTITY,
+    CONF_DHW_ALLOWED_WINDOWS,
     CONF_EV_POWER_ENTITY,
     CONF_GRID_EXPORT_ENTITY,
     CONF_GRID_IMPORT_ENTITY,
@@ -29,6 +34,17 @@ from .const import (
     CONF_GRID_L2_ENTITY,
     CONF_GRID_L3_ENTITY,
     CONF_GRID_MODE,
+    CONF_HP_ACTIVITY_ENTITY,
+    CONF_HP_CIRCULATION_ENTITY,
+    CONF_HP_DHW_CHARGING_ENTITY,
+    CONF_HP_DHW_DIFFERENTIAL_ENTITY,
+    CONF_HP_DHW_TARGET_ENTITY,
+    CONF_HP_DHW_TEMP_ENTITY,
+    CONF_HP_HEATING_ACTIVE_ENTITY,
+    CONF_HP_OUTDOOR_TEMP_ENTITY,
+    CONF_HP_TARGET_FLOW_TEMP_ENTITY,
+    CONF_LOAD_COMPONENT_NAME,
+    CONF_LOAD_COMPONENT_PROFILE,
     CONF_PRICE_ENTITY,
     CONF_PV_CAPACITY_KWP,
     CONF_PV_INVERTER_POWER_KW,
@@ -51,11 +67,15 @@ from .const import (
     GRID_MODE_IMPORT_EXPORT,
     GRID_MODE_SIGNED,
     GRID_MODE_THREE_PHASE,
+    LOAD_PROFILE_AIR_CONDITIONING,
+    LOAD_PROFILE_GENERIC,
+    LOAD_PROFILE_HEAT_PUMP,
     MANUAL_CHARGE,
     MANUAL_DISCHARGE,
     MANUAL_OFF,
     PV_CHARGING_OFF,
     PV_CHARGING_ON,
+    SUBENTRY_TYPE_LOAD_COMPONENT,
 )
 
 if config_entries is not None:
@@ -66,6 +86,14 @@ if config_entries is not None:
             return str
         return selector.EntitySelector(selector.EntitySelectorConfig(domain=domains))
 
+    def _multiple_entity_selector(domains: list[str]):
+        """Return a multiple Home Assistant entity selector."""
+        if selector is None:
+            return list
+        return selector.EntitySelector(
+            selector.EntitySelectorConfig(domain=domains, multiple=True)
+        )
+
     def _select_selector(options: list[str]):
         """Return a select selector."""
         if selector is None:
@@ -73,6 +101,18 @@ if config_entries is not None:
         return selector.SelectSelector(
             selector.SelectSelectorConfig(
                 options=options, mode=selector.SelectSelectorMode.DROPDOWN
+            )
+        )
+
+    def _translated_select_selector(options: list[str], translation_key: str):
+        """Return a select whose labels come from integration translations."""
+        if selector is None:
+            return vol.In(options)
+        return selector.SelectSelector(
+            selector.SelectSelectorConfig(
+                options=options,
+                mode=selector.SelectSelectorMode.DROPDOWN,
+                translation_key=translation_key,
             )
         )
 
@@ -253,6 +293,11 @@ if config_entries is not None:
 
         VERSION = CONFIG_ENTRY_VERSION
 
+        @classmethod
+        def async_get_supported_subentry_types(cls, config_entry):
+            """Return independently configurable load-component profiles."""
+            return {SUBENTRY_TYPE_LOAD_COMPONENT: LoadComponentSubentryFlowHandler}
+
         async def async_step_import(self, user_input):
             """Import a minimal YAML configuration."""
             await self.async_set_unique_id(DOMAIN)
@@ -309,6 +354,85 @@ if config_entries is not None:
         def async_get_options_flow(config_entry):
             """Return the options flow."""
             return BatteryStrategyOptionsFlow()
+
+    class LoadComponentSubentryFlowHandler(config_entries.ConfigSubentryFlow):
+        """Add or reconfigure one independently metered load profile."""
+
+        def __init__(self) -> None:
+            self._profile: str | None = None
+
+        async def async_step_user(self, user_input=None):
+            """Select a profile before showing its compact mapping form."""
+            if user_input is not None:
+                self._profile = str(user_input[CONF_LOAD_COMPONENT_PROFILE])
+                return await self.async_step_details()
+            return self.async_show_form(
+                step_id="user",
+                data_schema=vol.Schema(
+                    {
+                        vol.Required(
+                            CONF_LOAD_COMPONENT_PROFILE
+                        ): _translated_select_selector(
+                            [
+                                LOAD_PROFILE_HEAT_PUMP,
+                                LOAD_PROFILE_AIR_CONDITIONING,
+                                LOAD_PROFILE_GENERIC,
+                            ],
+                            "load_component_profile",
+                        )
+                    }
+                ),
+            )
+
+        async def async_step_details(self, user_input=None):
+            """Configure the selected profile."""
+            if user_input is not None:
+                errors = _validate_load_component(self.hass, self._profile, user_input)
+                if not errors:
+                    data = dict(user_input)
+                    data[CONF_LOAD_COMPONENT_PROFILE] = self._profile
+                    return self.async_create_entry(
+                        title=str(data.get(CONF_LOAD_COMPONENT_NAME) or self._profile),
+                        data=data,
+                        unique_id=_load_component_unique_id(self._profile, data),
+                    )
+                defaults = user_input
+            else:
+                errors = {}
+                defaults = {}
+            return self.async_show_form(
+                step_id="details",
+                data_schema=_load_component_schema(self.hass, self._profile, defaults),
+                errors=errors,
+            )
+
+        async def async_step_reconfigure(self, user_input=None):
+            """Reconfigure one existing load component and reload once."""
+            subentry = self._get_reconfigure_subentry()
+            defaults = dict(subentry.data)
+            self._profile = str(
+                defaults.get(CONF_LOAD_COMPONENT_PROFILE, LOAD_PROFILE_GENERIC)
+            )
+            if user_input is not None:
+                errors = _validate_load_component(self.hass, self._profile, user_input)
+                if not errors:
+                    data = dict(user_input)
+                    data[CONF_LOAD_COMPONENT_PROFILE] = self._profile
+                    return self.async_update_reload_and_abort(
+                        self._get_entry(),
+                        subentry,
+                        data=data,
+                        title=str(data.get(CONF_LOAD_COMPONENT_NAME) or self._profile),
+                        unique_id=_load_component_unique_id(self._profile, data),
+                    )
+                defaults = user_input
+            else:
+                errors = {}
+            return self.async_show_form(
+                step_id="reconfigure",
+                data_schema=_load_component_schema(self.hass, self._profile, defaults),
+                errors=errors,
+            )
 
     class BatteryStrategyOptionsFlow(config_entries.OptionsFlowWithReload):
         """Handle Battery Strategy options."""
@@ -507,6 +631,184 @@ if config_entries is not None:
             options = dict(self.config_entry.options)
             options.update(user_input)
             return self.async_create_entry(title="", data=options)
+
+    def _load_component_schema(hass, profile: str, data: dict) -> vol.Schema:
+        """Return only the mappings required by the selected component profile."""
+        discovered = (
+            _discover_ems_esp_entities(hass)
+            if profile == LOAD_PROFILE_HEAT_PUMP
+            else {}
+        )
+
+        def current(key, fallback=""):
+            return data.get(key) or discovered.get(key) or fallback
+
+        common = {
+            vol.Required(
+                CONF_LOAD_COMPONENT_NAME,
+                default=current(
+                    CONF_LOAD_COMPONENT_NAME,
+                    {
+                        LOAD_PROFILE_HEAT_PUMP: "Heat pump",
+                        LOAD_PROFILE_AIR_CONDITIONING: "Air conditioning",
+                        LOAD_PROFILE_GENERIC: "Metered load",
+                    }.get(profile, "Load component"),
+                ),
+            ): str,
+            vol.Required(
+                CONF_COMPONENT_POWER_ENTITY,
+                default=current(CONF_COMPONENT_POWER_ENTITY),
+            ): _entity_selector(["sensor"]),
+        }
+        if profile == LOAD_PROFILE_HEAT_PUMP:
+            common.update(
+                {
+                    vol.Required(
+                        CONF_HP_ACTIVITY_ENTITY,
+                        default=current(CONF_HP_ACTIVITY_ENTITY),
+                    ): _entity_selector(["sensor"]),
+                    vol.Required(
+                        CONF_HP_OUTDOOR_TEMP_ENTITY,
+                        default=current(CONF_HP_OUTDOOR_TEMP_ENTITY),
+                    ): _entity_selector(["sensor"]),
+                    vol.Required(
+                        CONF_HP_DHW_TEMP_ENTITY,
+                        default=current(CONF_HP_DHW_TEMP_ENTITY),
+                    ): _entity_selector(["sensor"]),
+                    vol.Required(
+                        CONF_HP_DHW_TARGET_ENTITY,
+                        default=current(CONF_HP_DHW_TARGET_ENTITY),
+                    ): _entity_selector(["sensor", "number"]),
+                    vol.Required(
+                        CONF_HP_DHW_DIFFERENTIAL_ENTITY,
+                        default=current(CONF_HP_DHW_DIFFERENTIAL_ENTITY),
+                    ): _entity_selector(["sensor", "number"]),
+                    _optional_entity_key(
+                        CONF_HP_DHW_CHARGING_ENTITY,
+                        current(CONF_HP_DHW_CHARGING_ENTITY),
+                    ): _entity_selector(["binary_sensor"]),
+                    _optional_entity_key(
+                        CONF_HP_CIRCULATION_ENTITY,
+                        current(CONF_HP_CIRCULATION_ENTITY),
+                    ): _entity_selector(["binary_sensor", "switch"]),
+                    _optional_entity_key(
+                        CONF_HP_HEATING_ACTIVE_ENTITY,
+                        current(CONF_HP_HEATING_ACTIVE_ENTITY),
+                    ): _entity_selector(["binary_sensor"]),
+                    _optional_entity_key(
+                        CONF_HP_TARGET_FLOW_TEMP_ENTITY,
+                        current(CONF_HP_TARGET_FLOW_TEMP_ENTITY),
+                    ): _entity_selector(["sensor", "number"]),
+                    vol.Required(
+                        CONF_DHW_ALLOWED_WINDOWS,
+                        default=current(
+                            CONF_DHW_ALLOWED_WINDOWS, DEFAULT_DHW_ALLOWED_WINDOWS
+                        ),
+                    ): str,
+                }
+            )
+        elif profile == LOAD_PROFILE_AIR_CONDITIONING:
+            common.update(
+                {
+                    vol.Required(
+                        CONF_COMPONENT_KEY,
+                        default=current(CONF_COMPONENT_KEY, "air_conditioning"),
+                    ): str,
+                    vol.Required(
+                        CONF_CLIMATE_ENTITIES,
+                        default=current(CONF_CLIMATE_ENTITIES, []),
+                    ): _multiple_entity_selector(["climate"]),
+                }
+            )
+        else:
+            common[
+                vol.Required(
+                    CONF_COMPONENT_KEY,
+                    default=current(CONF_COMPONENT_KEY, "metered_load"),
+                )
+            ] = str
+        return vol.Schema(common)
+
+    def _validate_load_component(hass, profile: str, data: dict) -> dict[str, str]:
+        """Reject missing meters and malformed semantic keys before collection."""
+        errors: dict[str, str] = {}
+        power_entity = data.get(CONF_COMPONENT_POWER_ENTITY)
+        state = hass.states.get(power_entity) if power_entity else None
+        if state is None:
+            errors[CONF_COMPONENT_POWER_ENTITY] = "entity_not_found"
+        elif str(state.attributes.get("unit_of_measurement") or "").lower() not in {
+            "w",
+            "kw",
+            "mw",
+        }:
+            errors[CONF_COMPONENT_POWER_ENTITY] = "invalid_power_unit"
+        if profile == LOAD_PROFILE_HEAT_PUMP and not validate_allowed_windows(
+            str(data.get(CONF_DHW_ALLOWED_WINDOWS, ""))
+        ):
+            errors[CONF_DHW_ALLOWED_WINDOWS] = "invalid_time_windows"
+        if profile == LOAD_PROFILE_HEAT_PUMP:
+            for key in (
+                CONF_HP_ACTIVITY_ENTITY,
+                CONF_HP_OUTDOOR_TEMP_ENTITY,
+                CONF_HP_DHW_TEMP_ENTITY,
+                CONF_HP_DHW_TARGET_ENTITY,
+                CONF_HP_DHW_DIFFERENTIAL_ENTITY,
+            ):
+                entity_id = data.get(key)
+                if not entity_id or hass.states.get(entity_id) is None:
+                    errors[key] = "entity_not_found"
+        if profile == LOAD_PROFILE_AIR_CONDITIONING:
+            climates = data.get(CONF_CLIMATE_ENTITIES) or []
+            if isinstance(climates, str):
+                climates = [climates]
+            if not climates:
+                errors[CONF_CLIMATE_ENTITIES] = "required"
+            elif any(hass.states.get(entity_id) is None for entity_id in climates):
+                errors[CONF_CLIMATE_ENTITIES] = "entity_not_found"
+        key = str(data.get(CONF_COMPONENT_KEY, ""))
+        if profile != LOAD_PROFILE_HEAT_PUMP and (
+            not key
+            or any(
+                character not in "abcdefghijklmnopqrstuvwxyz0123456789_"
+                for character in key
+            )
+        ):
+            errors[CONF_COMPONENT_KEY] = "invalid_component_key"
+        return errors
+
+    def _load_component_unique_id(profile: str, data: dict) -> str:
+        """Return stable subentry identity independent of its display name."""
+        key = (
+            "heat_pump"
+            if profile == LOAD_PROFILE_HEAT_PUMP
+            else str(data.get(CONF_COMPONENT_KEY, "metered_load"))
+        )
+        return f"{profile}:{key}"
+
+    def _discover_ems_esp_entities(hass) -> dict[str, str]:
+        """Suggest known EMS-ESP entities without coupling the runtime adapter."""
+        suffixes = {
+            CONF_COMPONENT_POWER_ENTITY: "hpcurrpower",
+            CONF_HP_ACTIVITY_ENTITY: "hpactivity",
+            CONF_HP_OUTDOOR_TEMP_ENTITY: "outdoortemp",
+            CONF_HP_DHW_TEMP_ENTITY: "dhw_curtemp",
+            CONF_HP_DHW_TARGET_ENTITY: "dhw_settemp",
+            CONF_HP_DHW_DIFFERENTIAL_ENTITY: "dhw_ecoplusdiff",
+            CONF_HP_DHW_CHARGING_ENTITY: "dhw_charging",
+            CONF_HP_CIRCULATION_ENTITY: "dhw_circ",
+            CONF_HP_HEATING_ACTIVE_ENTITY: "heatingactive",
+            CONF_HP_TARGET_FLOW_TEMP_ENTITY: "targetflowtemp",
+        }
+        result = {}
+        for key, suffix in suffixes.items():
+            matches = [
+                entity_id
+                for entity_id in hass.states.async_entity_ids()
+                if entity_id.endswith(suffix)
+            ]
+            if len(matches) == 1:
+                result[key] = matches[0]
+        return result
 
     def _entity_schema(data: dict[str, str]) -> vol.Schema:
         """Return entity mapping schema."""

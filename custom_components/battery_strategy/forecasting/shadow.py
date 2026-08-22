@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 
+from ..component_config import LoadComponentSpec
 from ..contracts import (
     ForecastBundle,
     ForecastEvaluationPoint,
@@ -18,7 +19,9 @@ from ..contracts import (
     QualityFlag,
     QuantileEnergy,
     SlotKey,
+    WeatherSlot,
 )
+from .components import build_component_load_forecast
 from .legacy import (
     LegacyForecastConfig,
     LegacyForecastSample,
@@ -44,7 +47,12 @@ _EVALUATION_LEAD_MINUTES = (15, 60, 360, 720, 1440)
 
 
 def evaluate_feature_store_shadow_snapshot(
-    snapshot: dict[str, object], history: tuple[HistoricalFeatureSlot, ...]
+    snapshot: dict[str, object],
+    history: tuple[HistoricalFeatureSlot, ...],
+    *,
+    weather: tuple[WeatherSlot, ...] = (),
+    drivers: tuple[LoadDriverSnapshot, ...] = (),
+    component_specs: tuple[LoadComponentSpec, ...] = (),
 ) -> ForecastEvaluationRun:
     """Evaluate an optimizer-produced forecast snapshot against feature history."""
     request_data = snapshot["request"]
@@ -58,9 +66,7 @@ def evaluate_feature_store_shadow_snapshot(
     )
     load_slots = tuple(
         ForecastSlot(slot, QuantileEnergy(float(value)))
-        for slot, value in zip(
-            request.slots, production_data["load"], strict=True
-        )
+        for slot, value in zip(request.slots, production_data["load"], strict=True)
     )
     pv_slots = tuple(
         ForecastSlot(slot, QuantileEnergy(float(value)))
@@ -84,7 +90,8 @@ def evaluate_feature_store_shadow_snapshot(
     )
     context = LoadForecastContext(
         float(context_data["house_load_no_ev_w"]),
-        tuple(
+        drivers
+        or tuple(
             LoadDriverSnapshot(str(item[0]), float(item[1]))
             for item in context_data.get("drivers", [])
         ),
@@ -92,7 +99,9 @@ def evaluate_feature_store_shadow_snapshot(
     config = LegacyForecastConfig(
         timezone=str(config_data["timezone"]),
         load_bias=float(config_data["load_bias"]),
-        load_slot_biases=tuple(float(value) for value in config_data["load_slot_biases"]),
+        load_slot_biases=tuple(
+            float(value) for value in config_data["load_slot_biases"]
+        ),
         pv_global_bias=float(config_data["pv_global_bias"]),
         pv_slot_biases=tuple(float(value) for value in config_data["pv_slot_biases"]),
         current_weather_factor=float(config_data["current_weather_factor"]),
@@ -121,6 +130,8 @@ def evaluate_feature_store_shadow_snapshot(
         targets=targets,
         context=context,
         config=config,
+        weather=weather,
+        component_specs=component_specs,
     )
 
 
@@ -132,6 +143,8 @@ def evaluate_feature_store_shadow(
     targets: tuple[LegacyForecastTarget, ...],
     context: LoadForecastContext,
     config: LegacyForecastConfig,
+    weather: tuple[WeatherSlot, ...] = (),
+    component_specs: tuple[LoadComponentSpec, ...] = (),
 ) -> ForecastEvaluationRun:
     """Compare feature-store and production forecasts without affecting either."""
     eligible = tuple(slot for slot in history if slot.slot.end_ms <= request.as_of_ms)
@@ -169,8 +182,20 @@ def evaluate_feature_store_shadow(
     pv_shadow = None
     component_errors = {}
     try:
-        load_shadow = build_legacy_load_forecast(
-            request, samples, targets, context, config.load_config()
+        load_shadow = (
+            build_component_load_forecast(
+                request,
+                eligible,
+                targets,
+                context,
+                weather,
+                component_specs,
+                config.load_config(),
+            )
+            if component_specs
+            else build_legacy_load_forecast(
+                request, samples, targets, context, config.load_config()
+            )
         )
     except Exception as err:  # noqa: BLE001 - component diagnostics stay isolated.
         component_errors["load"] = f"{type(err).__name__}: {err}"

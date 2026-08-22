@@ -81,6 +81,14 @@ misaligned independently. Measurement mismatch is quality metadata, not a reason
 to reject an otherwise usable whole-house slot. An empty tuple means no
 device-level history was supplied, not zero device consumption.
 
+Each component may carry canonical numeric `LoadFeatureValue` values. The stable
+feature key includes its unit, for example `dhw_temperature_c`,
+`outdoor_temperature_c` or `circulation_fraction`; unitless or ambiguous keys are
+not allowed by convention. Historical values are time-weighted slot means with
+their own coverage. Current values use the same keys in `LoadDriverSnapshot`.
+This permits reproducible component training without exposing entity IDs or
+provider-specific payloads to forecasting. Unknown features may be ignored.
+
 The feature store may upsert a slot after late data repair, but consumers only
 receive one version of each sorted slot key.
 
@@ -95,7 +103,10 @@ formats never cross the boundary.
 
 `LoadForecaster` and `PvForecaster` are pure synchronous calculations. I/O is
 completed before they are called. Both receive a `ForecastRequest` containing
-the complete horizon and explicit generation time.
+the complete horizon and explicit generation time. Both receive the same
+normalized, slot-aligned weather snapshot when weather is relevant; they do not
+call a weather provider themselves. A load component may use temperature, but
+must not use PV generation, PV bias or PV plant configuration.
 
 Each result identifies its model version and training cutoff. The cutoff may not
 be later than generation time, preventing accidental future-data leakage in
@@ -120,6 +131,14 @@ extensible `LoadForecastContext`. Adapters map entities to stable semantic
 driver keys; the forecaster may ignore unknown drivers. The whole-house load
 without EV remains the forecast target, and optional device measurements must
 not be subtracted from it a second time.
+
+The general-house-load component is the non-negative measured residual after
+all configured, valid component energies are removed. A composite model may not
+activate until the configured component set has complete history for its stated
+warm-up period. During warm-up it must retain the whole-house forecast and emit
+zero component contributions, preventing double counting. Missing component
+measurements remain in whole-house load and carry missing-component quality;
+they are never silently treated as measured zero.
 
 ### Forecasting to evaluation
 

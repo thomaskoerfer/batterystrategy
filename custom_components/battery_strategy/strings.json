@@ -137,5 +137,77 @@
       "invalid_price_entity": "This entity must provide quarter-hour prices in its data attribute.",
       "invalid_soc_range": "Minimum SoC must be lower than maximum SoC."
     }
+  },
+  "config_subentries": {
+    "load_component": {
+      "entry_type": "Load component",
+      "abort": {
+        "reconfigure_successful": "Load component updated successfully."
+      },
+      "error": {
+        "entity_not_found": "This entity does not exist in Home Assistant.",
+        "invalid_power_unit": "The power entity must report W, kW or MW.",
+        "invalid_time_windows": "Use comma-separated daily windows such as 00:00-05:00,09:00-17:00.",
+        "invalid_component_key": "Use a non-empty lowercase key containing only letters, digits and underscores."
+      },
+      "step": {
+        "user": {
+          "title": "Add load component",
+          "description": "Choose a compact profile. Model coefficients are learned and are not configured here.",
+          "data": {
+            "profile": "Profile"
+          }
+        },
+        "details": {
+          "title": "Configure load component",
+          "description": "Map only measured inputs. Weather is loaded centrally from Open-Meteo.",
+          "data": {
+            "name": "Name",
+            "power_entity": "Common power meter",
+            "component_key": "Stable component key",
+            "activity_entity": "Heat-pump activity",
+            "outdoor_temperature_entity": "Outdoor temperature",
+            "dhw_temperature_entity": "DHW temperature",
+            "dhw_target_entity": "DHW target temperature",
+            "dhw_differential_entity": "DHW hysteresis",
+            "dhw_charging_entity": "DHW charging",
+            "circulation_entity": "DHW circulation",
+            "heating_active_entity": "Space heating active",
+            "target_flow_temperature_entity": "Target flow temperature",
+            "dhw_allowed_windows": "DHW allowed windows",
+            "climate_entities": "Indoor climate units"
+          }
+        },
+        "reconfigure": {
+          "title": "Reconfigure load component",
+          "description": "Update measured inputs. The integration reloads once after saving.",
+          "data": {
+            "name": "Name",
+            "power_entity": "Common power meter",
+            "component_key": "Stable component key",
+            "activity_entity": "Heat-pump activity",
+            "outdoor_temperature_entity": "Outdoor temperature",
+            "dhw_temperature_entity": "DHW temperature",
+            "dhw_target_entity": "DHW target temperature",
+            "dhw_differential_entity": "DHW hysteresis",
+            "dhw_charging_entity": "DHW charging",
+            "circulation_entity": "DHW circulation",
+            "heating_active_entity": "Space heating active",
+            "target_flow_temperature_entity": "Target flow temperature",
+            "dhw_allowed_windows": "DHW allowed windows",
+            "climate_entities": "Indoor climate units"
+          }
+        }
+      }
+    }
+  },
+  "selector": {
+    "load_component_profile": {
+      "options": {
+        "ems_esp_heat_pump": "EMS-ESP heat pump",
+        "air_conditioning": "Air conditioning with shared meter",
+        "generic_metered": "Generic metered consumer"
+      }
+    }
   }
 }

@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import json
 import logging
 from dataclasses import asdict, replace
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from .actuator import should_write_limit, should_write_mode, zendure_targets
@@ -47,7 +50,8 @@ from .const import (
     MANUAL_OFF,
     PV_CHARGING_ON,
 )
-from .contracts import QualityFlag
+from .contracts import ForecastRequest, QualityFlag, SlotKey
+from .contracts.common import SLOT_MS
 from .feature_store import (
     CompressedFeatureStore,
     ExecutorFeatureStore,
@@ -55,6 +59,11 @@ from .feature_store import (
     FeatureObservation,
 )
 from .forecast_shadow_runner import ForecastShadowRunner
+from .load_components import (
+    LoadComponentCollection,
+    add_central_weather,
+    collect_load_components,
+)
 from .models import StrategyCommand, StrategyInputs, StrategyOptions
 from .optimizer_adapter import OptimizerEngineAdapter
 from .optimizer_state import last_known_soc_pct
@@ -65,6 +74,7 @@ from .strategy import (
     live_command_from_directive,
     plan_live_directive_from_plan,
 )
+from .weather import OpenMeteoWeatherProvider
 
 LOGGER = logging.getLogger(__name__)
 OPTIMIZER_PREFETCH_LEAD_S = 60
@@ -142,6 +152,14 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             hass.async_add_executor_job,
         )
         self._feature_aggregator = FeatureAggregator()
+        self._load_components = LoadComponentCollection()
+        self._weather = ()
+        self._weather_error: str | None = None
+        self._weather_refresh_key: tuple[dt.date, int] | None = None
+        self._weather_task: asyncio.Task | None = None
+        self._weather_provider = OpenMeteoWeatherProvider(
+            async_get_clientsession(hass), hass.config.latitude, hass.config.longitude
+        )
 
     def set_manual_override(
         self, mode: str, power_w: float, duration_min: int = 0
@@ -236,6 +254,24 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         options = self._strategy_options()
         inputs = self._strategy_inputs()
         now = dt.datetime.now(dt.timezone.utc)
+        local_now = now.astimezone(ZoneInfo(self.hass.config.time_zone))
+        self._load_components = collect_load_components(
+            self.hass, self.entry, local_now
+        )
+        current_slot_ms = int(now.timestamp() * 1000) // SLOT_MS * SLOT_MS
+        current_weather = next(
+            (item for item in self._weather if item.slot.start_ms == current_slot_ms),
+            None,
+        )
+        self._load_components = add_central_weather(
+            self._load_components, current_weather
+        )
+        self._forecast_shadow_runner.set_environment(
+            self._weather,
+            self._load_components.drivers,
+            self._load_components.specs,
+        )
+        self._schedule_weather_refresh(now, local_now)
         try:
             finalized_features = self._feature_aggregator.observe(
                 FeatureObservation(
@@ -247,6 +283,8 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
                     ev_charge_w=inputs.ev_power_w,
                     price_ct_per_kwh=self._current_price_ct(now),
                     quality_flags=self._feature_quality_flags(),
+                    load_components_w=self._load_components.powers_w,
+                    load_component_features=self._load_components.features,
                 )
             )
         except Exception as err:  # noqa: BLE001 - shadow code must not stop control.
@@ -326,7 +364,64 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         data["feature_store"] = self._feature_store.diagnostics(
             self._feature_aggregator.active_coverage
         )
+        data["forecast_shadow_environment"] = {
+            "component_profiles": [
+                {
+                    "component_key": item.component_key,
+                    "profile": item.profile,
+                }
+                for item in self._load_components.specs
+            ],
+            "valid_component_meter_count": len(self._load_components.powers_w),
+            "weather_slot_count": len(self._weather),
+            "weather_error": self._weather_error,
+        }
         return data
+
+    def _schedule_weather_refresh(
+        self, now: dt.datetime, local_now: dt.datetime
+    ) -> None:
+        """Refresh weather in the background at most once per quarter-hour."""
+        key = (local_now.date(), local_now.hour * 4 + local_now.minute // 15)
+        if key == self._weather_refresh_key:
+            return
+        if self._weather_task is not None and not self._weather_task.done():
+            return
+        self._weather_refresh_key = key
+        local_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+        start_ms = int(local_start.astimezone(dt.timezone.utc).timestamp() * 1000)
+        start_ms = start_ms // SLOT_MS * SLOT_MS
+        slots = tuple(
+            SlotKey(start_ms + index * SLOT_MS, start_ms + (index + 1) * SLOT_MS)
+            for index in range(4 * 96)
+        )
+        request = ForecastRequest(
+            int(now.timestamp() * 1000), self.hass.config.time_zone, slots
+        )
+        self._weather_task = self.hass.async_create_task(
+            self._async_refresh_weather(request),
+            name="battery_strategy_shadow_weather",
+        )
+
+    async def _async_refresh_weather(self, request: ForecastRequest) -> None:
+        """Update the normalized weather snapshot without affecting control."""
+        try:
+            self._weather = await self._weather_provider.load(request)
+            self._weather_error = None
+            self._forecast_shadow_runner.set_environment(
+                self._weather,
+                self._load_components.drivers,
+                self._load_components.specs,
+            )
+        except Exception as err:  # noqa: BLE001 - optional shadow input.
+            self._weather = ()
+            self._weather_error = f"{type(err).__name__}: {err}"
+            self._forecast_shadow_runner.set_environment(
+                (),
+                self._load_components.drivers,
+                self._load_components.specs,
+            )
+            LOGGER.warning("Shadow weather refresh failed: %s", err)
 
     def _current_price_ct(self, now: dt.datetime) -> float | None:
         """Return the configured Tibber Prices value normalized to ct/kWh."""
@@ -852,6 +947,13 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
                 LOGGER.warning(
                     "Could not confirm safe battery stop before unloading Battery Strategy"
                 )
+        weather_task = getattr(self, "_weather_task", None)
+        if weather_task is not None and not weather_task.done():
+            weather_task.cancel()
+            try:
+                await weather_task
+            except asyncio.CancelledError:
+                pass
         await self._planner.async_shutdown()
 
     def _disabled_display_command(self, command: StrategyCommand) -> StrategyCommand:

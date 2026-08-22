@@ -133,11 +133,12 @@ That module is a migration source, not the desired permanent boundary.
 
 ## Migration plan and gates
 
-Current status: Phase 2 collection runs since release `0.2.0-beta.15`. Phase 3
-is prepared and contract-approved in `0.2.0-beta.19`, but is not deployed yet.
-Its observation window starts only after deployment and confirmed shadow
+Current status: Phase 2 collection runs since release `0.2.0-beta.15`. The first
+Phase-3 feature-store shadow runs in `0.2.0-beta.19`. The next Phase-3 increment
+adds independently configured load components and one central weather adapter;
+its component observation window starts only after deployment and confirmed
 diagnostics. Production forecasting and control continue to use their existing
-Recorder-derived inputs until the Phase-3 observation gate passes.
+Recorder-derived inputs until the Phase-3 gate passes.
 
 ### Phase 0: Baseline and contracts
 
@@ -203,6 +204,11 @@ no effect on commands, forecasts or savings.
   independent. Compose total EV-free load from explicit named components so
   separately metered devices can later evolve without changing PV or unrelated
   base-load logic.
+- Fetch normalized weather once through the weather adapter and pass one
+  immutable slot snapshot to forecasters. No component performs network I/O.
+- Configure independently metered loads as config subentries. Initial profiles
+  split heat-pump DHW and space heating, model one shared AC outdoor-unit meter
+  with multiple indoor contexts, and support a generic metered consumer.
 
 Gate: at least seven complete days including weekdays and a weekend. Load and PV
 are assessed independently against identical actual slots by lead time, time of
