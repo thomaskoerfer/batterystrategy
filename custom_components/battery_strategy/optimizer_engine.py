@@ -79,6 +79,7 @@ GRID_CHARGING_ENABLED = True
 DISCHARGE_ENABLED = True
 PLANNING_HORIZON_H = 48
 ENERGY_STEP_KWH = 0.025
+ECONOMIC_COST_TIE_EUR = 1e-9
 MIN_MARGIN_CT = 2.0
 HISTORY_DAYS = 60
 ACTUAL_SAVINGS_DAYS = 21
@@ -1593,6 +1594,32 @@ def _economic_step_cost_eur(
     ) / 100.0
 
 
+def _economic_path_is_better(
+    candidate_cost_eur,
+    candidate_grid_charge_kwh,
+    candidate_grid_charge_time_score,
+    best_cost_eur,
+    best_grid_charge_kwh,
+    best_grid_charge_time_score,
+):
+    """Compare plans lexicographically without changing their monetary value."""
+    cost_delta = float(candidate_cost_eur) - float(best_cost_eur)
+    if cost_delta < -ECONOMIC_COST_TIE_EUR:
+        return True
+    if abs(cost_delta) > ECONOMIC_COST_TIE_EUR:
+        return False
+
+    grid_delta = float(candidate_grid_charge_kwh) - float(best_grid_charge_kwh)
+    if grid_delta < -1e-9:
+        return True
+    if abs(grid_delta) > 1e-9:
+        return False
+
+    return float(candidate_grid_charge_time_score) > (
+        float(best_grid_charge_time_score) + 1e-9
+    )
+
+
 def _pv_spill_recovery_budget_ac_kwh(
     future_surplus_kwh,
     baseline_energy_kwh,
@@ -1777,8 +1804,17 @@ def build_virtual_plan(intervals, samples, start_energy_kwh, weather_factor, for
     mode_values = [-1, 0, 1]
     mode_to_idx = {-1: 0, 0: 1, 1: 2}
     dp = [[[inf] * 3 for _ in range(n_states)] for _ in range(n_slots + 1)]
+    dp_grid_charge_kwh = [
+        [[inf] * 3 for _ in range(n_states)] for _ in range(n_slots + 1)
+    ]
+    dp_grid_charge_time_score = [
+        [[-inf] * 3 for _ in range(n_states)] for _ in range(n_slots + 1)
+    ]
     prev = [[[None] * 3 for _ in range(n_states)] for _ in range(n_slots + 1)]
-    dp[0][start_idx][mode_to_idx.get(initial_mode, mode_to_idx[0])] = 0.0
+    initial_mode_idx = mode_to_idx.get(initial_mode, mode_to_idx[0])
+    dp[0][start_idx][initial_mode_idx] = 0.0
+    dp_grid_charge_kwh[0][start_idx][initial_mode_idx] = 0.0
+    dp_grid_charge_time_score[0][start_idx][initial_mode_idx] = 0.0
 
     max_charge_delta_e = ETA_C * MAX_CHARGE_E_SLOT_KWH
     max_discharge_delta_e = MAX_DISCHARGE_E_SLOT_KWH / ETA_D
@@ -1867,7 +1903,14 @@ def build_virtual_plan(intervals, samples, start_energy_kwh, weather_factor, for
             import_price_ct=price_ct,
         )
         step_cost += switch_cost
-        return step_cost, charge_in, discharge_out, grid_import, mode_now
+        return (
+            step_cost,
+            charge_in,
+            discharge_out,
+            grid_import,
+            charge_from_grid,
+            mode_now,
+        )
 
     for t in range(n_slots):
         sl = slots[t]
@@ -1886,11 +1929,38 @@ def build_virtual_plan(intervals, samples, start_energy_kwh, weather_factor, for
                     transition = transition_candidate(t, e_now, prev_mode, energies[j])
                     if transition is None:
                         continue
-                    step_cost, charge_in, discharge_out, grid_import, mode_now = transition
+                    (
+                        step_cost,
+                        charge_in,
+                        discharge_out,
+                        grid_import,
+                        charge_from_grid,
+                        mode_now,
+                    ) = transition
                     mode_now_idx = mode_to_idx[mode_now]
                     cand = base_cost + step_cost
-                    if cand < dp[t + 1][j][mode_now_idx]:
+                    cand_grid_charge_kwh = (
+                        dp_grid_charge_kwh[t][i][prev_mode_idx] + charge_from_grid
+                    )
+                    cand_grid_charge_time_score = (
+                        dp_grid_charge_time_score[t][i][prev_mode_idx]
+                        + charge_from_grid * t
+                    )
+                    if _economic_path_is_better(
+                        cand,
+                        cand_grid_charge_kwh,
+                        cand_grid_charge_time_score,
+                        dp[t + 1][j][mode_now_idx],
+                        dp_grid_charge_kwh[t + 1][j][mode_now_idx],
+                        dp_grid_charge_time_score[t + 1][j][mode_now_idx],
+                    ):
                         dp[t + 1][j][mode_now_idx] = cand
+                        dp_grid_charge_kwh[t + 1][j][mode_now_idx] = (
+                            cand_grid_charge_kwh
+                        )
+                        dp_grid_charge_time_score[t + 1][j][mode_now_idx] = (
+                            cand_grid_charge_time_score
+                        )
                         prev[t + 1][j][mode_now_idx] = (i, prev_mode_idx, charge_in, discharge_out, grid_import, mode_now)
 
     def terminal_adjusted_cost(i, mi):
@@ -1898,10 +1968,29 @@ def build_virtual_plan(intervals, samples, start_energy_kwh, weather_factor, for
         terminal_credit = (terminal_value_ct / 100.0) * end_energy_above_min
         return dp[n_slots][i][mi] - terminal_credit
 
-    end_idx, end_mode_idx = min(
-        ((i, mi) for i in range(n_states) for mi in range(3)),
-        key=lambda x: terminal_adjusted_cost(x[0], x[1]),
-    )
+    end_idx = 0
+    end_mode_idx = 0
+    best_terminal_cost = inf
+    best_terminal_grid_charge_kwh = inf
+    best_terminal_grid_charge_time_score = -inf
+    for i in range(n_states):
+        for mi in range(3):
+            candidate_terminal_cost = terminal_adjusted_cost(i, mi)
+            if _economic_path_is_better(
+                candidate_terminal_cost,
+                dp_grid_charge_kwh[n_slots][i][mi],
+                dp_grid_charge_time_score[n_slots][i][mi],
+                best_terminal_cost,
+                best_terminal_grid_charge_kwh,
+                best_terminal_grid_charge_time_score,
+            ):
+                end_idx = i
+                end_mode_idx = mi
+                best_terminal_cost = candidate_terminal_cost
+                best_terminal_grid_charge_kwh = dp_grid_charge_kwh[n_slots][i][mi]
+                best_terminal_grid_charge_time_score = (
+                    dp_grid_charge_time_score[n_slots][i][mi]
+                )
 
     # Reconstruct optimized trajectory.
     points = [None] * n_slots
@@ -1918,7 +2007,6 @@ def build_virtual_plan(intervals, samples, start_energy_kwh, weather_factor, for
         prev_idx, prev_mode_idx, charge_in, discharge_out, grid_import, mode_now = rec
         sl = slots[t - 1]
         idx = t - 1
-        transition = transition_candidate(idx, energies[prev_idx], mode_values[prev_mode_idx], energies[cur])
         path_before_idx[idx] = prev_idx
         path_after_idx[idx] = cur
         path_discharge_out[idx] = max(0.0, discharge_out)

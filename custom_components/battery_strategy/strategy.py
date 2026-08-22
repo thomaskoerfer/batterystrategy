@@ -23,7 +23,6 @@ from .models import StrategyCommand, StrategyInputs, StrategyOptions
 from .plan_models import PlanLiveDirective, StrategyPlan
 
 SLOT_H = 0.25
-PRICE_VALUE_TIE_CT = 0.5
 
 
 def clamp(value: float, low: float, high: float) -> float:
@@ -180,7 +179,11 @@ def plan_live_directive_from_plan(
         if current_point is not None
         else 0.0
     )
-    required_grid_charge_w = _deadline_required_grid_charge_w(plan, options)
+    required_grid_charge_w = (
+        _planned_grid_charge_kwh(current_point) / SLOT_H * 1000.0
+        if current_point is not None
+        else 0.0
+    )
     grid_charge_allowed = bool(
         options.grid_charging == GRID_CHARGING_PRICE_SENSITIVE
         and required_grid_charge_w >= float(options.min_command_power_w)
@@ -313,44 +316,10 @@ def _planned_discharge_budget_kwh(
     return round(min(available, budget), 3)
 
 
-def _deadline_required_grid_charge_w(plan: StrategyPlan, options: StrategyOptions) -> float:
-    """Return grid charge power that must happen in the current slot to meet the cheap-block plan."""
-    if not plan.points:
-        return 0.0
-
-    current = plan.points[0]
-    current_grid_kwh = _planned_grid_charge_kwh(current)
-    if current_grid_kwh <= 0.0:
-        return 0.0
-
-    current_price = float(current.price_ct)
-    block = _grid_charge_deadline_block(plan, current_price)
-    required_grid_kwh = sum(_planned_grid_charge_kwh(point) for point in block)
-    future_grid_capacity_kwh = sum(_grid_charge_capacity_kwh(point, options) for point in block[1:])
-    required_now_kwh = max(0.0, required_grid_kwh - future_grid_capacity_kwh)
-    return min(current_grid_kwh, required_now_kwh) / SLOT_H * 1000.0
-
-
-def _grid_charge_deadline_block(plan: StrategyPlan, current_price_ct: float):
-    """Return the contiguous block where grid charge can be deferred without worse pricing."""
-    block = []
-    for point in plan.points:
-        if float(point.price_ct) > current_price_ct + PRICE_VALUE_TIE_CT:
-            break
-        block.append(point)
-    return block
-
-
 def _planned_grid_charge_kwh(point) -> float:
     planned_charge_w = max(0.0, float(point.charge_fc_w))
     planned_pv_surplus_w = max(0.0, float(point.pv_fc_w) - float(point.load_fc_w))
     return _power_w_to_slot_kwh_precise(max(0.0, planned_charge_w - planned_pv_surplus_w))
-
-
-def _grid_charge_capacity_kwh(point, options: StrategyOptions) -> float:
-    planned_pv_surplus_w = max(0.0, float(point.pv_fc_w) - float(point.load_fc_w))
-    capacity_w = max(0.0, float(options.max_charge_power_w) - planned_pv_surplus_w)
-    return _power_w_to_slot_kwh_precise(capacity_w)
 
 
 def _power_w_to_slot_kwh_precise(power_w: float) -> float:

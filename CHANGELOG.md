@@ -22,6 +22,10 @@ All notable changes to Battery Strategy are documented here.
 - Kept historical battery acquisition cost as savings accounting instead of
   allowing it to lower the forward-looking optimizer discharge floor.
 - Included configured export revenue in baseline and optimized plan costs.
+- Moved equal-cost grid-charge deferral into a cost-neutral optimizer tie-break
+  so the future-slot table and planned SoC show the schedule that will execute.
+- Made the current slot's published grid component required live charge instead
+  of silently moving it into unpublished future capacity.
 
 ### Safety
 

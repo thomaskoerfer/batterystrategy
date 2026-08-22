@@ -159,6 +159,10 @@ The optimizer returns a `BatteryPlan`. It may plan either charge or discharge in
 one slot, never both. Every slot explicitly identifies whether PV and grid
 charging are commercially allowed. `required_charge_kwh` is the non-deferrable
 portion of planned charge and cannot exceed total planned charge.
+When several grid-charge schedules have identical primary economic cost, the
+optimizer resolves the tie deterministically toward less grid energy and then
+later feasible grid charging. This secondary ordering never overrides forecast
+inputs, uncertainty policy or a primary cost difference.
 `discharge_budget_kwh` is commercial permission, not a live power target. The
 plan carries the battery constraints used during optimization so the compiler
 does not query configuration behind the contract. Planned discharge is expected
@@ -187,7 +191,10 @@ deviations become optimizer input at the next planning run instead.
 
 The plan compiler combines `BatteryPlan` with measured `SlotProgress`. It may
 reduce remaining required charge or discharge budget based on actual progress,
-but it does not re-optimize prices.
+but it does not re-optimize prices or move planned energy between slots. The
+current slot's published grid-charge component is required execution; any
+economic deferral must already be represented in `BatteryPlan` and its SoC
+trajectory.
 
 `PlanLiveDirective` contains every permission the live controller needs:
 allowed charge sources, source-specific power limits, remaining required charge,
