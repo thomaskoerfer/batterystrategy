@@ -198,6 +198,10 @@
             "climate_entities": "Indoor climate units"
           }
         }
+      },
+      "initiate_flow": {
+        "user": "Add load component",
+        "reconfigure": "Reconfigure load component"
       }
     }
   },

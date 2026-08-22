@@ -198,6 +198,10 @@
             "climate_entities": "Klima-Innengeraete"
           }
         }
+      },
+      "initiate_flow": {
+        "user": "Lastkomponente hinzufuegen",
+        "reconfigure": "Lastkomponente neu konfigurieren"
       }
     }
   },
