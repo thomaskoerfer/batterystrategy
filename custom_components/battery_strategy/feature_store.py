@@ -330,7 +330,7 @@ class CompressedFeatureStore:
             "active_slot_coverage": round(float(active_coverage), 4),
             "file_size_bytes": self._file_size(),
             "last_error": self.last_error,
-            "authoritative": False,
+            "authoritative": True,
         }
 
     def _read(self) -> tuple[tuple[HistoricalFeatureSlot, ...], int]:

@@ -16,33 +16,24 @@ from ..contracts import (
     LoadForecast,
     LoadForecastContext,
     PvForecast,
-    QualityFlag,
     QuantileEnergy,
     SlotKey,
     WeatherSlot,
 )
-from .components import build_component_load_forecast
+from .feature_store import (
+    build_feature_store_load_forecast,
+    build_feature_store_pv_forecast,
+    eligible_feature_history,
+    feature_samples,
+    feature_store_forecast_readiness,
+)
 from .legacy import (
     LegacyForecastConfig,
-    LegacyForecastSample,
     LegacyForecastTarget,
 )
-from .load import build_legacy_load_forecast
-from .pv import build_legacy_pv_forecast
 
 SLOT_H = 0.25
 
-_LOAD_INVALID_FLAGS = frozenset(
-    {
-        QualityFlag.MISSING_GRID,
-        QualityFlag.MISSING_PV,
-        QualityFlag.MISSING_BATTERY,
-        QualityFlag.MISSING_EV,
-        QualityFlag.RESTART_GAP,
-    }
-)
-_PV_INVALID_FLAGS = frozenset({QualityFlag.MISSING_PV, QualityFlag.RESTART_GAP})
-_EVALUATION_HISTORY_SLOTS = 7 * 96
 _EVALUATION_LEAD_MINUTES = (15, 60, 360, 720, 1440)
 
 
@@ -147,21 +138,10 @@ def evaluate_feature_store_shadow(
     component_specs: tuple[LoadComponentSpec, ...] = (),
 ) -> ForecastEvaluationRun:
     """Compare feature-store and production forecasts without affecting either."""
-    eligible = tuple(slot for slot in history if slot.slot.end_ms <= request.as_of_ms)
-    samples = _feature_samples(eligible)
-    load_usable = sum(sample.load_valid for sample in samples)
-    pv_usable = sum(sample.pv_valid for sample in samples)
-    history_start_ms = eligible[0].slot.start_ms if eligible else None
-    history_end_ms = eligible[-1].slot.end_ms if eligible else None
-    history_span_days = (
-        round((history_end_ms - history_start_ms) / 86_400_000.0, 3)
-        if history_start_ms is not None and history_end_ms is not None
-        else 0.0
-    )
-    ready = (
-        load_usable >= _EVALUATION_HISTORY_SLOTS
-        and pv_usable >= _EVALUATION_HISTORY_SLOTS
-        and history_span_days >= 7.0
+    eligible = eligible_feature_history(history, request.as_of_ms)
+    samples = feature_samples(eligible)
+    readiness = feature_store_forecast_readiness(
+        eligible, component_specs=component_specs
     )
     if not samples:
         return ForecastEvaluationRun(
@@ -169,9 +149,9 @@ def evaluate_feature_store_shadow(
             "warming_up",
             "no_eligible_feature_slots",
             len(eligible),
-            load_usable,
-            pv_usable,
-            history_span_days,
+            readiness.load_usable_slots,
+            readiness.pv_usable_slots,
+            readiness.history_span_days,
             None,
             None,
             None,
@@ -182,26 +162,21 @@ def evaluate_feature_store_shadow(
     pv_shadow = None
     component_errors = {}
     try:
-        load_shadow = (
-            build_component_load_forecast(
-                request,
-                eligible,
-                targets,
-                context,
-                weather,
-                component_specs,
-                config.load_config(),
-            )
-            if component_specs
-            else build_legacy_load_forecast(
-                request, samples, targets, context, config.load_config()
-            )
+        load_shadow = build_feature_store_load_forecast(
+            request,
+            eligible,
+            samples,
+            targets,
+            context,
+            config,
+            weather=weather,
+            component_specs=component_specs,
         )
     except Exception as err:  # noqa: BLE001 - component diagnostics stay isolated.
         component_errors["load"] = f"{type(err).__name__}: {err}"
     try:
-        pv_shadow = build_legacy_pv_forecast(
-            request, samples, targets, config.pv_config()
+        pv_shadow = build_feature_store_pv_forecast(
+            request, samples, targets, config
         )
     except Exception as err:  # noqa: BLE001 - component diagnostics stay isolated.
         component_errors["pv"] = f"{type(err).__name__}: {err}"
@@ -225,20 +200,20 @@ def evaluate_feature_store_shadow(
             "component_error"
             if component_errors
             else "ready"
-            if ready
+            if readiness.ready
             else "warming_up"
         ),
         reason=(
             "; ".join(f"{key}: {value}" for key, value in component_errors.items())
             if component_errors
             else None
-            if ready
-            else "insufficient_finalized_history"
+            if readiness.ready
+            else readiness.reason
         ),
         history_slot_count=len(eligible),
-        load_usable_slots=load_usable,
-        pv_usable_slots=pv_usable,
-        history_span_days=history_span_days,
+        load_usable_slots=readiness.load_usable_slots,
+        pv_usable_slots=readiness.pv_usable_slots,
+        history_span_days=readiness.history_span_days,
         load_parity_mae_w=(load_metrics or {}).get("mae_delta_w"),
         load_parity_bias_w=(load_metrics or {}).get("bias_delta_w"),
         pv_parity_mae_w=(pv_metrics or {}).get("mae_delta_w"),
@@ -282,28 +257,6 @@ def _require_same_grid(production_slots, shadow_slots, component: str) -> None:
         item.slot for item in shadow_slots
     ):
         raise ValueError(f"shadow {component} grid differs from production")
-
-
-def _feature_samples(
-    history: tuple[HistoricalFeatureSlot, ...],
-) -> tuple[LegacyForecastSample, ...]:
-    samples = []
-    for item in history[-6000:]:
-        flags = frozenset(item.quality.flags)
-        load_valid = item.quality.coverage >= 0.999 and not flags & _LOAD_INVALID_FLAGS
-        pv_valid = item.quality.coverage >= 0.999 and not flags & _PV_INVALID_FLAGS
-        samples.append(
-            LegacyForecastSample(
-                ts_s=item.slot.start_ms / 1000.0,
-                load_w=item.house_load_no_ev_kwh / SLOT_H * 1000.0,
-                pv_w=item.pv_generation_kwh / SLOT_H * 1000.0,
-                grid_import_w=item.grid_import_kwh / SLOT_H * 1000.0,
-                grid_export_w=item.grid_export_kwh / SLOT_H * 1000.0,
-                load_valid=load_valid,
-                pv_valid=pv_valid,
-            )
-        )
-    return tuple(samples)
 
 
 def _series_comparison(production_slots, shadow_slots) -> dict[str, float]:

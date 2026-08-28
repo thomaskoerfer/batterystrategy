@@ -17,16 +17,17 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import text
 
 from .contracts import (
+    ForecastBundle,
     ForecastRequest,
-    LoadDriverSnapshot,
     LoadForecastContext,
     SlotKey,
 )
 from .forecasting import (
+    FeatureStoreForecastNotReady,
     LegacyForecastConfig,
-    LegacyForecastSample,
     LegacyForecastTarget,
-    build_legacy_forecast,
+    build_feature_store_forecast,
+    feature_store_forecast_readiness,
 )
 from .optimizer_state import load_state_document, save_state_document
 
@@ -37,6 +38,10 @@ _RUNTIME_STATES = {}
 _RUNTIME_PRICE_INTERVALS = []
 _ENTITY_MAP = {}
 _ENTITY_SCALE = {}
+_RUNTIME_FORECAST_HISTORY = ()
+_RUNTIME_FORECAST_WEATHER = ()
+_RUNTIME_FORECAST_CONTEXT = None
+_RUNTIME_FORECAST_COMPONENT_SPECS = ()
 
 E_PRICE_CURRENT = "price_current"
 E_PRICE_EUR = "price_eur"
@@ -133,6 +138,8 @@ def configure_runtime(context):
     """Apply one config-entry runtime context before an optimizer run."""
     global STATE_FILE, _DB_ENGINE
     global _RUNTIME_STATES, _RUNTIME_PRICE_INTERVALS, _ENTITY_MAP, _ENTITY_SCALE
+    global _RUNTIME_FORECAST_HISTORY, _RUNTIME_FORECAST_WEATHER
+    global _RUNTIME_FORECAST_CONTEXT, _RUNTIME_FORECAST_COMPONENT_SPECS
     global CAP_KWH, SOC_MIN, SOC_MAX, MIN_E_KWH, MAX_E_KWH, MAX_P_W, MAX_E_SLOT_KWH
     global MAX_CHARGE_P_W, MAX_DISCHARGE_P_W, MAX_CHARGE_E_SLOT_KWH, MAX_DISCHARGE_E_SLOT_KWH
     global PV_CHARGING_ENABLED, GRID_CHARGING_ENABLED, DISCHARGE_ENABLED, PLANNING_HORIZON_H
@@ -150,6 +157,12 @@ def configure_runtime(context):
         for key, value in (context.get("entity_scale") or {}).items()
         if value is not None
     }
+    _RUNTIME_FORECAST_HISTORY = tuple(context.get("forecast_history") or ())
+    _RUNTIME_FORECAST_WEATHER = tuple(context.get("forecast_weather") or ())
+    _RUNTIME_FORECAST_CONTEXT = context.get("forecast_context")
+    _RUNTIME_FORECAST_COMPONENT_SPECS = tuple(
+        context.get("forecast_component_specs") or ()
+    )
 
     CAP_KWH = max(0.5, float(context.get("battery_capacity_kwh") or 6.0))
     SOC_MIN = max(0.0, min(100.0, float(context.get("min_soc_pct") or 0.0)))
@@ -489,20 +502,6 @@ def net_no_battery_no_ev_w(grid_import_w, grid_export_w, bat_in_out_w, wallbox_w
 
 def real_charge_follow_surplus_w(grid_import_w, grid_export_w, bat_in_out_w):
     return max(0.0, -net_no_battery_with_ev_w(grid_import_w, grid_export_w, bat_in_out_w))
-
-
-def med(vals, fallback):
-    if not vals:
-        return fallback
-    return float(statistics.median(vals))
-
-
-def sample_has_valid_live_power(sample):
-    gi = float(sample.get("grid_import_w", 0.0) or 0.0)
-    ge = float(sample.get("grid_export_w", 0.0) or 0.0)
-    pv = float(sample.get("pv_w", 0.0) or 0.0)
-    lw = float(sample.get("load_w", 0.0) or 0.0)
-    return not (lw <= 1.0 and gi <= 1.0 and ge <= 1.0 and pv <= 1.0)
 
 
 def normalize_sample(sample):
@@ -928,53 +927,6 @@ def avg_power(samples, start_ts, end_ts, key):
     return (sum(vals) / len(vals)) if vals else None
 
 
-def slot_idx_for_ts(ts):
-    return slot_index_for_dt(local_dt_from_ts(ts))
-
-
-def forecast_load_w_for_slot(samples, target_dt, fallback_w, hp_now_w, now_dt=None, load_bias=1.0, slot_bias=1.0):
-    target_slot = target_dt.hour * 4 + target_dt.minute // 15
-    target_wd = target_dt.weekday()
-    target_is_weekend = target_wd >= 5
-
-    same_slot = []
-    same_slot_wd = []
-    same_slot_weektype = []
-    recent = []
-
-    for s in samples[-6000:]:
-        ts = s.get("ts", 0)
-        dt_s = local_dt_from_ts(ts).astimezone(target_dt.tzinfo)
-        slot = slot_idx_for_ts(ts)
-        lw = float(s.get("load_w", fallback_w))
-        if not sample_has_valid_live_power(s):
-            continue
-        if slot == target_slot:
-            same_slot.append(lw)
-            if dt_s.weekday() == target_wd:
-                same_slot_wd.append(lw)
-            if (dt_s.weekday() >= 5) == target_is_weekend:
-                same_slot_weektype.append(lw)
-        if ts >= (samples[-1]["ts"] - 7200):
-            recent.append(lw)
-
-    base_all = med(same_slot[-60:], fallback_w)
-    base_wd = med(same_slot_wd[-20:], base_all)
-    base_weektype = med(same_slot_weektype[-30:], base_all)
-    trend = (sum(recent) / len(recent)) if recent else base_all
-
-    load_w = 0.45 * base_wd + 0.25 * base_weektype + 0.15 * base_all + 0.15 * trend
-
-    # Near-term heatpump boost decays with forecast horizon to avoid flattening day-ahead shape.
-    if hp_now_w is not None and now_dt is not None:
-        horizon_h = max(0.0, (target_dt - now_dt).total_seconds() / 3600.0)
-        if horizon_h <= 6.0:
-            hp_excess = max(0.0, hp_now_w - 500.0)
-            load_w += 0.22 * hp_excess * math.exp(-horizon_h / 1.5)
-
-    return max(0.0, load_w * clamp(load_bias, 0.6, 1.6) * clamp(slot_bias, 0.7, 1.4))
-
-
 def recent_surplus_stable(samples):
     recent = samples[-PV_SURPLUS_WINDOW_SAMPLES:]
     if len(recent) < PV_SURPLUS_WINDOW_SAMPLES:
@@ -1374,7 +1326,6 @@ def tibber_price_eur_at(ts, price_ts, price_vals):
 
 def build_production_forecast(
     intervals,
-    samples,
     targets,
     *,
     now_local,
@@ -1387,8 +1338,12 @@ def build_production_forecast(
     pv_global_bias,
     pv_capacity_kwp,
     pv_inverter_kw,
+    history=None,
+    context=None,
+    weather=None,
+    component_specs=None,
 ):
-    """Build the sole production forecast from immutable inputs."""
+    """Build the sole production forecast from finalized feature history."""
     started = time.perf_counter()
     request = ForecastRequest(
         as_of_ms=int(now_local.timestamp() * 1000),
@@ -1401,17 +1356,19 @@ def build_production_forecast(
             for item in intervals
         ),
     )
-    immutable_samples = tuple(
-        LegacyForecastSample.from_mapping(sample) for sample in samples[-6000:]
+    immutable_history = tuple(
+        _RUNTIME_FORECAST_HISTORY if history is None else history
     )
-    latest = samples[-1] if samples else {}
-    context = LoadForecastContext(
-        house_load_no_ev_w=max(0.0, float(latest.get("load_w", 0.0) or 0.0)),
-        drivers=(
-            LoadDriverSnapshot(
-                "heat_pump", max(0.0, float(latest.get("hp_w", 0.0) or 0.0))
-            ),
-        ),
+    forecast_context = context or _RUNTIME_FORECAST_CONTEXT
+    if not isinstance(forecast_context, LoadForecastContext):
+        raise FeatureStoreForecastNotReady("missing_current_load_context")
+    immutable_weather = tuple(
+        _RUNTIME_FORECAST_WEATHER if weather is None else weather
+    )
+    immutable_component_specs = tuple(
+        _RUNTIME_FORECAST_COMPONENT_SPECS
+        if component_specs is None
+        else component_specs
     )
     config = LegacyForecastConfig(
         timezone=request.timezone,
@@ -1432,53 +1389,51 @@ def build_production_forecast(
         pv_capacity_kwp=float(pv_capacity_kwp),
         pv_inverter_kw=float(pv_inverter_kw),
     )
-    forecast = build_legacy_forecast(
-        request, immutable_samples, tuple(targets), context, config
+    readiness = feature_store_forecast_readiness(
+        tuple(item for item in immutable_history if item.slot.end_ms <= request.as_of_ms),
+        component_specs=immutable_component_specs,
+    )
+    forecast = build_feature_store_forecast(
+        request,
+        immutable_history,
+        tuple(targets),
+        forecast_context,
+        config,
+        weather=immutable_weather,
+        component_specs=immutable_component_specs,
     )
     load_w = [slot.energy.p50_kwh / SLOT_H * 1000.0 for slot in forecast.load.slots]
     pv_w = [slot.energy.p50_kwh / SLOT_H * 1000.0 for slot in forecast.pv.slots]
     if len(load_w) != len(intervals) or len(pv_w) != len(intervals):
         raise ValueError("production forecast does not match requested slot grid")
     diagnostics = {
-        "source": "extracted",
+        "source": "feature_store",
         "slot_count": len(request.slots),
         "runtime_ms": round((time.perf_counter() - started) * 1000.0, 3),
-        "model_version": "legacy-extracted-v1",
+        "model_version": f"{forecast.load.model_version}+{forecast.pv.model_version}",
+        "history_slot_count": readiness.history_slots,
+        "load_usable_slots": readiness.load_usable_slots,
+        "pv_usable_slots": readiness.pv_usable_slots,
+        "component_usable_slots": readiness.component_usable_slots,
+        "history_span_days": readiness.history_span_days,
     }
-    diagnostics["shadow_input"] = {
-        "request": {
-            "as_of_ms": request.as_of_ms,
-            "timezone": request.timezone,
-            "slots": [[item.start_ms, item.end_ms] for item in request.slots],
-        },
-        "production": {
-            "load": [item.energy.p50_kwh for item in forecast.load.slots],
-            "pv": [item.energy.p50_kwh for item in forecast.pv.slots],
-            "load_training_cutoff_ms": forecast.load.training_cutoff_ms,
-            "pv_training_cutoff_ms": forecast.pv.training_cutoff_ms,
-        },
-        "targets": [
-            [item.local_start.isoformat(), item.weather_factor] for item in targets
-        ],
-        "context": {
-            "house_load_no_ev_w": context.house_load_no_ev_w,
-            "drivers": [[item.driver_key, item.power_w] for item in context.drivers],
-        },
-        "config": {
-            "timezone": config.timezone,
-            "load_bias": config.load_bias,
-            "load_slot_biases": list(config.load_slot_biases),
-            "pv_global_bias": config.pv_global_bias,
-            "pv_slot_biases": list(config.pv_slot_biases),
-            "current_weather_factor": config.current_weather_factor,
-            "current_pv_w": config.current_pv_w,
-            "tomorrow_date": config.tomorrow_date,
-            "tomorrow_energy_kwh": config.tomorrow_energy_kwh,
-            "pv_capacity_kwp": config.pv_capacity_kwp,
-            "pv_inverter_kw": config.pv_inverter_kw,
-        },
-    }
-    return load_w, pv_w, diagnostics
+    return forecast, diagnostics
+
+
+def build_forecast_targets(intervals, weather_factor, weather_hourly=None):
+    """Build the weather-aligned target grid at the composition boundary."""
+    targets = []
+    for item in intervals:
+        hour_key = item["dt"].replace(
+            minute=0, second=0, microsecond=0
+        ).isoformat()
+        slot_weather_factor = float(
+            (weather_hourly or {}).get(hour_key, {}).get(
+                "weather_factor", weather_factor
+            )
+        )
+        targets.append(LegacyForecastTarget(item["dt"], slot_weather_factor))
+    return tuple(targets)
 
 
 def _future_higher_value_load_reserve_kwh(
@@ -1656,7 +1611,16 @@ def _pv_spill_recovery_budget_ac_kwh(
     return threatened_storage_kwh * ETA_D
 
 
-def build_virtual_plan(intervals, samples, start_energy_kwh, weather_factor, forecast_tomorrow_kwh, load_bias, load_bias_slots, pv_bias_slots, initial_mode=0, weather_hourly=None, pv_now_actual_w=None, now_local=None, pv_global_bias=1.0, eex_days=None):
+def build_virtual_plan(
+    intervals,
+    samples,
+    start_energy_kwh,
+    initial_mode=0,
+    eex_days=None,
+    *,
+    forecast_bundle,
+    forecast_diagnostics=None,
+):
     if not intervals:
         return {"points": [], "today": {}, "tomorrow": {}, "end_soc": 50.0, "price_stats": {}, "daily_costs": {}}
 
@@ -1670,44 +1634,40 @@ def build_virtual_plan(intervals, samples, start_energy_kwh, weather_factor, for
     today = intervals[0]["dt"].date().isoformat()
     tomorrow = (intervals[0]["dt"].date() + dt.timedelta(days=1)).isoformat()
 
-    now_local = now_local or dt.datetime.now(OPEN_METEO_TZ)
-    forecast_targets = []
-    for it in intervals:
-        hour_key = it["dt"].replace(minute=0, second=0, microsecond=0).isoformat()
-        slot_weather_factor_raw = float((weather_hourly or {}).get(hour_key, {}).get("weather_factor", weather_factor))
-        forecast_targets.append(
-            LegacyForecastTarget(it["dt"], slot_weather_factor_raw)
+    if not isinstance(forecast_bundle, ForecastBundle):
+        raise TypeError("build_virtual_plan requires a ForecastBundle")
+    requested_grid = tuple(
+        SlotKey(
+            int(item["dt"].timestamp() * 1000),
+            int(item["dt"].timestamp() * 1000) + int(SLOT_H * 3600 * 1000),
         )
-
-    forecast_load_w, forecast_pv_w, forecast_diagnostics = build_production_forecast(
-        intervals,
-        samples,
-        forecast_targets,
-        now_local=now_local,
-        weather_factor=weather_factor,
-        forecast_tomorrow_kwh=forecast_tomorrow_kwh,
-        load_bias=load_bias,
-        load_bias_slots=load_bias_slots,
-        pv_bias_slots=pv_bias_slots,
-        pv_now_actual_w=pv_now_actual_w,
-        pv_global_bias=pv_global_bias,
-        pv_capacity_kwp=PV_CAPACITY_KWP,
-        pv_inverter_kw=PV_INVERTER_KW,
+        for item in intervals
     )
+    forecast_grid = tuple(item.slot for item in forecast_bundle.load.slots)
+    if forecast_grid != requested_grid:
+        raise ValueError("forecast bundle does not match optimizer slot grid")
+    forecast_load_w = [
+        item.energy.p50_kwh / SLOT_H * 1000.0
+        for item in forecast_bundle.load.slots
+    ]
+    forecast_pv_w = [
+        item.energy.p50_kwh / SLOT_H * 1000.0
+        for item in forecast_bundle.pv.slots
+    ]
+    forecast_diagnostics = dict(forecast_diagnostics or {})
     forecast_pre = [
-        (it, load_w, pv_w, target.weather_factor)
-        for it, load_w, pv_w, target in zip(
+        (it, load_w, pv_w)
+        for it, load_w, pv_w in zip(
             intervals,
             forecast_load_w,
             forecast_pv_w,
-            forecast_targets,
             strict=True,
         )
     ]
 
     slots = []
     daily = {}
-    for it, load_w_slot, pv_w_slot, _slot_weather_factor_raw in forecast_pre:
+    for it, load_w_slot, pv_w_slot in forecast_pre:
         d = it["dt"].date().isoformat()
         load_kwh = max(0.0, load_w_slot / 1000.0 * SLOT_H)
         pv_kwh = max(0.0, pv_w_slot / 1000.0 * SLOT_H)
@@ -3052,30 +3012,9 @@ def main():
     actual_inventory_cost_ct_per_kwh = None
     actual_today_stats = actual_daily_savings.get(today, {})
 
-    # improved load forecast: average next 4 slots from historical slot model
-    next_slots = [local_now + dt.timedelta(minutes=15 * i) for i in range(1, 5)]
     load_bias = clamp(float(data.get("load_bias", 1.0)), 0.6, 1.6)
-    load_forecast_ws = []
-    for t in next_slots:
-        slot = slot_index_for_dt(t)
-        load_forecast_ws.append(
-            forecast_load_w_for_slot(
-                data["samples"],
-                t,
-                max(200.0, house_load_w),
-                hp_w,
-                now_dt=local_now,
-                load_bias=load_bias,
-                slot_bias=data["load_bias_slots"][slot],
-            )
-        )
-    load_fc_kwh = sum(load_forecast_ws) / 1000.0 * SLOT_H
-
     weather_factor = weather_factor_from_cloud_rad(cloud, rad)
     pv_bias = clamp(float(data.get("pv_bias", 1.0)), 0.5, 1.4)
-    pv_corr_kwh = max(0.0, pv_raw_kwh * pv_bias * weather_factor)
-
-    net_kwh = max(0.0, load_fc_kwh - pv_corr_kwh)
     pv_surplus_w = real_charge_follow_surplus_w(grid_import_w, grid_export_w, bat_in_out_w)
     # Net import that would exist without battery and EV influence.
     net_no_battery_no_ev_now_w = net_no_battery_no_ev_w(grid_import_w, grid_export_w, bat_in_out_w, wallbox_w)
@@ -3180,24 +3119,46 @@ def main():
             ) * 100.0
     if actual_inventory_cost_ct_per_kwh is not None:
         inventory_accounting_floor_ct = actual_inventory_cost_ct_per_kwh + MIN_MARGIN_CT
+    forecast_targets = build_forecast_targets(
+        intervals,
+        weather_factor,
+        (inputs.get("weather") or {}).get("hourly"),
+    )
+    forecast_bundle, forecast_diagnostics = build_production_forecast(
+        intervals,
+        forecast_targets,
+        now_local=local_now,
+        weather_factor=weather_factor,
+        forecast_tomorrow_kwh=pv_tomorrow_kwh,
+        load_bias=load_bias_plan,
+        load_bias_slots=data["load_bias_slots"],
+        pv_bias_slots=data["pv_bias_slots"],
+        pv_now_actual_w=max(0.0, pv_w),
+        pv_global_bias=pv_bias,
+        pv_capacity_kwp=PV_CAPACITY_KWP,
+        pv_inverter_kw=PV_INVERTER_KW,
+    )
     plan = build_virtual_plan(
         intervals,
         data["samples"],
         start_e,
-        weather_factor,
-        pv_tomorrow_kwh,
-        load_bias_plan,
-        data["load_bias_slots"],
-        data["pv_bias_slots"],
         initial_plan_mode,
-        (inputs.get("weather") or {}).get("hourly"),
-        pv_now_actual_w=max(0.0, pv_w),
-        now_local=local_now,
-        pv_global_bias=pv_bias,
         eex_days=eex_days,
+        forecast_bundle=forecast_bundle,
+        forecast_diagnostics=forecast_diagnostics,
     )
     forecast_diagnostics = plan.get("forecast_diagnostics", {})
     future_points = plan["points"]
+    next_hour_points = future_points[:4]
+    load_fc_kwh = sum(
+        max(0.0, float(point.get("load_fc_w", 0.0)))
+        for point in next_hour_points
+    ) / 1000.0 * SLOT_H
+    pv_corr_kwh = sum(
+        max(0.0, float(point.get("pv_fc_w", 0.0)))
+        for point in next_hour_points
+    ) / 1000.0 * SLOT_H
+    net_kwh = max(0.0, load_fc_kwh - pv_corr_kwh)
     usable_energy_ac_kwh = max(0.0, start_e - MIN_E_KWH) * ETA_D
     discharge_ctx = classify_discharge_mode(future_points, p_now, usable_energy_ac_kwh)
     planned_mode = mode
@@ -3474,11 +3435,8 @@ def main():
         "timestamp": now.isoformat(),
     }
 
-    shadow_input = forecast_diagnostics.get("shadow_input")
     data["last_output"] = out
     save_state(data)
-    if shadow_input:
-        out["_forecast_shadow_input"] = shadow_input
     print(json.dumps(out, ensure_ascii=False))
 
 

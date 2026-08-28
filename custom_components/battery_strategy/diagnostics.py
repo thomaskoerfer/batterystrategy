@@ -69,11 +69,6 @@ async def async_get_config_entry_diagnostics(hass, entry) -> dict:
             }
         },
         "feature_store": data.get("feature_store"),
-        "forecast_shadow": {
-            key.removeprefix("forecast_shadow_"): value
-            for key, value in (data.get("optimizer_attrs") or {}).items()
-            if key.startswith("forecast_shadow_")
-        },
-        "forecast_shadow_environment": data.get("forecast_shadow_environment"),
+        "forecast_environment": data.get("forecast_environment"),
         "strategy_enabled": data.get("strategy_enabled"),
     }

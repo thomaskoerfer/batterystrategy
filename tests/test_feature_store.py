@@ -194,7 +194,7 @@ class CompressedFeatureStoreTests(unittest.TestCase):
             reloaded = CompressedFeatureStore(path, retention_days=1)
             reloaded.initialize()
             self.assertEqual(reloaded.load(0, 3 * 86_400_000), (second,))
-            self.assertFalse(reloaded.diagnostics()["authoritative"])
+            self.assertTrue(reloaded.diagnostics()["authoritative"])
 
     def test_version_one_store_is_fully_migrated_and_can_be_downgraded(self):
         with tempfile.TemporaryDirectory() as temp_dir:

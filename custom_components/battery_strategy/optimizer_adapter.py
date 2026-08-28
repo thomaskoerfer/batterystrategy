@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 
 from homeassistant.helpers import entity_registry as er
 
+from .component_config import LoadComponentSpec
 from .const import (
     COMMAND_IDLE,
     COMMAND_INPUT,
@@ -25,7 +26,12 @@ from .const import (
     CONF_PV_POWER_ENTITY,
     DOMAIN,
 )
-from .forecast_shadow_runner import ForecastShadowRunner
+from .contracts import (
+    HistoricalFeatureSlot,
+    LoadDriverSnapshot,
+    LoadForecastContext,
+    WeatherSlot,
+)
 from .models import StrategyInputs, StrategyOptions
 from .plan_models import DailyCost, PlanPoint, StrategyPlan
 
@@ -38,7 +44,7 @@ LOGGER = logging.getLogger(__name__)
 class OptimizerEngineAdapter:
     """Run the high-quality optimizer inside the HACS integration."""
 
-    def __init__(self, hass=None, entry=None, shadow_runner=None) -> None:
+    def __init__(self, hass=None, entry=None) -> None:
         """Initialize adapter cache."""
         self._hass = hass
         self._entry = entry
@@ -46,7 +52,19 @@ class OptimizerEngineAdapter:
         self._last_output: dict | None = None
         self._last_options: StrategyOptions | None = None
         self._timezone = dt.timezone.utc
-        self._shadow_runner: ForecastShadowRunner | None = shadow_runner
+        self._forecast_history: tuple[HistoricalFeatureSlot, ...] = ()
+        self._forecast_weather: tuple[WeatherSlot, ...] = ()
+        self._forecast_drivers: tuple[LoadDriverSnapshot, ...] = ()
+        self._forecast_component_specs: tuple[LoadComponentSpec, ...] = ()
+
+    def set_forecast_environment(
+        self, history=(), weather=(), drivers=(), component_specs=()
+    ) -> None:
+        """Replace immutable feature inputs consumed by the next plan run."""
+        self._forecast_history = tuple(history)
+        self._forecast_weather = tuple(weather)
+        self._forecast_drivers = tuple(drivers)
+        self._forecast_component_specs = tuple(component_specs)
 
     def hydrate_output(self, output: dict | None) -> None:
         """Hydrate the cache from an already loaded startup snapshot."""
@@ -106,7 +124,6 @@ class OptimizerEngineAdapter:
                 engine.main()
         raw = buf.getvalue().strip().splitlines()
         output = json.loads(raw[-1]) if raw else {}
-        self._record_shadow_comparison(output)
         self._last_output = output
         self._last_options = options
         self._last_run_ts = now
@@ -141,6 +158,14 @@ class OptimizerEngineAdapter:
             if inputs.ev_power_w >= options.ev_active_threshold_w
             else "idle",
         }
+        house_load_no_ev_w = max(
+            0.0,
+            inputs.grid_import_w
+            + inputs.pv_w
+            + inputs.battery_power_w
+            - inputs.grid_export_w
+            - inputs.ev_power_w,
+        )
         if price_state is not None:
             states["price_current"] = price_state.state
         registry = er.async_get(self._hass)
@@ -196,16 +221,13 @@ class OptimizerEngineAdapter:
             "grid_charging": options.grid_charging,
             "discharge": options.discharge,
             "planning_horizon_h": options.planning_horizon_h,
+            "forecast_history": self._forecast_history,
+            "forecast_weather": self._forecast_weather,
+            "forecast_context": LoadForecastContext(
+                house_load_no_ev_w, self._forecast_drivers
+            ),
+            "forecast_component_specs": self._forecast_component_specs,
         }
-
-    def _record_shadow_comparison(self, output: dict) -> None:
-        """Persist shadow metrics while keeping any failure outside control."""
-        snapshot = output.pop("_forecast_shadow_input", None)
-        if not isinstance(snapshot, dict) or self._shadow_runner is None:
-            return
-        diagnostics = self._shadow_runner.evaluate(snapshot)
-        for key, value in diagnostics.items():
-            output[f"forecast_shadow_{key}"] = value
 
     def _power_scale(self, entity_id: str | None) -> float:
         """Return the recorder-history scale needed to normalize power to watts."""

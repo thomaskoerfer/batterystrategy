@@ -138,12 +138,13 @@ That module is a migration source, not the desired permanent boundary.
 
 ## Migration plan and gates
 
-Current status: Phase 2 collection runs since release `0.2.0-beta.15`. The first
-Phase-3 feature-store shadow runs in `0.2.0-beta.19`. The next Phase-3 increment
-adds independently configured load components and one central weather adapter;
-its component observation window starts only after deployment and confirmed
-diagnostics. Production forecasting and control continue to use their existing
-Recorder-derived inputs until the Phase-3 gate passes.
+Current status: Phase 3 is deployed and collecting independently configured
+load components plus central weather. Phase 4 is implemented locally on
+`codex/phase-4-feature-cutover`: the finalized feature store is the sole
+production forecast source and the optimizer consumes an explicit
+`ForecastBundle`. It is intentionally not deployed until the component-history
+readiness gate and retained-history replay pass. The deployed integration and
+battery control remain unchanged meanwhile.
 
 ### Phase 0: Baseline and contracts
 
@@ -224,11 +225,18 @@ starts automatically.
 ### Phase 4: Cut forecasting over to the feature store
 
 - Make the feature store the production forecast source.
+- Compose one immutable `ForecastBundle` before optimization; the optimizer may
+  not read feature history or select a forecast implementation.
+- Fail closed when the production history gate is not met. Do not add a hidden
+  Recorder fallback or a permanent old/new runtime selector.
 - Retain recorder access only for bootstrap/backfill through one adapter.
 - Keep the existing optimizer and live controller unchanged.
 
-Gate: several days of stable live operation and forecast metrics before old
-recorder-query code is removed.
+Gate: local contract/regression tests and retained-history replay pass; at least
+672 valid load slots, 672 valid PV slots, seven days of span and, when configured,
+672 complete component slots exist. Deployment then requires explicit owner
+confirmation. Several days of stable live operation and forecast metrics are
+required before old recorder-query bootstrap code is removed.
 
 ### Phase 5: Extract a pure optimizer
 

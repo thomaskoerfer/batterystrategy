@@ -32,6 +32,17 @@ from custom_components.battery_strategy.models import (
     StrategyInputs,
     StrategyOptions,
 )
+from custom_components.battery_strategy.contracts import (
+    ForecastRequest,
+    LoadForecastContext,
+    SlotKey,
+)
+from custom_components.battery_strategy.forecasting import (
+    LegacyForecastConfig,
+    LegacyForecastSample,
+    LegacyForecastTarget,
+    build_legacy_forecast,
+)
 from custom_components.battery_strategy import optimizer_adapter
 from custom_components.battery_strategy import config_flow
 from custom_components.battery_strategy import optimizer_engine
@@ -71,6 +82,91 @@ from custom_components.battery_strategy.strategy import (
 
 
 class HacsStrategyTests(unittest.TestCase):
+    @staticmethod
+    def _forecast_bundle(
+        intervals,
+        samples,
+        *,
+        current_pv_w=None,
+        weather_factor=1.0,
+        pv_global_bias=1.0,
+    ):
+        """Supply an explicit deterministic forecast to optimizer-only tests."""
+        slots = tuple(
+            SlotKey(
+                int(item["dt"].timestamp() * 1000),
+                int(item["dt"].timestamp() * 1000) + 15 * 60 * 1000,
+            )
+            for item in intervals
+        )
+        request = ForecastRequest(
+            as_of_ms=slots[0].start_ms,
+            timezone=str(optimizer_engine.OPEN_METEO_TZ),
+            slots=slots,
+        )
+        legacy_samples = tuple(
+            LegacyForecastSample.from_mapping(item) for item in samples
+        )
+        targets = tuple(
+            LegacyForecastTarget(item["dt"], weather_factor) for item in intervals
+        )
+        current_load_w = max(
+            0.0,
+            float(samples[-1].get("load_w", 0.0)) if samples else 0.0,
+        )
+        config = LegacyForecastConfig(
+            timezone=request.timezone,
+            load_bias=1.0,
+            load_slot_biases=(1.0,) * 96,
+            pv_global_bias=pv_global_bias,
+            pv_slot_biases=(1.0,) * 96,
+            current_weather_factor=weather_factor,
+            current_pv_w=current_pv_w,
+            tomorrow_date=(intervals[0]["dt"].date() + dt.timedelta(days=1)).isoformat(),
+            tomorrow_energy_kwh=None,
+            pv_capacity_kwp=optimizer_engine.PV_CAPACITY_KWP,
+            pv_inverter_kw=optimizer_engine.PV_INVERTER_KW,
+        )
+        return build_legacy_forecast(
+            request,
+            legacy_samples,
+            targets,
+            LoadForecastContext(current_load_w),
+            config,
+        )
+
+    def _build_virtual_plan(self, *args, **kwargs):
+        intervals = kwargs.get("intervals", args[0] if args else None)
+        samples = kwargs.get("samples", args[1] if len(args) > 1 else None)
+        start_energy_kwh = kwargs.get(
+            "start_energy_kwh", args[2] if len(args) > 2 else None
+        )
+        initial_mode = kwargs.get(
+            "initial_mode", args[8] if len(args) > 8 else 0
+        )
+        eex_days = kwargs.get("eex_days", args[13] if len(args) > 13 else None)
+        kwargs["forecast_bundle"] = self._forecast_bundle(
+            intervals,
+            samples,
+            current_pv_w=kwargs.get(
+                "pv_now_actual_w", args[10] if len(args) > 10 else None
+            ),
+            weather_factor=float(
+                kwargs.get("weather_factor", args[3] if len(args) > 3 else 1.0)
+            ),
+            pv_global_bias=float(kwargs.get("pv_global_bias", 1.0)),
+        )
+        kwargs["forecast_diagnostics"] = {"source": "test_fixture"}
+        return optimizer_engine.build_virtual_plan(
+            intervals=intervals,
+            samples=samples,
+            start_energy_kwh=start_energy_kwh,
+            initial_mode=initial_mode,
+            eex_days=eex_days,
+            forecast_bundle=kwargs["forecast_bundle"],
+            forecast_diagnostics=kwargs["forecast_diagnostics"],
+        )
+
     def _optimizer_runtime_context(self):
         return {
             "battery_capacity_kwh": optimizer_engine.CAP_KWH,
@@ -551,7 +647,7 @@ class HacsStrategyTests(unittest.TestCase):
                 }
                 for i in range(8)
             ]
-            plan = optimizer_engine.build_virtual_plan(
+            plan = self._build_virtual_plan(
                 intervals,
                 samples,
                 3.0,
@@ -2708,7 +2804,7 @@ class HacsStrategyTests(unittest.TestCase):
             }
             for i in range(8)
         ]
-        plan = optimizer_engine.build_virtual_plan(
+        plan = self._build_virtual_plan(
             intervals=intervals,
             samples=samples,
             start_energy_kwh=optimizer_engine.MAX_E_KWH,
@@ -2760,7 +2856,7 @@ class HacsStrategyTests(unittest.TestCase):
                     }
                 )
 
-        plan = optimizer_engine.build_virtual_plan(
+        plan = self._build_virtual_plan(
             intervals=intervals,
             samples=samples,
             start_energy_kwh=0.9,
@@ -2821,7 +2917,7 @@ class HacsStrategyTests(unittest.TestCase):
                         "price_ct": 25.0,
                     }
                 )
-        plan = optimizer_engine.build_virtual_plan(
+        plan = self._build_virtual_plan(
             intervals=intervals,
             samples=samples,
             start_energy_kwh=5.0,
@@ -2865,7 +2961,7 @@ class HacsStrategyTests(unittest.TestCase):
                         "price_ct": 30.0,
                     }
                 )
-        plan = optimizer_engine.build_virtual_plan(
+        plan = self._build_virtual_plan(
             intervals=intervals,
             samples=samples,
             start_energy_kwh=3.0,
@@ -2914,7 +3010,7 @@ class HacsStrategyTests(unittest.TestCase):
                     }
                 )
 
-        plan = optimizer_engine.build_virtual_plan(
+        plan = self._build_virtual_plan(
             intervals=intervals,
             samples=samples,
             start_energy_kwh=1.0,
@@ -2993,7 +3089,7 @@ class HacsStrategyTests(unittest.TestCase):
                     }
                 )
 
-        plan = optimizer_engine.build_virtual_plan(
+        plan = self._build_virtual_plan(
             intervals=intervals,
             samples=samples,
             start_energy_kwh=1.0,
@@ -3049,7 +3145,7 @@ class HacsStrategyTests(unittest.TestCase):
                     }
                 )
 
-        first_plan = optimizer_engine.build_virtual_plan(
+        first_plan = self._build_virtual_plan(
             intervals=intervals,
             samples=samples,
             start_energy_kwh=5.9,
@@ -3072,7 +3168,7 @@ class HacsStrategyTests(unittest.TestCase):
             optimizer_engine.MIN_E_KWH,
             5.9 - budget_kwh / optimizer_engine.ETA_D,
         )
-        second_plan = optimizer_engine.build_virtual_plan(
+        second_plan = self._build_virtual_plan(
             intervals=intervals[1:],
             samples=samples,
             start_energy_kwh=next_energy_kwh,
@@ -3136,7 +3232,7 @@ class HacsStrategyTests(unittest.TestCase):
         original = optimizer_engine.PV_CHARGING_ENABLED
         optimizer_engine.PV_CHARGING_ENABLED = False
         try:
-            plan = optimizer_engine.build_virtual_plan(
+            plan = self._build_virtual_plan(
                 intervals=intervals,
                 samples=samples,
                 start_energy_kwh=1.0,
@@ -3190,7 +3286,7 @@ class HacsStrategyTests(unittest.TestCase):
                         "price_ct": 30.0,
                     }
                 )
-        plan = optimizer_engine.build_virtual_plan(
+        plan = self._build_virtual_plan(
             intervals=intervals,
             samples=samples,
             start_energy_kwh=2.0,
@@ -3241,7 +3337,7 @@ class HacsStrategyTests(unittest.TestCase):
                     }
                 )
 
-        plan = optimizer_engine.build_virtual_plan(
+        plan = self._build_virtual_plan(
             intervals=intervals,
             samples=samples,
             start_energy_kwh=2.0,
@@ -3599,7 +3695,7 @@ class HacsStrategyTests(unittest.TestCase):
             }
         )
         try:
-            plan = optimizer_engine.build_virtual_plan(
+            plan = self._build_virtual_plan(
                 intervals=intervals,
                 samples=samples,
                 start_energy_kwh=0.3,
@@ -3655,7 +3751,7 @@ class HacsStrategyTests(unittest.TestCase):
         old_context = self._optimizer_runtime_context()
         self._configure_test_optimizer()
         try:
-            plan = optimizer_engine.build_virtual_plan(
+            plan = self._build_virtual_plan(
                 intervals=intervals,
                 samples=samples,
                 start_energy_kwh=0.3,
@@ -3714,7 +3810,7 @@ class HacsStrategyTests(unittest.TestCase):
         old_context = self._optimizer_runtime_context()
         self._configure_test_optimizer()
         try:
-            plan = optimizer_engine.build_virtual_plan(
+            plan = self._build_virtual_plan(
                 intervals=intervals,
                 samples=samples,
                 start_energy_kwh=0.3,
@@ -3803,7 +3899,7 @@ class HacsStrategyTests(unittest.TestCase):
             }
         )
         try:
-            plan = optimizer_engine.build_virtual_plan(
+            plan = self._build_virtual_plan(
                 intervals=intervals,
                 samples=samples,
                 start_energy_kwh=0.9,
@@ -3880,7 +3976,7 @@ class HacsStrategyTests(unittest.TestCase):
                         "price_ct": 30.0,
                     }
                 )
-        plan = optimizer_engine.build_virtual_plan(
+        plan = self._build_virtual_plan(
             intervals=intervals,
             samples=samples,
             start_energy_kwh=4.2,
@@ -3932,7 +4028,7 @@ class HacsStrategyTests(unittest.TestCase):
                         "price_ct": 30.0,
                     }
                 )
-        plan = optimizer_engine.build_virtual_plan(
+        plan = self._build_virtual_plan(
             intervals=intervals,
             samples=samples,
             start_energy_kwh=1.0,
@@ -3982,7 +4078,7 @@ class HacsStrategyTests(unittest.TestCase):
                         "price_ct": 30.0,
                     }
                 )
-        plan = optimizer_engine.build_virtual_plan(
+        plan = self._build_virtual_plan(
             intervals=intervals,
             samples=samples,
             start_energy_kwh=1.0,
@@ -4030,7 +4126,7 @@ class HacsStrategyTests(unittest.TestCase):
                         "price_ct": 40.0,
                     }
                 )
-        plan = optimizer_engine.build_virtual_plan(
+        plan = self._build_virtual_plan(
             intervals=intervals,
             samples=samples,
             start_energy_kwh=3.0,

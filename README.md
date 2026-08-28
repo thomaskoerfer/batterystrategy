@@ -52,9 +52,9 @@ Independently metered loads are added as **Load component** subentries on the
 Battery Strategy integration. Available profiles are EMS-ESP heat pump (DHW and
 space heating are separated), shared-meter air conditioning with multiple
 indoor climate entities, and a generic metered consumer. These profiles feed the
-recorder-independent Phase-3 shadow forecast only; they do not change battery
-control before the documented forecast cutover. Open-Meteo weather is loaded
-centrally from the Home Assistant location and requires no weather entity.
+recorder-independent feature-store forecast and remain isolated from PV and
+other load components. Open-Meteo weather is loaded centrally from the Home
+Assistant location and requires no weather entity.
 
 ## Example dashboard
 

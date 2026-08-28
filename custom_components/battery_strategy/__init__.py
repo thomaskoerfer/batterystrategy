@@ -62,7 +62,7 @@ async def async_setup_entry(hass, entry) -> bool:
         last_known_soc_pct=last_known_soc_pct,
         last_optimizer_output=last_optimizer_output,
         feature_store=ExecutorFeatureStore(feature_store, hass.async_add_executor_job),
-        shadow_feature_history=feature_history,
+        feature_history=feature_history,
     )
     await coordinator.async_config_entry_first_refresh()
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
