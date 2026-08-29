@@ -575,8 +575,8 @@ if config_entries is not None:
                     ): _number_selector(0, 500, 10, "W"),
                     vol.Required(
                         "min_command_delta_w",
-                        default=options.get("min_command_delta_w", 20.0),
-                    ): _number_selector(0, 500, 10, "W"),
+                        default=options.get("min_command_delta_w", 5.0),
+                    ): _number_selector(0, 500, 5, "W"),
                     vol.Required(
                         "round_trip_efficiency",
                         default=options.get("round_trip_efficiency", 0.80),

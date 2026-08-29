@@ -6,17 +6,20 @@ import asyncio
 import datetime as dt
 import json
 import logging
+import time
 from dataclasses import asdict, replace
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
-from .actuator import should_write_limit, should_write_mode, zendure_targets
+from .actuator import ActuationWriteTracker, zendure_targets
 from .const import (
     BATTERY_PROFILE_ZENDURE,
     COMMAND_IDLE,
+    COMMAND_INPUT,
     COMMAND_OUTPUT,
     CONF_BATTERY_CAPACITY_KWH,
     CONF_BATTERY_POWER_ENTITY,
@@ -63,6 +66,7 @@ from .load_components import (
     add_central_weather,
     collect_load_components,
 )
+from .live_control import DirectionHysteresis, P1UpdateGate
 from .models import StrategyCommand, StrategyInputs, StrategyOptions
 from .optimizer_adapter import OptimizerEngineAdapter
 from .optimizer_state import last_known_soc_pct
@@ -85,6 +89,7 @@ FEATURE_STORE_FILE = "battery_strategy_features.json.gz"
 COMMAND_TRACE_FILE = "battery_strategy_command_trace.jsonl"
 COMMAND_TRACE_MAX_BYTES = 64 * 1024 * 1024
 COMMAND_TRACE_RETAIN_LINES = 50000
+GRID_INPUT_MAX_AGE_S = 30
 
 
 def _load_last_known_soc_pct(path: Path) -> float | None:
@@ -138,6 +143,10 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             dt.datetime.now(dt.timezone.utc) if last_known_soc_pct is not None else None
         )
         self._failsafe_zeroed_reason: str | None = None
+        self._write_tracker = ActuationWriteTracker()
+        self._p1_update_gate = P1UpdateGate()
+        self._direction_hysteresis = DirectionHysteresis()
+        self._live_event_unsubs: list[object] = []
         self._last_known_ev_power_w = 0.0
         self._last_valid_ev_at: dt.datetime | None = None
         self._ev_control_ready = not bool(entry.data.get(CONF_EV_POWER_ENTITY))
@@ -175,6 +184,75 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         self._manual_mode = MANUAL_OFF
         self._manual_power_w = 0.0
         self._manual_until = None
+
+    def _actuation_write_tracker(self) -> ActuationWriteTracker:
+        """Return the tracker, including for lightweight test coordinators."""
+        tracker = getattr(self, "_write_tracker", None)
+        if tracker is None:
+            tracker = ActuationWriteTracker()
+            self._write_tracker = tracker
+        return tracker
+
+    def async_start_live_tracking(self) -> None:
+        """Track meter and safety inputs for event-driven live control."""
+        if self._live_event_unsubs:
+            return
+        grid_entities = self._grid_entity_ids()
+        if grid_entities:
+            self._live_event_unsubs.append(
+                async_track_state_change_event(
+                    self.hass, grid_entities, self._async_grid_state_changed
+                )
+            )
+        critical_entities = [
+            entity
+            for entity in (
+                self.entry.data.get(CONF_EV_POWER_ENTITY),
+                self.entry.data.get(CONF_BATTERY_SOC_ENTITY),
+            )
+            if entity
+        ]
+        if critical_entities:
+            self._live_event_unsubs.append(
+                async_track_state_change_event(
+                    self.hass,
+                    critical_entities,
+                    self._async_critical_state_changed,
+                )
+            )
+
+    def _grid_entity_ids(self) -> list[str]:
+        """Return only the authoritative grid entities for the configured mode."""
+        mode = self.entry.data.get(CONF_GRID_MODE, GRID_MODE_THREE_PHASE)
+        if mode == GRID_MODE_THREE_PHASE:
+            keys = (CONF_GRID_L1_ENTITY, CONF_GRID_L2_ENTITY, CONF_GRID_L3_ENTITY)
+        elif mode == GRID_MODE_IMPORT_EXPORT:
+            keys = (CONF_GRID_IMPORT_ENTITY, CONF_GRID_EXPORT_ENTITY)
+        elif mode == GRID_MODE_SIGNED:
+            keys = (CONF_SIGNED_GRID_POWER_ENTITY,)
+        else:
+            keys = ()
+        return [str(self.entry.data[key]) for key in keys if self.entry.data.get(key)]
+
+    async def _async_grid_state_changed(self, event) -> None:
+        """Run the live layer on P1 changes using Zendure's fast/normal gate."""
+        new_state = event.data.get("new_state")
+        if new_state is None or new_state.state in (
+            "unknown",
+            "unavailable",
+            "none",
+            "",
+        ):
+            await self.async_request_refresh()
+            return
+        grid_import_w, grid_export_w = self._grid_import_export()
+        signed_p1_w = grid_import_w - grid_export_w
+        if self._p1_update_gate.should_refresh(signed_p1_w, time.monotonic()):
+            await self.async_request_refresh()
+
+    async def _async_critical_state_changed(self, _event) -> None:
+        """Apply EV and SoC policy changes without waiting for the P1 gate."""
+        await self.async_request_refresh()
 
     def _account_actual_battery_power(self, now: dt.datetime) -> None:
         """Account measured battery energy inside the active slot."""
@@ -309,8 +387,14 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         command = live_command_from_directive(
             directive, simple_command, inputs, options
         )
-        calculated_command = command
         strategy_enabled = bool(self.entry.options.get("strategy_enabled", False))
+        if strategy_enabled:
+            command = self._direction_hysteresis.apply(
+                command,
+                inputs.battery_power_w,
+                time.monotonic(),
+            )
+        calculated_command = command
         display_command = (
             command if strategy_enabled else self._disabled_display_command(command)
         )
@@ -540,7 +624,7 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             max_charge_power_w=float(opts.get("max_charge_power_w", 2400.0)),
             max_discharge_power_w=float(opts.get("max_discharge_power_w", 2400.0)),
             min_command_power_w=float(opts.get("min_command_power_w", 20.0)),
-            min_command_delta_w=float(opts.get("min_command_delta_w", 20.0)),
+            min_command_delta_w=float(opts.get("min_command_delta_w", 5.0)),
             round_trip_efficiency=float(opts.get("round_trip_efficiency", 0.80)),
             min_margin_ct_per_kwh=float(opts.get("min_margin_ct_per_kwh", 2.0)),
             planning_horizon_h=int(opts.get("planning_horizon_h", 48)),
@@ -761,7 +845,7 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             return all(
                 entity
                 and self._state_available(entity)
-                and self._state_age_s(entity) < 180
+                and self._state_age_s(entity) < GRID_INPUT_MAX_AGE_S
                 for entity in entities
             )
         if mode == GRID_MODE_SIGNED:
@@ -769,7 +853,7 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             return bool(
                 entity
                 and self._state_available(entity)
-                and self._state_age_s(entity) < 180
+                and self._state_age_s(entity) < GRID_INPUT_MAX_AGE_S
             )
         if mode == GRID_MODE_IMPORT_EXPORT:
             entities = [
@@ -779,7 +863,7 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             return all(
                 entity
                 and self._state_available(entity)
-                and self._state_age_s(entity) < 180
+                and self._state_age_s(entity) < GRID_INPUT_MAX_AGE_S
                 for entity in entities
             )
         return False
@@ -799,18 +883,21 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         current_input = self._raw_state_float(input_limit_entity)
         current_output = self._raw_state_float(output_limit_entity)
         actions = ["input_limit=0", "output_limit=0"]
+        now_s = time.monotonic()
         await self.hass.services.async_call(
             "number",
             "set_value",
             {"entity_id": input_limit_entity, "value": 0},
             blocking=blocking,
         )
+        self._actuation_write_tracker().record(input_limit_entity, 0.0, now_s)
         await self.hass.services.async_call(
             "number",
             "set_value",
             {"entity_id": output_limit_entity, "value": 0},
             blocking=blocking,
         )
+        self._actuation_write_tracker().record(output_limit_entity, 0.0, now_s)
         self.last_actuation = {
             "status": "disabled_zeroed",
             "reason": "strategy_disabled",
@@ -859,49 +946,87 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         current_input = self._raw_state_float(input_limit_entity)
         current_output = self._raw_state_float(output_limit_entity)
         actions: list[str] = []
+        now_s = time.monotonic()
+        write_tracker = self._actuation_write_tracker()
 
-        if command.mode != COMMAND_IDLE and should_write_mode(
+        async def write_limit(entity_id: str, value: int, label: str) -> None:
+            await self.hass.services.async_call(
+                "number",
+                "set_value",
+                {"entity_id": entity_id, "value": value},
+                blocking=True,
+            )
+            write_tracker.record(entity_id, float(value), now_s)
+            actions.append(f"{label}={value}")
+
+        # Zendure sends one full direction command. With HA entities we cannot
+        # write atomically, so make the equivalent sequence explicit: stop the
+        # opposite direction, switch mode, then publish the new target.
+        if (
+            command.mode == COMMAND_OUTPUT
+            and write_tracker.should_write_limit(
+                input_limit_entity,
+                current_input,
+                0,
+                now_s,
+                options,
+                force_zero=True,
+            )
+        ):
+            await write_limit(input_limit_entity, 0, "input_limit")
+            current_input = 0
+        elif (
+            command.mode == COMMAND_INPUT
+            and write_tracker.should_write_limit(
+                output_limit_entity,
+                current_output,
+                0,
+                now_s,
+                options,
+                force_zero=True,
+            )
+        ):
+            await write_limit(output_limit_entity, 0, "output_limit")
+            current_output = 0
+
+        if command.mode != COMMAND_IDLE and write_tracker.should_write_mode(
+            ac_mode_entity,
             current_mode,
             targets.mode_option,
-            self._state_age_s(ac_mode_entity),
+            now_s,
         ):
             await self.hass.services.async_call(
                 "select",
                 "select_option",
                 {"entity_id": ac_mode_entity, "option": targets.mode_option},
-                blocking=False,
+                blocking=True,
             )
+            write_tracker.record(ac_mode_entity, targets.mode_option or "", now_s)
             actions.append(f"mode={targets.mode_option}")
 
-        if should_write_limit(
+        if write_tracker.should_write_limit(
+            input_limit_entity,
             current_input,
             targets.input_limit_w,
-            self._state_age_s(input_limit_entity),
+            now_s,
             options,
             force_zero=True,
         ):
-            await self.hass.services.async_call(
-                "number",
-                "set_value",
-                {"entity_id": input_limit_entity, "value": targets.input_limit_w},
-                blocking=False,
+            await write_limit(
+                input_limit_entity, targets.input_limit_w, "input_limit"
             )
-            actions.append(f"input_limit={targets.input_limit_w}")
 
-        if should_write_limit(
+        if write_tracker.should_write_limit(
+            output_limit_entity,
             current_output,
             targets.output_limit_w,
-            self._state_age_s(output_limit_entity),
+            now_s,
             options,
             force_zero=True,
         ):
-            await self.hass.services.async_call(
-                "number",
-                "set_value",
-                {"entity_id": output_limit_entity, "value": targets.output_limit_w},
-                blocking=False,
+            await write_limit(
+                output_limit_entity, targets.output_limit_w, "output_limit"
             )
-            actions.append(f"output_limit={targets.output_limit_w}")
 
         self.last_actuation = {
             "status": "written" if actions else "no_change",
@@ -930,6 +1055,7 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             }
             return
         actions = []
+        now_s = time.monotonic()
         for entity, label in (
             (input_entity, "input_limit"),
             (output_entity, "output_limit"),
@@ -939,8 +1065,9 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
                     "number",
                     "set_value",
                     {"entity_id": entity, "value": 0},
-                    blocking=False,
+                    blocking=True,
                 )
+                self._actuation_write_tracker().record(entity, 0.0, now_s)
                 actions.append(f"{label}=0")
         self._failsafe_zeroed_reason = reason
         self.last_actuation = {
@@ -951,6 +1078,10 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
 
     async def async_prepare_unload(self) -> None:
         """Stop active output before a reload, then shut down the planner."""
+        live_event_unsubs = getattr(self, "_live_event_unsubs", [])
+        for unsubscribe in live_event_unsubs:
+            unsubscribe()
+        live_event_unsubs.clear()
         if self._strategy_was_enabled or bool(
             self.entry.options.get("strategy_enabled", False)
         ):

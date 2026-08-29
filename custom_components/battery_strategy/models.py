@@ -28,7 +28,7 @@ class StrategyOptions:
     max_charge_power_w: float = 2400.0
     max_discharge_power_w: float = 2400.0
     min_command_power_w: float = 20.0
-    min_command_delta_w: float = 20.0
+    min_command_delta_w: float = 5.0
     round_trip_efficiency: float = 0.80
     min_margin_ct_per_kwh: float = 2.0
     planning_horizon_h: int = 48

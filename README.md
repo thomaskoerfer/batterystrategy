@@ -66,8 +66,18 @@ provided by the same release.
 
 ## Safety behavior
 
+- Live grid changes use Zendure-style event gating: a normal four-second cadence,
+  significant-change updates after at least 2.2 seconds, a 5 W command tolerance
+  and a 50 W idle-start threshold. The ten-second coordinator interval remains a
+  fallback.
+- Direction changes clear the opposite limit before switching AC mode and
+  applying the new target. A short/long charge-restart guard prevents rapid
+  discharge-to-charge oscillation.
 - Stale or unavailable grid inputs zero both battery limits once and remain in fail-safe until measurements recover.
 - A configured EV power sensor is bridged for three minutes. If it remains unavailable, automatic discharge is blocked whenever the EV policy excludes EV consumption; charging remains available.
+- The EV switches remain authoritative in the live layer: discharge can be
+  blocked completely while charging, or limited to non-EV household load so the
+  battery does not supply the car.
 - A persisted SoC bridges a short startup gap. If no valid SoC becomes available, active control is stopped.
 - Discharge follows eligible household load and is capped to avoid battery export.
 - Disabling control retries the safe zero command until the control entities are available, then stops writing so manual battery control remains possible.
