@@ -4,6 +4,22 @@ All notable changes to Battery Strategy are documented here.
 
 ## Unreleased
 
+## [0.2.0-rc.2] - 2026-08-30
+
+### Added
+
+- Added the contract-based pure economic optimizer as a non-authoritative
+  Phase-5 shadow running at most once per 15-minute slot.
+- Added bounded 14-day parity diagnostics for charge, discharge, SoC, budget
+  and cost differences outside Home Assistant Recorder.
+
+### Safety
+
+- The existing optimizer remains the sole plan authority; shadow output cannot
+  reach the plan compiler, live controller or actuator.
+- Shadow calculation and persistence failures are contained and cannot fail an
+  authoritative optimizer run.
+
 ## [0.2.0-rc.1] - 2026-08-30
 
 ### Changed
