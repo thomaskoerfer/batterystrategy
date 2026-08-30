@@ -4,6 +4,26 @@ All notable changes to Battery Strategy are documented here.
 
 ## Unreleased
 
+## [0.2.0-rc.1] - 2026-08-30
+
+### Changed
+
+- Made the finalized feature store the sole production source for EV-free load
+  and PV forecasts after an explicit seven-day readiness gate.
+- Passed one immutable `ForecastBundle` into optimization and removed the
+  production forecast fallback and runtime shadow composition.
+- Split fast Zendure-style meter following into a dedicated live controller
+  while preserving plan budgets, EV policy and safety limits.
+
+### Safety
+
+- Production forecasting fails closed when feature or component history is not
+  ready; it never silently falls back to Recorder-derived forecasts.
+- Optimizer economics, plan compilation and actuator safety constraints remain
+  unchanged by the forecast cutover.
+- The live controller retains stale-input, SoC, slot-budget and strategy-enabled
+  gates and has a dedicated hardware-behavior regression suite.
+
 ## [0.2.0-beta.21] - 2026-08-22
 
 ### Fixed
