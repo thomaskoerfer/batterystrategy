@@ -69,6 +69,6 @@ old/new runtime selector is introduced.
 ## Status
 
 - Proposed: 2026-08-30
-- Contract approval: pending owner review
+- Contract approval: approved by owner on 2026-08-30
 - Local implementation: in progress
 - Production cutover: blocked by Phase-4 observation gate and approval

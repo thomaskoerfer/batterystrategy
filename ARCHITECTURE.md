@@ -143,7 +143,7 @@ store is the sole production forecast source and the optimizer consumes an
 explicit `ForecastBundle`. Its live observation gate remains open until at
 least 72 stable hours have elapsed. Phase 5 is being prepared locally on
 `codex/phase-5-pure-optimizer`; it must not be deployed before that gate and the
-proposed additive commercial-policy contract fields are approved.
+approved additive commercial-policy fields pass retained-history parity.
 
 ### Phase 0: Baseline and contracts
 

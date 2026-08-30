@@ -159,7 +159,7 @@ Phase 5 proposes additive `CommercialPolicy` fields for export opportunity,
 the optional discharge feasibility floor, independent PV/grid/discharge
 permissions and PV-recovery confidence/reserve. These make existing hidden
 optimizer inputs explicit without changing units or plan/live ownership. Their
-semantics remain **Proposed** until owner approval; see
+semantics were approved by the owner on 2026-08-30; see
 `docs/impact-analyses/2026-08-30-phase-5-pure-optimizer.md`.
 
 The optimizer returns a `BatteryPlan`. It may plan either charge or discharge in
