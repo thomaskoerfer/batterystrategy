@@ -17,11 +17,17 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import text
 
 from .contracts import (
+    BatteryConstraints,
+    BatteryState,
+    CommercialPolicy,
     ForecastBundle,
     ForecastRequest,
     LoadForecastContext,
+    MarketSlot,
+    OptimizationProblem,
     SlotKey,
 )
+from .economic_optimizer import DynamicProgrammingOptimizer
 from .forecasting import (
     FeatureStoreForecastNotReady,
     LegacyForecastConfig,
@@ -1621,21 +1627,20 @@ def build_virtual_plan(
     forecast_bundle,
     forecast_diagnostics=None,
 ):
+    """Build the published plan through the pure optimization contract."""
+    del initial_mode  # Switching has no economic penalty in optimizer version v1.
     if not intervals:
-        return {"points": [], "today": {}, "tomorrow": {}, "end_soc": 50.0, "price_stats": {}, "daily_costs": {}}
-
-    prices_ct = [x["price_eur"] * 100.0 for x in intervals]
-    p_sorted = sorted(prices_ct)
-    lo_idx = int(0.3 * (len(p_sorted) - 1))
-    hi_idx = int(0.7 * (len(p_sorted) - 1))
-    p_low = p_sorted[lo_idx]
-    p_high = p_sorted[hi_idx]
-
-    today = intervals[0]["dt"].date().isoformat()
-    tomorrow = (intervals[0]["dt"].date() + dt.timedelta(days=1)).isoformat()
-
+        return {
+            "points": [],
+            "today": {},
+            "tomorrow": {},
+            "end_soc": 50.0,
+            "price_stats": {},
+            "daily_costs": {},
+        }
     if not isinstance(forecast_bundle, ForecastBundle):
         raise TypeError("build_virtual_plan requires a ForecastBundle")
+
     requested_grid = tuple(
         SlotKey(
             int(item["dt"].timestamp() * 1000),
@@ -1643,529 +1648,213 @@ def build_virtual_plan(
         )
         for item in intervals
     )
-    forecast_grid = tuple(item.slot for item in forecast_bundle.load.slots)
-    if forecast_grid != requested_grid:
+    if tuple(item.slot for item in forecast_bundle.load.slots) != requested_grid:
         raise ValueError("forecast bundle does not match optimizer slot grid")
-    forecast_load_w = [
-        item.energy.p50_kwh / SLOT_H * 1000.0
-        for item in forecast_bundle.load.slots
-    ]
-    forecast_pv_w = [
-        item.energy.p50_kwh / SLOT_H * 1000.0
-        for item in forecast_bundle.pv.slots
-    ]
-    forecast_diagnostics = dict(forecast_diagnostics or {})
-    forecast_pre = [
-        (it, load_w, pv_w)
-        for it, load_w, pv_w in zip(
-            intervals,
-            forecast_load_w,
-            forecast_pv_w,
-            strict=True,
-        )
-    ]
 
-    slots = []
-    daily = {}
-    for it, load_w_slot, pv_w_slot in forecast_pre:
-        d = it["dt"].date().isoformat()
-        load_kwh = max(0.0, load_w_slot / 1000.0 * SLOT_H)
-        pv_kwh = max(0.0, pv_w_slot / 1000.0 * SLOT_H)
-        net_pos_kwh = max(0.0, load_kwh - pv_kwh)
-        surplus_kwh = max(0.0, pv_kwh - load_kwh)
-        price_eur = it["price_eur"]
-        slots.append(
-            {
-                "dt": it["dt"],
-                "date": d,
-                "price_eur": price_eur,
-                "price_ct": price_eur * 100.0,
-                "weekday_rank": compute_weekday_price_rank(samples, it["dt"].date(), price_eur * 100.0),
-                "load_kwh": load_kwh,
-                "pv_kwh": pv_kwh,
-                "net_pos_kwh": net_pos_kwh,
-                "surplus_kwh": surplus_kwh,
-            }
-        )
-        daily.setdefault(d, {"base": 0.0, "with_bat": 0.0})
-        daily[d]["base"] += (
-            net_pos_kwh * price_eur
-            - surplus_kwh * (PV_EXPORT_OPPORTUNITY_CT / 100.0)
-        )
-
+    prices_ct = [float(item["price_eur"]) * 100.0 for item in intervals]
+    sorted_prices = sorted(prices_ct)
+    p_low = sorted_prices[int(0.3 * (len(sorted_prices) - 1))]
+    p_high = sorted_prices[int(0.7 * (len(sorted_prices) - 1))]
+    today = intervals[0]["dt"].date().isoformat()
     tomorrow_date = intervals[0]["dt"].date() + dt.timedelta(days=1)
-    tomorrow_prices = [float(s["price_ct"]) for s in slots if s["date"] == tomorrow]
+    tomorrow = tomorrow_date.isoformat()
+
+    weekday_ranks = [
+        compute_weekday_price_rank(samples, item["dt"].date(), price)
+        for item, price in zip(intervals, prices_ct, strict=True)
+    ]
+    tomorrow_prices = [
+        price
+        for item, price in zip(intervals, prices_ct, strict=True)
+        if item["dt"].date().isoformat() == tomorrow
+    ]
     tomorrow_min_ct = min(tomorrow_prices) if tomorrow_prices else None
-    tomorrow_min_rank = compute_weekday_price_rank(samples, tomorrow_date, tomorrow_min_ct)
+    tomorrow_min_rank = compute_weekday_price_rank(
+        samples, tomorrow_date, tomorrow_min_ct
+    )
     terminal_value_ct = 0.0
     discharge_floor_ct = None
-    cheap_window_end_dt = None
     cheap_anchor_ct = None
     cheap_anchor_rank = None
-    if tomorrow_min_ct is not None and tomorrow_min_rank is not None and tomorrow_min_rank <= TERMINAL_RANK_THRESHOLD:
-        cheapness = clamp((TERMINAL_RANK_THRESHOLD - tomorrow_min_rank) / TERMINAL_RANK_THRESHOLD, 0.0, 1.0)
-        spread_ct = max(0.0, p_high - tomorrow_min_ct)
-        terminal_value_ct = clamp(spread_ct * (0.5 + cheapness), 0.0, TERMINAL_VALUE_CAP_CT)
+    if (
+        tomorrow_min_ct is not None
+        and tomorrow_min_rank is not None
+        and tomorrow_min_rank <= TERMINAL_RANK_THRESHOLD
+    ):
+        cheapness = clamp(
+            (TERMINAL_RANK_THRESHOLD - tomorrow_min_rank)
+            / TERMINAL_RANK_THRESHOLD,
+            0.0,
+            1.0,
+        )
+        terminal_value_ct = clamp(
+            max(0.0, p_high - tomorrow_min_ct) * (0.5 + cheapness),
+            0.0,
+            TERMINAL_VALUE_CAP_CT,
+        )
         discharge_floor_ct = (tomorrow_min_ct / ETA_RT) + MIN_MARGIN_CT
-        cheap_slots = [s for s in slots if s["date"] == tomorrow and s["price_ct"] <= (tomorrow_min_ct + 0.25)]
-        if cheap_slots:
-            cheap_window_end_dt = max(s["dt"] for s in cheap_slots)
         cheap_anchor_ct = tomorrow_min_ct
         cheap_anchor_rank = tomorrow_min_rank
 
-    horizon_min_slot = min(slots, key=lambda s: float(s["price_ct"])) if slots else None
-    if horizon_min_slot is not None:
-        horizon_min_ct = float(horizon_min_slot["price_ct"])
-        horizon_min_rank = horizon_min_slot.get("weekday_rank")
-        if horizon_min_rank is not None:
-            cheapness = clamp((0.5 - horizon_min_rank) / 0.5, 0.0, 1.0)
-            if cheapness > 0.0:
-                tail_date = intervals[-1]["dt"].date() + dt.timedelta(days=1)
-                hist_tail_q80 = compute_weekday_price_quantile(samples, tail_date, 0.8)
-                tail_ref_ct = hist_tail_q80 or p_high
-                eex_days = eex_days or {}
-                tail_ctx = eex_days.get(tail_date.isoformat(), {}) if eex_days else {}
-                tail_eex_candidates = [
-                    tail_ctx.get("base", {}).get("settl_ct_kwh"),
-                    tail_ctx.get("peak", {}).get("settl_ct_kwh"),
-                ]
-                tail_eex_candidates = [float(v) for v in tail_eex_candidates if v is not None]
-                if tail_eex_candidates:
-                    tail_ref_ct = max([tail_ref_ct] + tail_eex_candidates)
-                inferred_tail_value_ct = clamp((max(p_high, tail_ref_ct) - horizon_min_ct) * cheapness, 0.0, TERMINAL_VALUE_CAP_CT)
-                if inferred_tail_value_ct > terminal_value_ct:
-                    terminal_value_ct = inferred_tail_value_ct
-                inferred_floor_ct = (horizon_min_ct / ETA_RT) + MIN_MARGIN_CT
-                if discharge_floor_ct is None or inferred_floor_ct < discharge_floor_ct:
-                    discharge_floor_ct = inferred_floor_ct
-                cheap_slots = [s for s in slots if s["price_ct"] <= (horizon_min_ct + 0.4)]
-                if cheap_slots:
-                    inferred_cheap_window_end = max(s["dt"] for s in cheap_slots)
-                    if cheap_window_end_dt is None or inferred_cheap_window_end > cheap_window_end_dt:
-                        cheap_window_end_dt = inferred_cheap_window_end
-                if cheap_anchor_ct is None or horizon_min_ct < cheap_anchor_ct:
-                    cheap_anchor_ct = horizon_min_ct
-                    cheap_anchor_rank = horizon_min_rank
-    for sl in slots:
-        # The automatic strategy only values serving forecast household load.
-        # Battery discharge must not create forecast export unless explicit
-        # battery export economics are added later.
-        sl["discharge_eligible_kwh"] = (
-            min(float(sl["net_pos_kwh"]), MAX_DISCHARGE_E_SLOT_KWH)
-            if DISCHARGE_ENABLED
-            else 0.0
-        )
-
-    # Cost-optimal plan over 48h via dynamic programming on discretized SoC states.
-    e_step = ENERGY_STEP_KWH
-    n_states = int(round((MAX_E_KWH - MIN_E_KWH) / e_step)) + 1
-    energies = [MIN_E_KWH + i * e_step for i in range(n_states)]
-
-    def idx_from_energy(e):
-        i = int(round((clamp(e, MIN_E_KWH, MAX_E_KWH) - MIN_E_KWH) / e_step))
-        return max(0, min(n_states - 1, i))
-
-    start_idx = idx_from_energy(start_energy_kwh)
-    n_slots = len(slots)
-    inf = 10**18
-    # mode idx: 0=discharge, 1=idle, 2=charge
-    mode_values = [-1, 0, 1]
-    mode_to_idx = {-1: 0, 0: 1, 1: 2}
-    dp = [[[inf] * 3 for _ in range(n_states)] for _ in range(n_slots + 1)]
-    dp_grid_charge_kwh = [
-        [[inf] * 3 for _ in range(n_states)] for _ in range(n_slots + 1)
-    ]
-    dp_grid_charge_time_score = [
-        [[-inf] * 3 for _ in range(n_states)] for _ in range(n_slots + 1)
-    ]
-    prev = [[[None] * 3 for _ in range(n_states)] for _ in range(n_slots + 1)]
-    initial_mode_idx = mode_to_idx.get(initial_mode, mode_to_idx[0])
-    dp[0][start_idx][initial_mode_idx] = 0.0
-    dp_grid_charge_kwh[0][start_idx][initial_mode_idx] = 0.0
-    dp_grid_charge_time_score[0][start_idx][initial_mode_idx] = 0.0
-
-    max_charge_delta_e = ETA_C * MAX_CHARGE_E_SLOT_KWH
-    max_discharge_delta_e = MAX_DISCHARGE_E_SLOT_KWH / ETA_D
-    future_peak_price_ct = [0.0] * (n_slots + 1)
-    for t in range(n_slots - 1, -1, -1):
-        future_peak_price_ct[t] = max(future_peak_price_ct[t + 1], float(slots[t]["price_ct"]))
-    future_pv_surplus_kwh = [0.0] * (n_slots + 1)
-    for t in range(n_slots - 1, -1, -1):
-        future_pv_surplus_kwh[t] = future_pv_surplus_kwh[t + 1] + float(slots[t]["surplus_kwh"])
-
-    def transition_candidate(t, e_now, prev_mode, e_next):
-        sl = slots[t]
-        price_ct = sl["price_ct"]
-        net_pos = sl["net_pos_kwh"]
-        surplus = sl["surplus_kwh"]
-        discharge_eligible = sl.get("discharge_eligible_kwh", net_pos)
-        delta = e_next - e_now
-        charge_in = 0.0
-        discharge_out = 0.0
-        if delta > 1e-9:
-            charge_in = delta / ETA_C
-            if charge_in > MAX_CHARGE_E_SLOT_KWH + 1e-9:
-                return None
-            if not PV_CHARGING_ENABLED and not GRID_CHARGING_ENABLED:
-                return None
-            if not GRID_CHARGING_ENABLED and charge_in > surplus + 1e-9:
-                return None
-            if not PV_CHARGING_ENABLED and surplus > 1e-9:
-                return None
-        elif delta < -1e-9:
-            if not DISCHARGE_ENABLED:
-                return None
-            discharge_out = (-delta) * ETA_D
-            if discharge_out > discharge_eligible + 1e-9:
-                return None
-            if discharge_out > MAX_DISCHARGE_E_SLOT_KWH + 1e-9:
-                return None
-            # Keep the conservative replacement-cost floor as a feasibility
-            # guard. The monetary objective below independently prices RTE and
-            # minimum margin; this guard prevents horizon-value heuristics from
-            # exposing inventory below its cheapest credible replacement cost.
-            if discharge_floor_ct is not None and price_ct < discharge_floor_ct:
-                return None
-        mode_now = 0
-        if charge_in > 1e-4:
-            mode_now = 1
-        elif discharge_out > 1e-4:
-            mode_now = -1
-
-        # Plan modes are economic intent, not actuator state: live PV surplus
-        # may turn a planned discharge slot into charge-follow. Artificial mode
-        # transition costs would therefore distort slot value. RTE, margin and
-        # micro-cycle suppression remain the economic cycle guards.
-        switch_cost = 0.0
-
-        charge_from_grid = max(0.0, charge_in - surplus)
-        if charge_from_grid > 1e-9:
-            future_value_ct = future_peak_price_ct[t + 1] * ETA_RT
-            if future_value_ct < (price_ct + MIN_MARGIN_CT):
-                return None
-            later_cheaper_charge_capacity_kwh = sum(
-                MAX_CHARGE_E_SLOT_KWH
-                for future_sl in slots[t + 1 :]
-                if float(future_sl["price_ct"]) + CHARGE_DEFERRAL_MARGIN_CT < price_ct
+    horizon_min_index = min(range(len(prices_ct)), key=prices_ct.__getitem__)
+    horizon_min_ct = prices_ct[horizon_min_index]
+    horizon_min_rank = weekday_ranks[horizon_min_index]
+    if horizon_min_rank is not None:
+        cheapness = clamp((0.5 - horizon_min_rank) / 0.5, 0.0, 1.0)
+        if cheapness > 0.0:
+            tail_date = intervals[-1]["dt"].date() + dt.timedelta(days=1)
+            tail_ref_ct = compute_weekday_price_quantile(samples, tail_date, 0.8) or p_high
+            tail_context = (eex_days or {}).get(tail_date.isoformat(), {})
+            tail_eex = [
+                tail_context.get("base", {}).get("settl_ct_kwh"),
+                tail_context.get("peak", {}).get("settl_ct_kwh"),
+            ]
+            tail_eex = [float(value) for value in tail_eex if value is not None]
+            if tail_eex:
+                tail_ref_ct = max([tail_ref_ct] + tail_eex)
+            terminal_value_ct = max(
+                terminal_value_ct,
+                clamp(
+                    (max(p_high, tail_ref_ct) - horizon_min_ct) * cheapness,
+                    0.0,
+                    TERMINAL_VALUE_CAP_CT,
+                ),
             )
-            if later_cheaper_charge_capacity_kwh > 1e-9:
-                profitable_discharge_need_ac_kwh = sum(
-                    min(MAX_DISCHARGE_E_SLOT_KWH, float(future_sl["net_pos_kwh"]))
-                    for future_sl in slots[t + 1 :]
-                    if float(future_sl["price_ct"]) >= ((price_ct / ETA_RT) + MIN_MARGIN_CT)
-                )
-                current_usable_ac_kwh = max(0.0, (e_now - MIN_E_KWH) * ETA_D)
-                additional_profitable_charge_in_kwh = max(
-                    0.0, (profitable_discharge_need_ac_kwh - current_usable_ac_kwh) / ETA_RT
-                )
-                if later_cheaper_charge_capacity_kwh >= (additional_profitable_charge_in_kwh - 1e-6):
-                    return None
-        grid_import = max(0.0, net_pos - min(discharge_out, net_pos)) + charge_from_grid
-        grid_export = max(0.0, surplus - charge_in) + max(
-            0.0, discharge_out - net_pos
-        )
-        step_cost = _economic_step_cost_eur(
-            grid_import_kwh=grid_import,
-            grid_export_kwh=grid_export,
-            discharge_out_kwh=discharge_out,
-            import_price_ct=price_ct,
-        )
-        step_cost += switch_cost
-        return (
-            step_cost,
-            charge_in,
-            discharge_out,
-            grid_import,
-            charge_from_grid,
-            mode_now,
-        )
-
-    for t in range(n_slots):
-        sl = slots[t]
-        net_pos = sl["net_pos_kwh"]
-        discharge_eligible = sl.get("discharge_eligible_kwh", net_pos)
-        for i, e_now in enumerate(energies):
-            min_e_next = max(MIN_E_KWH, e_now - min(max_discharge_delta_e, discharge_eligible / ETA_D))
-            max_e_next = min(MAX_E_KWH, e_now + max_charge_delta_e)
-            i_min = idx_from_energy(min_e_next)
-            i_max = idx_from_energy(max_e_next)
-            for prev_mode_idx, prev_mode in enumerate(mode_values):
-                base_cost = dp[t][i][prev_mode_idx]
-                if base_cost >= inf:
-                    continue
-                for j in range(i_min, i_max + 1):
-                    transition = transition_candidate(t, e_now, prev_mode, energies[j])
-                    if transition is None:
-                        continue
-                    (
-                        step_cost,
-                        charge_in,
-                        discharge_out,
-                        grid_import,
-                        charge_from_grid,
-                        mode_now,
-                    ) = transition
-                    mode_now_idx = mode_to_idx[mode_now]
-                    cand = base_cost + step_cost
-                    cand_grid_charge_kwh = (
-                        dp_grid_charge_kwh[t][i][prev_mode_idx] + charge_from_grid
-                    )
-                    cand_grid_charge_time_score = (
-                        dp_grid_charge_time_score[t][i][prev_mode_idx]
-                        + charge_from_grid * t
-                    )
-                    if _economic_path_is_better(
-                        cand,
-                        cand_grid_charge_kwh,
-                        cand_grid_charge_time_score,
-                        dp[t + 1][j][mode_now_idx],
-                        dp_grid_charge_kwh[t + 1][j][mode_now_idx],
-                        dp_grid_charge_time_score[t + 1][j][mode_now_idx],
-                    ):
-                        dp[t + 1][j][mode_now_idx] = cand
-                        dp_grid_charge_kwh[t + 1][j][mode_now_idx] = (
-                            cand_grid_charge_kwh
-                        )
-                        dp_grid_charge_time_score[t + 1][j][mode_now_idx] = (
-                            cand_grid_charge_time_score
-                        )
-                        prev[t + 1][j][mode_now_idx] = (
-                            i,
-                            prev_mode_idx,
-                            charge_in,
-                            discharge_out,
-                            grid_import,
-                            charge_from_grid,
-                            mode_now,
-                        )
-
-    def terminal_adjusted_cost(i, mi):
-        end_energy_above_min = max(0.0, energies[i] - MIN_E_KWH)
-        terminal_credit = (terminal_value_ct / 100.0) * end_energy_above_min
-        return dp[n_slots][i][mi] - terminal_credit
-
-    end_idx = 0
-    end_mode_idx = 0
-    best_terminal_cost = inf
-    best_terminal_grid_charge_kwh = inf
-    best_terminal_grid_charge_time_score = -inf
-    for i in range(n_states):
-        for mi in range(3):
-            candidate_terminal_cost = terminal_adjusted_cost(i, mi)
-            if _economic_path_is_better(
-                candidate_terminal_cost,
-                dp_grid_charge_kwh[n_slots][i][mi],
-                dp_grid_charge_time_score[n_slots][i][mi],
-                best_terminal_cost,
-                best_terminal_grid_charge_kwh,
-                best_terminal_grid_charge_time_score,
-            ):
-                end_idx = i
-                end_mode_idx = mi
-                best_terminal_cost = candidate_terminal_cost
-                best_terminal_grid_charge_kwh = dp_grid_charge_kwh[n_slots][i][mi]
-                best_terminal_grid_charge_time_score = (
-                    dp_grid_charge_time_score[n_slots][i][mi]
-                )
-
-    # Reconstruct optimized trajectory.
-    points = [None] * n_slots
-    path_before_idx = [start_idx] * n_slots
-    path_after_idx = [start_idx] * n_slots
-    path_discharge_out = [0.0] * n_slots
-    path_charge_in = [0.0] * n_slots
-    cur = end_idx
-    cur_mode_idx = end_mode_idx
-    for t in range(n_slots, 0, -1):
-        rec = prev[t][cur][cur_mode_idx]
-        if rec is None:
-            rec = (
-                cur,
-                mode_to_idx[0],
-                0.0,
-                0.0,
-                slots[t - 1]["net_pos_kwh"],
-                0.0,
-                0,
+            inferred_floor = (horizon_min_ct / ETA_RT) + MIN_MARGIN_CT
+            discharge_floor_ct = (
+                inferred_floor
+                if discharge_floor_ct is None
+                else min(discharge_floor_ct, inferred_floor)
             )
-        (
-            prev_idx,
-            prev_mode_idx,
-            charge_in,
-            discharge_out,
-            grid_import,
-            charge_from_grid,
-            mode_now,
-        ) = rec
-        sl = slots[t - 1]
-        idx = t - 1
-        path_before_idx[idx] = prev_idx
-        path_after_idx[idx] = cur
-        path_discharge_out[idx] = max(0.0, discharge_out)
-        path_charge_in[idx] = max(0.0, charge_in)
-        grid_export = max(0.0, sl["surplus_kwh"] - charge_in) + max(0.0, discharge_out - sl["net_pos_kwh"])
-        p_bat_w = ((charge_in - discharge_out) / SLOT_H) * 1000.0
-        mode = "idle"
-        if mode_now > 0:
-            mode = "charge"
-        elif mode_now < 0:
-            mode = "discharge"
-        daily[sl["date"]]["with_bat"] += grid_import * sl["price_eur"]
-        points[t - 1] = {
-            "ts_ms": int(sl["dt"].timestamp() * 1000),
-            "date": sl["date"],
-            "price_ct": round(sl["price_ct"], 3),
-            "soc_pct": round((energies[prev_idx] / CAP_KWH) * 100.0, 2),
-            "power_w": round(p_bat_w, 1),
-            "charge_fc_w": round(max(0.0, p_bat_w), 1),
-            "pv_charge_fc_w": round(
-                (max(0.0, charge_in - charge_from_grid) / SLOT_H) * 1000.0,
-                1,
-            ),
-            "grid_charge_fc_w": round(
-                (max(0.0, charge_from_grid) / SLOT_H) * 1000.0,
-                1,
-            ),
-            "required_charge_fc_w": round(
-                (charge_in / SLOT_H) * 1000.0 if charge_from_grid > 1e-9 else 0.0,
-                1,
-            ),
-            "discharge_fc_w": round(max(0.0, -p_bat_w), 1),
-            "mode": mode,
-            "load_fc_w": round((sl["load_kwh"] / SLOT_H) * 1000.0, 1),
-            "pv_fc_w": round((sl["pv_kwh"] / SLOT_H) * 1000.0, 1),
-            "discharge_eligible_fc_w": round((sl.get("discharge_eligible_kwh", sl["net_pos_kwh"]) / SLOT_H) * 1000.0, 1),
-            "grid_import_fc_w": round((grid_import / SLOT_H) * 1000.0, 1),
-            "grid_export_fc_w": round((grid_export / SLOT_H) * 1000.0, 1),
-            "grid_net_fc_w": round(((grid_import - grid_export) / SLOT_H) * 1000.0, 1),
+            if cheap_anchor_ct is None or horizon_min_ct < cheap_anchor_ct:
+                cheap_anchor_ct = horizon_min_ct
+                cheap_anchor_rank = horizon_min_rank
+
+    as_of_ms = max(
+        forecast_bundle.load.generated_at_ms,
+        forecast_bundle.pv.generated_at_ms,
+    )
+    problem = OptimizationProblem(
+        problem_id=(
+            f"{as_of_ms}:{forecast_bundle.load.forecast_id}:"
+            f"{forecast_bundle.pv.forecast_id}"
+        ),
+        as_of_ms=as_of_ms,
+        forecast=forecast_bundle,
+        market=tuple(
+            MarketSlot(
+                slot,
+                price,
+                PV_EXPORT_OPPORTUNITY_CT,
+                "normalized_price_horizon",
+            )
+            for slot, price in zip(requested_grid, prices_ct, strict=True)
+        ),
+        battery=BatteryState(
+            as_of_ms,
+            clamp(start_energy_kwh / CAP_KWH * 100.0, SOC_MIN, SOC_MAX),
+        ),
+        constraints=BatteryConstraints(
+            CAP_KWH,
+            SOC_MIN,
+            SOC_MAX,
+            MAX_CHARGE_P_W,
+            MAX_DISCHARGE_P_W,
+            ETA_RT,
+        ),
+        policy=CommercialPolicy(
+            min_margin_ct_per_kwh=MIN_MARGIN_CT,
+            terminal_value_ct_per_kwh=terminal_value_ct,
+            export_opportunity_ct_per_kwh=PV_EXPORT_OPPORTUNITY_CT,
+            discharge_floor_ct_per_kwh=discharge_floor_ct,
+            pv_charging_allowed=PV_CHARGING_ENABLED,
+            grid_charging_allowed=GRID_CHARGING_ENABLED,
+            discharge_allowed=DISCHARGE_ENABLED,
+            pv_recovery_confidence=PV_RECOVERY_CONFIDENCE,
+            pv_recovery_reserve_kwh=PV_RECOVERY_RESERVE_KWH,
+        ),
+    )
+    pure_plan = DynamicProgrammingOptimizer().optimize(problem)
+
+    points = []
+    daily = {}
+    for index, (item, load_slot, pv_slot, plan_slot) in enumerate(
+        zip(
+            intervals,
+            forecast_bundle.load.slots,
+            forecast_bundle.pv.slots,
+            pure_plan.slots,
+            strict=True,
+        )
+    ):
+        load_kwh = max(0.0, load_slot.energy.p50_kwh)
+        pv_kwh = max(0.0, pv_slot.energy.p50_kwh)
+        net_load_kwh = max(0.0, load_kwh - pv_kwh)
+        surplus_kwh = max(0.0, pv_kwh - load_kwh)
+        charge_kwh = plan_slot.planned_charge_kwh
+        discharge_kwh = plan_slot.planned_discharge_kwh
+        grid_import_kwh = max(0.0, net_load_kwh - discharge_kwh) + max(
+            0.0, charge_kwh - surplus_kwh
+        )
+        grid_export_kwh = max(0.0, surplus_kwh - charge_kwh)
+        power_w = (charge_kwh - discharge_kwh) / SLOT_H * 1000.0
+        date = item["dt"].date().isoformat()
+        points.append(
+            {
+                "ts_ms": int(item["dt"].timestamp() * 1000),
+                "date": date,
+                "price_ct": round(prices_ct[index], 3),
+                "soc_pct": round(plan_slot.expected_soc_start_pct, 2),
+                "power_w": round(power_w, 1),
+                "charge_fc_w": round(charge_kwh / SLOT_H * 1000.0, 1),
+                "pv_charge_fc_w": round(
+                    plan_slot.planned_pv_charge_kwh / SLOT_H * 1000.0, 1
+                ),
+                "grid_charge_fc_w": round(
+                    plan_slot.planned_grid_charge_kwh / SLOT_H * 1000.0, 1
+                ),
+                "required_charge_fc_w": round(
+                    plan_slot.required_charge_kwh / SLOT_H * 1000.0, 1
+                ),
+                "discharge_fc_w": round(discharge_kwh / SLOT_H * 1000.0, 1),
+                "discharge_budget_kwh": round(
+                    plan_slot.discharge_budget_kwh, 3
+                ),
+                "mode": plan_slot.mode.value,
+                "load_fc_w": round(load_kwh / SLOT_H * 1000.0, 1),
+                "pv_fc_w": round(pv_kwh / SLOT_H * 1000.0, 1),
+                "discharge_eligible_fc_w": round(
+                    min(net_load_kwh, MAX_DISCHARGE_E_SLOT_KWH)
+                    / SLOT_H
+                    * 1000.0,
+                    1,
+                ),
+                "grid_import_fc_w": round(grid_import_kwh / SLOT_H * 1000.0, 1),
+                "grid_export_fc_w": round(grid_export_kwh / SLOT_H * 1000.0, 1),
+                "grid_net_fc_w": round(
+                    (grid_import_kwh - grid_export_kwh) / SLOT_H * 1000.0,
+                    1,
+                ),
+            }
+        )
+        values = daily.setdefault(date, {"base": 0.0, "with_bat": 0.0})
+        values["base"] += (
+            net_load_kwh * prices_ct[index]
+            - surplus_kwh * PV_EXPORT_OPPORTUNITY_CT
+        ) / 100.0
+        values["with_bat"] += (
+            grid_import_kwh * prices_ct[index]
+            - grid_export_kwh * PV_EXPORT_OPPORTUNITY_CT
+        ) / 100.0
+
+    daily_costs = {
+        date: {
+            "base_eur": round(values["base"], 3),
+            "with_bat_eur": round(values["with_bat"], 3),
+            "saving_eur": round(values["base"] - values["with_bat"], 3),
         }
-        cur = prev_idx
-        cur_mode_idx = prev_mode_idx
-
-    points = suppress_uneconomic_micro_cycles(points, start_energy_kwh)
-    points = defer_subquantum_grid_remainders(points, start_energy_kwh)
-
-    recovery_lookahead_slots = max(1, int(round(PV_RECOVERY_LOOKAHEAD_H / SLOT_H)))
-    def recovery_window_end_idx(t):
-        price_ct = float(slots[t]["price_ct"])
-        default_end = min(n_slots, t + 1 + recovery_lookahead_slots)
-        for idx in range(t + 1, default_end):
-            if float(slots[idx]["price_ct"]) > price_ct + SCARCE_VALUE_TIE_CT:
-                return idx
-        return default_end
-
-    def safe_pv_recovery_ac_kwh(t, baseline_after_e):
-        if not PV_CHARGING_ENABLED:
-            return 0.0
-        end_idx = recovery_window_end_idx(t)
-        future_surplus_kwh = max(0.0, future_pv_surplus_kwh[t + 1] - future_pv_surplus_kwh[end_idx])
-        return _pv_spill_recovery_budget_ac_kwh(
-            future_surplus_kwh,
-            baseline_after_e,
-        )
-
-    def pre_slot_energy_kwh(t):
-        return clamp(
-            (float(points[t].get("soc_pct", 0.0)) / 100.0) * CAP_KWH,
-            MIN_E_KWH,
-            MAX_E_KWH,
-        )
-
-    def point_charge_kwh(t):
-        return max(0.0, float(points[t].get("charge_fc_w", 0.0)) / 1000.0 * SLOT_H)
-
-    def point_discharge_kwh(t):
-        return max(0.0, float(points[t].get("discharge_fc_w", 0.0)) / 1000.0 * SLOT_H)
-
-    def post_slot_energy_kwh(t):
-        return clamp(
-            pre_slot_energy_kwh(t)
-            + point_charge_kwh(t) * ETA_C
-            - point_discharge_kwh(t) / ETA_D,
-            MIN_E_KWH,
-            MAX_E_KWH,
-        )
-
-    def point_grid_charge_kwh(t):
-        return max(0.0, point_charge_kwh(t) - float(slots[t]["surplus_kwh"]))
-
-    def future_higher_value_load_kwh(t):
-        """Return high-value forecast load not replaced by planned recharge."""
-        return _future_higher_value_load_reserve_kwh(slots, points, t)
-
-    def explicit_discharge_budget_kwh(t):
-        # A budget may coexist with free PV charging, but never with paid
-        # charging. Otherwise live discharge lowers SoC and the next optimizer
-        # run immediately buys the same energy back through must-charge.
-        if point_grid_charge_kwh(t) > 1e-6:
-            return 0.0
-
-        slot_energy_kwh = pre_slot_energy_kwh(t)
-        available_ac_kwh = max(0.0, (slot_energy_kwh - MIN_E_KWH) * ETA_D)
-        max_total_discharge_kwh = min(MAX_DISCHARGE_E_SLOT_KWH, available_ac_kwh)
-        if max_total_discharge_kwh <= 1e-6:
-            return 0.0
-
-        sl = slots[t]
-        price_ct = float(sl["price_ct"])
-        if price_ct < PV_EXPORT_OPPORTUNITY_CT + MIN_MARGIN_CT:
-            return 0.0
-
-        safe_recovery_kwh = safe_pv_recovery_ac_kwh(t, post_slot_energy_kwh(t))
-        # If live conditions turn a forecast PV-charge slot into discharge, the
-        # later free PV must first replace the missed planned charge. Only the
-        # remaining recovery energy is safe to expose as a discharge budget.
-        missed_plan_recovery_kwh = point_charge_kwh(t) * ETA_RT
-        pv_recovery_budget_kwh = min(
-            max_total_discharge_kwh,
-            max(0.0, safe_recovery_kwh - missed_plan_recovery_kwh),
-        )
-
-        scarce_budget_kwh = 0.0
-        scarce_floor_ct = float(discharge_floor_ct or 0.0)
-        if point_charge_kwh(t) <= 1e-6 and price_ct >= scarce_floor_ct:
-            higher_value_need_kwh = future_higher_value_load_kwh(t)
-            scarce_budget_kwh = max(
-                0.0,
-                available_ac_kwh + safe_recovery_kwh - higher_value_need_kwh,
-            )
-
-        # Expected dispatch is a subset of commercial permission. The live
-        # controller may use a larger budget for unexpected household load, but
-        # it must never be unable to execute an optimizer-planned discharge.
-        planned_discharge_kwh = point_discharge_kwh(t)
-        budget_kwh = max(
-            planned_discharge_kwh,
-            pv_recovery_budget_kwh,
-            min(max_total_discharge_kwh, scarce_budget_kwh),
-        )
-
-        return round(min(max_total_discharge_kwh, budget_kwh), 3)
-
-    for idx, point in enumerate(points):
-        point["discharge_budget_kwh"] = explicit_discharge_budget_kwh(idx)
-
-    daily_with_bat = {}
-    for p in points:
-        d = p.get("date")
-        daily_with_bat.setdefault(d, 0.0)
-        grid_import_kwh = max(0.0, float(p.get("grid_import_fc_w", 0.0)) / 1000.0 * SLOT_H)
-        grid_export_kwh = max(
-            0.0, float(p.get("grid_export_fc_w", 0.0)) / 1000.0 * SLOT_H
-        )
-        daily_with_bat[d] += (
-            grid_import_kwh * (float(p.get("price_ct", 0.0)) / 100.0)
-            - grid_export_kwh * (PV_EXPORT_OPPORTUNITY_CT / 100.0)
-        )
-
-    daily_costs = {}
-    for d, vals in daily.items():
-        daily_costs[d] = {
-            "base_eur": round(vals["base"], 3),
-            "with_bat_eur": round(daily_with_bat.get(d, vals["with_bat"]), 3),
-            "saving_eur": round(vals["base"] - daily_with_bat.get(d, vals["with_bat"]), 3),
-        }
-
+        for date, values in daily.items()
+    }
     return {
         "points": points,
         "today": {
@@ -2176,21 +1865,42 @@ def build_virtual_plan(
             "date": tomorrow,
             "saving_eur": daily_costs.get(tomorrow, {}).get("saving_eur", 0.0),
         },
-        "end_soc": round((energies[end_idx] / CAP_KWH) * 100.0, 2),
+        "end_soc": round(
+            pure_plan.slots[-1].expected_soc_end_pct
+            if pure_plan.slots
+            else start_energy_kwh / CAP_KWH * 100.0,
+            2,
+        ),
         "price_stats": {
             "p_low": round(p_low, 2),
             "p_high": round(p_high, 2),
             "avg": round(sum(prices_ct) / len(prices_ct), 2),
             "min": round(min(prices_ct), 2),
             "max": round(max(prices_ct), 2),
-            "tomorrow_min_rank": round(tomorrow_min_rank, 3) if tomorrow_min_rank is not None else None,
+            "tomorrow_min_rank": (
+                round(tomorrow_min_rank, 3)
+                if tomorrow_min_rank is not None
+                else None
+            ),
             "terminal_value_ct": round(terminal_value_ct, 3),
-            "discharge_floor_ct": round(discharge_floor_ct, 3) if discharge_floor_ct is not None else None,
-            "cheap_anchor_ct": round(cheap_anchor_ct, 3) if cheap_anchor_ct is not None else None,
-            "cheap_anchor_rank": round(cheap_anchor_rank, 3) if cheap_anchor_rank is not None else None,
+            "discharge_floor_ct": (
+                round(discharge_floor_ct, 3)
+                if discharge_floor_ct is not None
+                else None
+            ),
+            "cheap_anchor_ct": (
+                round(cheap_anchor_ct, 3) if cheap_anchor_ct is not None else None
+            ),
+            "cheap_anchor_rank": (
+                round(cheap_anchor_rank, 3)
+                if cheap_anchor_rank is not None
+                else None
+            ),
         },
         "daily_costs": daily_costs,
-        "forecast_diagnostics": forecast_diagnostics,
+        "forecast_diagnostics": dict(forecast_diagnostics or {}),
+        "optimizer_version": pure_plan.optimizer_version,
+        "optimization_problem_id": pure_plan.problem_id,
     }
 
 

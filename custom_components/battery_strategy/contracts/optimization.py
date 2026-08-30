@@ -87,10 +87,27 @@ class CommercialPolicy:
 
     min_margin_ct_per_kwh: float
     terminal_value_ct_per_kwh: float = 0.0
+    export_opportunity_ct_per_kwh: float = 0.0
+    discharge_floor_ct_per_kwh: float | None = None
+    pv_charging_allowed: bool = True
+    grid_charging_allowed: bool = True
+    discharge_allowed: bool = True
+    pv_recovery_confidence: float = 0.75
+    pv_recovery_reserve_kwh: float = 0.30
 
     def __post_init__(self) -> None:
         require_nonnegative("min_margin_ct_per_kwh", self.min_margin_ct_per_kwh)
         require_nonnegative("terminal_value_ct_per_kwh", self.terminal_value_ct_per_kwh)
+        require_nonnegative(
+            "export_opportunity_ct_per_kwh", self.export_opportunity_ct_per_kwh
+        )
+        if self.discharge_floor_ct_per_kwh is not None:
+            require_nonnegative(
+                "discharge_floor_ct_per_kwh", self.discharge_floor_ct_per_kwh
+            )
+        if not 0.0 <= self.pv_recovery_confidence <= 1.0:
+            raise ValueError("pv_recovery_confidence must be in [0, 1]")
+        require_nonnegative("pv_recovery_reserve_kwh", self.pv_recovery_reserve_kwh)
 
 
 @dataclass(frozen=True, slots=True)

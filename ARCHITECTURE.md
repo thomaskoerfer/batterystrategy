@@ -138,13 +138,12 @@ That module is a migration source, not the desired permanent boundary.
 
 ## Migration plan and gates
 
-Current status: Phase 3 is deployed and collecting independently configured
-load components plus central weather. Phase 4 is implemented locally on
-`codex/phase-4-feature-cutover`: the finalized feature store is the sole
-production forecast source and the optimizer consumes an explicit
-`ForecastBundle`. It is intentionally not deployed until the component-history
-readiness gate and retained-history replay pass. The deployed integration and
-battery control remain unchanged meanwhile.
+Current status: Phase 4 is deployed as `0.2.0-rc.1`: the finalized feature
+store is the sole production forecast source and the optimizer consumes an
+explicit `ForecastBundle`. Its live observation gate remains open until at
+least 72 stable hours have elapsed. Phase 5 is being prepared locally on
+`codex/phase-5-pure-optimizer`; it must not be deployed before that gate and the
+proposed additive commercial-policy contract fields are approved.
 
 ### Phase 0: Baseline and contracts
 
