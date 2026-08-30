@@ -9,8 +9,11 @@ module globals also own Home Assistant, Recorder, persistence and reporting
 concerns. Phase 5 extracts those calculations behind the existing pure
 `optimize(problem) -> BatteryPlan` boundary.
 
-This branch is local preparation only. It does not change the deployed Home
-Assistant integration, live controller, plan compiler or actuator. The current
+This branch prepares a shadow-only deployment. The existing optimizer remains
+authoritative and continues to supply the plan, compiler and live controller.
+The pure optimizer receives the same immutable forecast, market, SoC,
+constraints and derived commercial policy once per 15-minute slot. Its result
+is compared and retained, but cannot reach the actuator. The current
 `0.2.0-rc.1` remains the rollback point.
 
 ## Proposed contract extension
@@ -48,6 +51,11 @@ suppression, sub-quantum grid-charge deferral, PV-headroom recovery and
 commercial discharge budgets exactly. Forecasting and live meter following are
 out of scope.
 
+The temporary shadow trace is stored outside Home Assistant Recorder as bounded
+JSONL with 14-day/1,500-record retention. Only compact maximum deltas, mismatch
+count and total cost deltas are retained. Shadow evaluation and persistence
+errors are contained and cannot fail the authoritative optimizer run.
+
 ## Verification and gate
 
 - Golden-master parity for every retained historical problem that can be
@@ -70,5 +78,5 @@ old/new runtime selector is introduced.
 
 - Proposed: 2026-08-30
 - Contract approval: approved by owner on 2026-08-30
-- Local implementation: in progress
+- Local implementation: shadow candidate ready
 - Production cutover: blocked by Phase-4 observation gate and approval
