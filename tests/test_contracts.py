@@ -8,6 +8,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from custom_components.battery_strategy.contracts import (
+    AutomaticDischargeMode,
     BatteryCommand,
     BatteryConstraints,
     BatteryPlan,
@@ -19,13 +20,16 @@ from custom_components.battery_strategy.contracts import (
     ForecastBundle,
     ForecastRequest,
     ForecastSlot,
+    LivePolicy,
     LoadDriverSnapshot,
     LoadFeatureValue,
     LoadForecast,
     LoadForecastComponent,
     LoadForecastContext,
+    ManualControlMode,
     MarketSlot,
     OptimizationProblem,
+    PlanCompilationState,
     PlanLiveDirective,
     PlanMode,
     PvForecast,
@@ -333,6 +337,27 @@ class ContractTests(unittest.TestCase):
                 min_soc_pct=5.0,
                 max_soc_pct=100.0,
             )
+
+    def test_live_policy_carries_operator_modes_without_ha_options(self):
+        policy = LivePolicy(
+            pv_to_ev_first=True,
+            discharge_during_ev_charging=True,
+            battery_may_feed_ev=False,
+            ev_active_threshold_w=300.0,
+            min_command_power_w=20.0,
+            automatic_discharge_mode=AutomaticDischargeMode.PRICE_SENSITIVE,
+            manual_mode=ManualControlMode.DISCHARGE,
+            manual_power_w=500.0,
+        )
+        self.assertEqual(
+            policy.automatic_discharge_mode,
+            AutomaticDischargeMode.PRICE_SENSITIVE,
+        )
+        self.assertEqual(policy.manual_mode, ManualControlMode.DISCHARGE)
+
+    def test_compilation_state_rejects_commitment_without_an_active_slot(self):
+        with self.assertRaisesRegex(ValueError, "empty compilation state"):
+            PlanCompilationState(discharge_budget_commitment_kwh=0.2)
 
     def test_command_fails_closed_for_inconsistent_mode_and_power(self):
         with self.assertRaisesRegex(ValueError, "idle commands"):

@@ -6,7 +6,7 @@ Phase 5 makes economic optimization available through the pure
 `optimize(problem) -> BatteryPlan` boundary. The production path still combines
 translation of the current plan slot, slot-local progress accounting and
 coordinator-owned state. Phase 6 moves only the deterministic translation behind
-the approved `PlanCompiler.compile(plan, progress, issued_at_ms)` contract.
+the approved state-explicit `PlanCompiler.compile(...)` contract.
 
 This preparation is stacked on the Phase-5 shadow branch. It does not change the
 authoritative optimizer, coordinator, live controller or actuator and is not a
@@ -14,8 +14,12 @@ deployment candidate.
 
 ## Contract interpretation
 
-No contract extension is proposed. The existing approved contracts are applied
-as follows:
+The initial preparation identified two incomplete in-memory contracts. The
+owner approved their behavioral semantics on 2026-08-31. The approved slot
+commitment is documented in `docs/plan-compiler/README.md`; operator and EV
+policy precedence is documented in `docs/live-control/README.md`.
+
+The base compiler rules remain:
 
 - the compiler selects exactly the `BatteryPlanSlot` named by `SlotProgress`;
 - measured charge reduces remaining required charge;
@@ -60,12 +64,11 @@ will:
 Rollback before cutover is branch deletion. Rollback after cutover returns to
 the last Phase-5 release; no permanent runtime selector is introduced.
 
-## Contract gaps found during preparation
+## Approved contract extensions
 
-The pure compiler can be implemented against the current contract, but it
-cannot yet preserve every production control without leaving hidden state or
-policy in the coordinator. Two changes therefore require separate owner
-approval before a production shadow can be wired:
+The pure compiler cannot preserve every production control without leaving
+hidden state or policy in the coordinator. Two approved extensions are required
+before a production shadow can be wired:
 
 ### Explicit compilation state
 
@@ -75,7 +78,7 @@ rolling replans from repeatedly reopening energy already withheld or consumed.
 `SlotProgress` contains measured energy only, so a stateless compiler cannot
 distinguish a newly increased authorization from the original slot budget.
 
-Proposed direction: add an immutable `PlanCompilationState` containing the
+Approved direction: add an immutable `PlanCompilationState` containing the
 active slot and the previously authorized base budget. Compilation receives and
 returns that state explicitly. A slot change resets it; within a slot the base
 may decrease but not increase. This is an in-memory contract change with no
@@ -92,22 +95,22 @@ implements these before or around plan compilation:
 - `Aus` blocks automatic discharge;
 - manual charge/discharge temporarily overrides automatic plan execution.
 
-Proposed direction: add typed discharge mode and manual override fields to
+Approved direction: add typed discharge mode and manual override fields to
 `LivePolicy`. The directive continues to carry physical power and SoC limits;
 zero commercial budget blocks only price-sensitive discharge. The live
 controller applies the explicit operator choice without reading HA options or
 reinterpreting prices. `strategy_enabled` remains orchestration around the
 single actuator and is not moved into the pure live function.
 
-Both proposals preserve existing user-visible behavior and remove policy from
-the coordinator. They do not authorize a second actuator path. Their exact
-contract definitions, migration tests and impact analysis must be approved
-before implementation.
+Both extensions preserve existing user-visible behavior and remove policy from
+the coordinator. They do not authorize a second actuator path. Their contract
+types and preparation tests are implemented on this branch; production
+migration remains subject to the Phase-5 and Phase-6 gates.
 
 ## Status
 
 - Proposed and locally prepared: 2026-08-31
-- Contract change: none
+- Contract approval: approved by owner on 2026-08-31
+- Contract implementation: prepared locally
 - Production integration: not started
-- Deployment: blocked by Phase-5 cutover/stabilization and approval of the two
-  contract gaps above
+- Deployment: blocked by Phase-5 cutover/stabilization and Phase-6 shadow parity

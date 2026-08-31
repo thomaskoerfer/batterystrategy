@@ -12,6 +12,7 @@ from custom_components.battery_strategy.contracts import (
     BatteryConstraints,
     BatteryPlan,
     BatteryPlanSlot,
+    PlanCompilationState,
     PlanMode,
     SlotKey,
     SlotProgress,
@@ -81,11 +82,13 @@ def compile_slot(
     discharged_kwh: float = 0.0,
     soc_pct: float = 50.0,
 ):
-    return DeterministicPlanCompiler().compile(
+    directive, _state = DeterministicPlanCompiler().compile(
         battery_plan(slot),
         SlotProgress(slot.slot, charged_kwh, discharged_kwh, soc_pct),
+        PlanCompilationState(),
         issued_at_ms=60_000,
     )
+    return directive
 
 
 def test_plan_compiler_module_has_no_runtime_or_io_dependencies():
@@ -175,6 +178,7 @@ def test_compiler_rejects_progress_for_a_slot_outside_the_plan():
         DeterministicPlanCompiler().compile(
             battery_plan(slot),
             SlotProgress(other, 0.0, 0.0, 50.0),
+            PlanCompilationState(),
             issued_at_ms=60_000,
         )
 
@@ -185,6 +189,101 @@ def test_compiler_is_deterministic():
     progress = SlotProgress(slot.slot, 0.0, 0.1, 50.0)
     compiler = DeterministicPlanCompiler()
 
-    assert compiler.compile(plan, progress, 60_000) == compiler.compile(
-        plan, progress, 60_000
+    assert compiler.compile(
+        plan, progress, PlanCompilationState(), 60_000
+    ) == compiler.compile(
+        plan, progress, PlanCompilationState(), 60_000
     )
+
+
+def test_reoptimization_may_lower_but_not_raise_active_slot_commitments():
+    compiler = DeterministicPlanCompiler()
+    initial_slot = plan_slot(
+        grid_charge_kwh=0.4,
+        required_charge_kwh=0.4,
+        discharge_budget_kwh=0.4,
+    )
+    progress = SlotProgress(initial_slot.slot, 0.1, 0.1, 50.0)
+    _directive, state = compiler.compile(
+        battery_plan(initial_slot),
+        progress,
+        PlanCompilationState(),
+        60_000,
+    )
+
+    raised_slot = replace(
+        initial_slot,
+        planned_charge_kwh=0.6,
+        planned_grid_charge_kwh=0.6,
+        required_charge_kwh=0.6,
+        discharge_budget_kwh=0.6,
+    )
+    raised_plan = replace(
+        battery_plan(raised_slot),
+        plan_id="plan-raised",
+        problem_id="problem-raised",
+    )
+    raised, raised_state = compiler.compile(raised_plan, progress, state, 120_000)
+
+    assert raised.required_charge_remaining_kwh == pytest.approx(0.3)
+    assert raised.discharge_budget_remaining_kwh == pytest.approx(0.3)
+    assert raised_state.required_charge_commitment_kwh == pytest.approx(0.4)
+    assert raised_state.discharge_budget_commitment_kwh == pytest.approx(0.4)
+
+    lowered_slot = replace(
+        initial_slot,
+        planned_charge_kwh=0.2,
+        planned_grid_charge_kwh=0.2,
+        required_charge_kwh=0.2,
+        discharge_budget_kwh=0.2,
+    )
+    lowered_plan = replace(
+        battery_plan(lowered_slot),
+        plan_id="plan-lowered",
+        problem_id="problem-lowered",
+    )
+    lowered, lowered_state = compiler.compile(
+        lowered_plan,
+        progress,
+        raised_state,
+        180_000,
+    )
+
+    assert lowered.required_charge_remaining_kwh == pytest.approx(0.1)
+    assert lowered.discharge_budget_remaining_kwh == pytest.approx(0.1)
+    assert lowered_state.required_charge_commitment_kwh == pytest.approx(0.2)
+    assert lowered_state.discharge_budget_commitment_kwh == pytest.approx(0.2)
+
+
+def test_new_slot_accepts_the_latest_plan_commitment():
+    compiler = DeterministicPlanCompiler()
+    first_slot = plan_slot(discharge_kwh=0.2, discharge_budget_kwh=0.2)
+    _directive, state = compiler.compile(
+        battery_plan(first_slot),
+        SlotProgress(first_slot.slot, 0.0, 0.1, 50.0),
+        PlanCompilationState(),
+        60_000,
+    )
+    next_key = SlotKey(SLOT_MS, 2 * SLOT_MS)
+    next_slot = replace(
+        first_slot,
+        slot=next_key,
+        planned_discharge_kwh=0.5,
+        discharge_budget_kwh=0.6,
+    )
+    next_plan = replace(
+        battery_plan(first_slot),
+        plan_id="plan-next",
+        problem_id="problem-next",
+        slots=(next_slot,),
+    )
+
+    directive, next_state = compiler.compile(
+        next_plan,
+        SlotProgress(next_key, 0.0, 0.0, 50.0),
+        state,
+        SLOT_MS + 60_000,
+    )
+
+    assert directive.discharge_budget_remaining_kwh == pytest.approx(0.6)
+    assert next_state.committed_plan_id == "plan-next"

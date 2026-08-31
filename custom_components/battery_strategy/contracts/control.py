@@ -18,6 +18,22 @@ class CommandMode(StrEnum):
     OUTPUT = "output"
 
 
+class AutomaticDischargeMode(StrEnum):
+    """Operator-selected automatic discharge behavior."""
+
+    OFF = "off"
+    LOAD_FOLLOWING = "load_following"
+    PRICE_SENSITIVE = "price_sensitive"
+
+
+class ManualControlMode(StrEnum):
+    """Explicit operator override evaluated ahead of automatic control."""
+
+    OFF = "off"
+    CHARGE = "charge"
+    DISCHARGE = "discharge"
+
+
 @dataclass(frozen=True, slots=True)
 class SlotProgress:
     """Measured progress used when compiling a current-slot directive."""
@@ -31,6 +47,39 @@ class SlotProgress:
         require_nonnegative("charged_kwh", self.charged_kwh)
         require_nonnegative("discharged_kwh", self.discharged_kwh)
         require_percentage("soc_pct", self.soc_pct)
+
+
+@dataclass(frozen=True, slots=True)
+class PlanCompilationState:
+    """Explicit economic commitment latched for one active slot."""
+
+    slot: SlotKey | None = None
+    committed_plan_id: str | None = None
+    required_charge_commitment_kwh: float = 0.0
+    discharge_budget_commitment_kwh: float = 0.0
+    grid_charge_allowed: bool = False
+
+    def __post_init__(self) -> None:
+        require_nonnegative(
+            "required_charge_commitment_kwh",
+            self.required_charge_commitment_kwh,
+        )
+        require_nonnegative(
+            "discharge_budget_commitment_kwh",
+            self.discharge_budget_commitment_kwh,
+        )
+        if self.slot is None:
+            if (
+                self.committed_plan_id is not None
+                or self.required_charge_commitment_kwh > 0.0
+                or self.discharge_budget_commitment_kwh > 0.0
+                or self.grid_charge_allowed
+            ):
+                raise ValueError("empty compilation state cannot contain a commitment")
+        elif not self.committed_plan_id:
+            raise ValueError("active compilation state requires committed_plan_id")
+        if self.required_charge_commitment_kwh > 0.0 and not self.grid_charge_allowed:
+            raise ValueError("required charge commitment requires grid permission")
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,10 +161,16 @@ class LivePolicy:
     battery_may_feed_ev: bool
     ev_active_threshold_w: float
     min_command_power_w: float
+    automatic_discharge_mode: AutomaticDischargeMode = (
+        AutomaticDischargeMode.LOAD_FOLLOWING
+    )
+    manual_mode: ManualControlMode = ManualControlMode.OFF
+    manual_power_w: float = 0.0
 
     def __post_init__(self) -> None:
         require_nonnegative("ev_active_threshold_w", self.ev_active_threshold_w)
         require_nonnegative("min_command_power_w", self.min_command_power_w)
+        require_nonnegative("manual_power_w", self.manual_power_w)
 
 
 @dataclass(frozen=True, slots=True)
@@ -181,8 +236,9 @@ class PlanCompiler(Protocol):
         self,
         plan: BatteryPlan,
         progress: SlotProgress,
+        state: PlanCompilationState,
         issued_at_ms: int,
-    ) -> PlanLiveDirective: ...
+    ) -> tuple[PlanLiveDirective, PlanCompilationState]: ...
 
 
 class LiveController(Protocol):

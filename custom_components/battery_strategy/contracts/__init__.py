@@ -3,6 +3,7 @@
 from .common import DataQuality, QualityFlag, SlotKey
 from .control import (
     ActuationResult,
+    AutomaticDischargeMode,
     BatteryActuator,
     BatteryCommand,
     CommandMode,
@@ -10,6 +11,8 @@ from .control import (
     LiveControlState,
     LiveMeasurements,
     LivePolicy,
+    ManualControlMode,
+    PlanCompilationState,
     PlanCompiler,
     PlanLiveDirective,
     SlotProgress,
@@ -48,6 +51,7 @@ from .ports import FeatureStore, MarketDataProvider, WeatherDataProvider
 
 __all__ = [
     "ActuationResult",
+    "AutomaticDischargeMode",
     "BatteryActuator",
     "BatteryCommand",
     "BatteryConstraints",
@@ -70,15 +74,17 @@ __all__ = [
     "LivePolicy",
     "LoadComponentEnergy",
     "LoadDriverSnapshot",
+    "LoadFeatureValue",
     "LoadForecast",
     "LoadForecastComponent",
     "LoadForecastContext",
     "LoadForecaster",
-    "LoadFeatureValue",
+    "ManualControlMode",
     "MarketDataProvider",
     "MarketSlot",
     "OptimizationProblem",
     "Optimizer",
+    "PlanCompilationState",
     "PlanCompiler",
     "PlanLiveDirective",
     "PlanMode",

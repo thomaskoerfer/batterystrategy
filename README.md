@@ -7,6 +7,12 @@ Development and refactoring must follow the documented
 invariant and staged migration gates. Layer changes must also preserve the
 [interface contracts](INTERFACE_CONTRACTS.md).
 
+Detailed, owner-approved runtime semantics are documented separately for the
+[plan compiler](docs/plan-compiler/README.md) and
+[live control](docs/live-control/README.md). These documents are normative and
+must be updated through the contract impact-analysis process when behavior
+changes.
+
 > [!WARNING]
 > This integration can command real battery hardware. New installations start with control disabled. Verify entity mappings, units, signs, SoC limits and the displayed live command before enabling control. Keep the battery/BMS safety limits active.
 

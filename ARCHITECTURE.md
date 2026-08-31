@@ -97,6 +97,9 @@ but does not defer an optimizer action to another slot; equal-value scheduling
 and uncertainty-aware optionality belong to the optimizer so the published plan
 remains executable.
 
+The active-slot commitment, rolling-replan and progress-accounting semantics
+are normative in [the plan compiler guide](docs/plan-compiler/README.md).
+
 ### Live controller
 
 The live controller runs on the fast coordinator interval. It combines the
@@ -109,6 +112,9 @@ Dashboard future profiles remain canonical optimizer output. They may be joined
 to measured history at the current timestamp, but the current live command does
 not mutate future plan slots. This keeps plan diagnostics reproducible and
 prevents display-only SoC shifts from becoming inconsistent with planned power.
+
+Operator-mode precedence, PV-follow, EV treatment, manual override and disabled
+control are normative in [the live control guide](docs/live-control/README.md).
 
 ### Actuator
 
@@ -138,15 +144,14 @@ That module is a migration source, not the desired permanent boundary.
 
 ## Migration plan and gates
 
-Current status: Phase 4 is deployed as `0.2.0-rc.1`: the finalized feature
-store is the sole production forecast source and the optimizer consumes an
-explicit `ForecastBundle`. Its live observation gate remains open until at
-least 72 stable hours have elapsed. Phase 5 is being prepared locally on
-`codex/phase-5-pure-optimizer`; it must not be deployed before that gate and the
-approved additive commercial-policy fields pass retained-history parity.
+Current status: `0.2.0-rc.2` is deployed. The finalized feature store is the
+sole production forecast source and the authoritative optimizer consumes an
+explicit `ForecastBundle`. The Phase-5 pure optimizer runs in isolated shadow
+mode on the same immutable inputs; it cannot reach planning, live control or
+actuation. It must pass its parity and observation gate before cutover.
 Phase 6 has a stacked, non-production preparation branch containing only the
-pure compiler and boundary tests. It cannot be integrated or deployed before
-Phase 5 is authoritative and stable.
+pure compiler, approved contract extensions, documentation and boundary tests.
+It cannot be integrated or deployed before Phase 5 is authoritative and stable.
 
 ### Phase 0: Baseline and contracts
 

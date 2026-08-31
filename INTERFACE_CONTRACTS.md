@@ -211,6 +211,15 @@ between slots. It publishes the optimizer's explicit required total charge only
 when that slot also contains an explicit grid commitment. Any economic deferral
 must already be represented in `BatteryPlan` and its SoC trajectory.
 
+The active slot is a latched economic commitment. Rolling replans may lower or
+withdraw required grid charge and commercial discharge budget in that slot, but
+may not increase or newly open them. Actual charged/discharged energy reduces
+the corresponding remaining commitment. At the next slot boundary the latest
+valid plan is accepted in full. This behavior is represented by explicit
+`PlanCompilationState`; it must not be hidden in coordinator state. Detailed
+semantics and examples are normative in
+`docs/plan-compiler/README.md`. They were approved by the owner on 2026-08-31.
+
 If the battery SoC source becomes unavailable, the last measured SoC remains
 the displayed estimate. After the bounded startup bridge expires, actuation and
 new optimizer runs remain blocked; the estimate is explicitly stale and must
@@ -228,6 +237,14 @@ discharge are separate positive fields so meter feedback cannot invert the
 house-load reconstruction. EV power remains explicit and is interpreted only
 through the supplied `LivePolicy`. Previous command state is supplied as
 `LiveControlState`; the controller does not keep hidden mutable state.
+
+`LivePolicy` explicitly carries automatic discharge mode and manual override in
+addition to EV policy. Load-following discharge does not consume an optimizer
+budget; price-sensitive discharge does. Manual commands override automatic plan
+and EV policy but remain subject to physical and stale-input safety. Decision
+precedence, EV combinations, PV-follow and disabled-control semantics are
+normative in `docs/live-control/README.md` and were approved by the owner on
+2026-08-31.
 
 The live controller computes a `BatteryCommand` without I/O. An idle command has
 zero power; active commands have positive power and a short validity interval.
