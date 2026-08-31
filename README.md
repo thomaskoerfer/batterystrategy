@@ -7,6 +7,10 @@ Development and refactoring must follow the documented
 invariant and staged migration gates. Layer changes must also preserve the
 [interface contracts](INTERFACE_CONTRACTS.md).
 
+The [architecture layer guides](docs/README.md) describe each boundary,
+supported capability class, migration state and required verification without
+depending on one Home Assistant installation.
+
 Detailed, owner-approved runtime semantics are documented separately for the
 [plan compiler](docs/plan-compiler/README.md) and
 [live control](docs/live-control/README.md). These documents are normative and

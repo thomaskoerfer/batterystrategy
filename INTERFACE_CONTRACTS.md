@@ -274,6 +274,12 @@ the requested power.
 
 ## Compatibility and evolution
 
+The public layer guides under `docs/` and their adjacent `AGENTS.md` files are
+part of contract governance. They do not replace executable contracts, but must
+be updated in the same reviewed change whenever ownership, dependencies,
+semantics or required checks change. Their setup-neutrality and completeness are
+enforced by repository tests.
+
 - Every contract change requires an impact analysis in its pull request or
   commit description. Small additive changes may use a short analysis; breaking
   changes require an explicit migration and rollback plan.

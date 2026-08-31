@@ -109,6 +109,20 @@ path. There is never a second automatic hardware writer.
 - An invalid or expired directive, stale grid input or stale SoC produces a safe
   idle/zero outcome.
 
+## Setup independence
+
+Live control consumes normalized measurements, policy and directives. It must
+not depend on installation-specific entity IDs, names, addresses, hostnames,
+URLs, serial numbers or provider payloads. Device command translation belongs
+to the actuator boundary.
+
+## Verification
+
+Regression scenarios cover decision precedence, all EV-policy combinations,
+PV-follow, required charge, both automatic discharge modes, manual override,
+stale inputs, command smoothing and one-shot disabled control. Trace comparison
+must separate economic permission from live meter-following behavior.
+
 ## Transitional implementation
 
 The current production behavior already implements the precedence, EV policy,

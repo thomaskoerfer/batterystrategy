@@ -44,6 +44,43 @@ Home Assistant entities, recorder, weather and market data
 Evaluation, diagnostics and backtesting observe the typed outputs of each layer.
 They do not participate in live actuation.
 
+## Documentation and agent-guidance gate
+
+Every architecture layer has two maintained artifacts:
+
+- a public `README.md` that explains purpose, contracts, inputs, outputs,
+  non-responsibilities, supported capability classes, verification and current
+  migration debt;
+- an `AGENTS.md` that tells coding agents which responsibilities, dependencies
+  and checks are allowed inside that boundary.
+
+The layer index is [docs/README.md](docs/README.md). A migration phase is not
+complete until the guides and agent instructions for every affected layer match
+the implementation. Interface-contract changes still require the impact
+analysis and explicit owner approval defined in `INTERFACE_CONTRACTS.md`.
+
+The maintained layer guides are:
+
+- [data adapters and feature store](docs/data-feature-store/README.md);
+- [forecasting](docs/forecasting/README.md);
+- [optimization](docs/optimization/README.md);
+- [plan compiler](docs/plan-compiler/README.md);
+- [live control](docs/live-control/README.md);
+- [actuation](docs/actuation/README.md);
+- [evaluation and diagnostics](docs/evaluation/README.md).
+
+Public documentation and committed agent guidance must describe normalized
+roles and capability classes. They must not contain installation-specific
+entity IDs, names, addresses, hostnames, URLs, serial numbers, credentials or
+local filesystem paths. A currently supported vendor or provider class may be
+named when support is genuinely limited to it.
+
+While implementation modules share one package directory, its local
+`AGENTS.md` maps modules to their architecture owner. When a layer is extracted
+into its own package, its agent file moves with it. CI verifies that every layer
+keeps both artifacts and that common setup-specific identifiers do not leak
+into them.
+
 ## Layer responsibilities
 
 ### Data adapters and feature store
@@ -276,6 +313,10 @@ Gate: HACS, Hassfest, unit tests, historical backtests and live health checks pa
 Each phase is released and observed before the next cutover. Refactoring must
 preserve behavior first; forecast or optimization improvements are separate,
 measurable changes after the corresponding boundary is stable.
+
+Documentation is part of the refactoring gate, not follow-up work. An affected
+layer README, its agent guidance and the architecture documentation must be
+updated in the same change as the implementation.
 
 Contract conformance is enforced at the boundary currently being migrated, not
 retroactively across the entire legacy runtime. Discovering a deficient

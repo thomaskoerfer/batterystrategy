@@ -88,6 +88,13 @@ discharge ceilings. A restart may restore a directive only from a valid current
 plan and real progress inputs; missing or stale SoC fails closed rather than
 inventing a nominal value.
 
+## Setup independence
+
+The compiler consumes only typed plans, progress and explicit state. It must not
+refer to entity IDs, device identifiers, addresses, hostnames, installation
+URLs or local storage paths. Vendor and Home Assistant concerns belong to
+adapters and actuation, not compiler semantics.
+
 ## Verification
 
 Required regression scenarios include:
