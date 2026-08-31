@@ -144,6 +144,9 @@ explicit `ForecastBundle`. Its live observation gate remains open until at
 least 72 stable hours have elapsed. Phase 5 is being prepared locally on
 `codex/phase-5-pure-optimizer`; it must not be deployed before that gate and the
 approved additive commercial-policy fields pass retained-history parity.
+Phase 6 has a stacked, non-production preparation branch containing only the
+pure compiler and boundary tests. It cannot be integrated or deployed before
+Phase 5 is authoritative and stable.
 
 ### Phase 0: Baseline and contracts
 
