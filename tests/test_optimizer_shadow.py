@@ -19,6 +19,8 @@ from custom_components.battery_strategy.contracts import (
     SlotKey,
 )
 from custom_components.battery_strategy.optimizer_shadow import (
+    OPERATIONAL_ACTION_TOLERANCE_KWH,
+    OPERATIONAL_BUDGET_TOLERANCE_KWH,
     RETENTION_S,
     append_shadow_record,
     evaluate_optimizer_shadow,
@@ -103,6 +105,7 @@ def test_shadow_matches_authoritative_plan_without_replacing_it():
     )
     assert result["status"] == "match"
     assert result["mismatch_slots"] == 0
+    assert result["exact_status"] == "match"
     assert json.dumps(authoritative, sort_keys=True) == snapshot
 
 
@@ -119,7 +122,33 @@ def test_shadow_trace_has_time_and_count_retention(tmp_path):
     path.write_text(json.dumps(old) + "\n", encoding="utf-8")
     append_shadow_record(path, {"ts_ms": now_ms, "status": "match"}, now_ms=now_ms)
     records = [json.loads(line) for line in path.read_text().splitlines()]
-    assert records == [{"ts_ms": now_ms, "status": "match"}]
+    assert len(records) == 1
+    assert records[0]["ts_ms"] == now_ms
+    assert records[0]["status"] == "match"
+
+
+def test_retained_exact_mismatch_is_reclassified_without_losing_deltas(tmp_path):
+    path = tmp_path / "shadow.jsonl"
+    now_ms = 2_000_000_000_000
+    old = {
+        "ts_ms": now_ms - 1,
+        "status": "mismatch",
+        "mismatch_slots": 8,
+        "max_charge_delta_kwh": OPERATIONAL_ACTION_TOLERANCE_KWH / 2,
+        "max_discharge_delta_kwh": OPERATIONAL_ACTION_TOLERANCE_KWH / 2,
+        "max_budget_delta_kwh": OPERATIONAL_BUDGET_TOLERANCE_KWH / 2,
+        "max_soc_delta_pct": 0.02,
+    }
+    path.write_text(json.dumps(old) + "\n", encoding="utf-8")
+
+    append_shadow_record(path, {"ts_ms": now_ms, "status": "match"}, now_ms=now_ms)
+
+    records = [json.loads(line) for line in path.read_text().splitlines()]
+    assert records[0]["status"] == "match"
+    assert records[0]["mismatch_slots"] == 0
+    assert records[0]["exact_status"] == "mismatch"
+    assert records[0]["exact_mismatch_slots"] == 8
+    assert records[0]["max_budget_delta_kwh"] == old["max_budget_delta_kwh"]
 
 
 def test_authoritative_plan_is_built_before_shadow_evaluation():

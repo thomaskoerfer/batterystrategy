@@ -21,6 +21,18 @@ SLOT_H = 0.25
 RETENTION_S = 14 * 24 * 60 * 60
 MAX_RECORDS = 1500
 
+# Exact deltas remain visible, while the release gate accounts for the legacy
+# plan's serialized precision and the 5 W live-command resolution.
+EXACT_ACTION_TOLERANCE_KWH = 0.00005
+EXACT_BUDGET_TOLERANCE_KWH = 0.0005
+EXACT_SOC_TOLERANCE_PCT = 0.011
+LIVE_POWER_RESOLUTION_W = 5.0
+OPERATIONAL_ACTION_TOLERANCE_KWH = LIVE_POWER_RESOLUTION_W * SLOT_H / 1000.0
+OPERATIONAL_BUDGET_TOLERANCE_KWH = (
+    OPERATIONAL_ACTION_TOLERANCE_KWH + 0.001
+)
+LEGACY_SOC_ROUNDING_PCT = 0.01
+
 
 def evaluate_optimizer_shadow(
     *,
@@ -77,7 +89,11 @@ def evaluate_optimizer_shadow(
     discharge_deltas = []
     budget_deltas = []
     soc_deltas = []
-    mismatch_slots = 0
+    exact_mismatch_slots = 0
+    operational_mismatch_slots = 0
+    operational_soc_tolerance_pct = LEGACY_SOC_ROUNDING_PCT + (
+        100.0 * OPERATIONAL_ACTION_TOLERANCE_KWH / constraints.capacity_kwh
+    )
     for legacy, pure in zip(legacy_points, candidate.slots, strict=True):
         charge_delta = abs(
             float(legacy.get("charge_fc_w", 0.0)) * SLOT_H / 1000.0
@@ -99,12 +115,19 @@ def evaluate_optimizer_shadow(
         budget_deltas.append(budget_delta)
         soc_deltas.append(soc_delta)
         if (
-            charge_delta > 0.00005
-            or discharge_delta > 0.00005
-            or budget_delta > 0.0005
-            or soc_delta > 0.011
+            charge_delta > EXACT_ACTION_TOLERANCE_KWH
+            or discharge_delta > EXACT_ACTION_TOLERANCE_KWH
+            or budget_delta > EXACT_BUDGET_TOLERANCE_KWH
+            or soc_delta > EXACT_SOC_TOLERANCE_PCT
         ):
-            mismatch_slots += 1
+            exact_mismatch_slots += 1
+        if (
+            charge_delta > OPERATIONAL_ACTION_TOLERANCE_KWH
+            or discharge_delta > OPERATIONAL_ACTION_TOLERANCE_KWH
+            or budget_delta > OPERATIONAL_BUDGET_TOLERANCE_KWH
+            or soc_delta > operational_soc_tolerance_pct
+        ):
+            operational_mismatch_slots += 1
 
     legacy_daily = legacy_plan.get("daily_costs") or {}
     legacy_baseline = sum(
@@ -117,13 +140,20 @@ def evaluate_optimizer_shadow(
         "ts_ms": int(evaluated_at_ms),
         "problem_id": problem.problem_id,
         "optimizer_version": candidate.optimizer_version,
-        "status": "match" if mismatch_slots == 0 else "mismatch",
+        "status": "match" if operational_mismatch_slots == 0 else "mismatch",
+        "exact_status": "match" if exact_mismatch_slots == 0 else "mismatch",
         "slot_count": len(candidate.slots),
-        "mismatch_slots": mismatch_slots,
+        "mismatch_slots": operational_mismatch_slots,
+        "exact_mismatch_slots": exact_mismatch_slots,
         "max_charge_delta_kwh": round(max(charge_deltas, default=0.0), 6),
         "max_discharge_delta_kwh": round(max(discharge_deltas, default=0.0), 6),
         "max_budget_delta_kwh": round(max(budget_deltas, default=0.0), 6),
         "max_soc_delta_pct": round(max(soc_deltas, default=0.0), 4),
+        "operational_action_tolerance_kwh": OPERATIONAL_ACTION_TOLERANCE_KWH,
+        "operational_budget_tolerance_kwh": OPERATIONAL_BUDGET_TOLERANCE_KWH,
+        "operational_soc_tolerance_pct": round(
+            operational_soc_tolerance_pct, 4
+        ),
         "baseline_cost_delta_eur": round(
             candidate.baseline_cost_eur - legacy_baseline, 6
         ),
@@ -157,8 +187,8 @@ def append_shadow_record(path: str | Path, record: dict, *, now_ms: int) -> None
             except (TypeError, ValueError):
                 continue
             if int(item.get("ts_ms", 0)) >= now_ms - RETENTION_S * 1000:
-                records.append(item)
-    records.append(dict(record))
+                records.append(_classify_retained_record(item))
+    records.append(_classify_retained_record(dict(record)))
     records = records[-MAX_RECORDS:]
     temporary = target.with_suffix(f"{target.suffix}.tmp")
     temporary.write_text(
@@ -166,3 +196,32 @@ def append_shadow_record(path: str | Path, record: dict, *, now_ms: int) -> None
         encoding="utf-8",
     )
     os.replace(temporary, target)
+
+
+def _classify_retained_record(record: dict) -> dict:
+    """Add the operational verdict to retained pre-cutover summaries."""
+    item = dict(record)
+    if item.get("status") not in {"match", "mismatch"}:
+        return item
+    item.setdefault("exact_status", item.get("status"))
+    item.setdefault("exact_mismatch_slots", int(item.get("mismatch_slots", 0) or 0))
+    operational_match = (
+        float(item.get("max_charge_delta_kwh", 0.0) or 0.0)
+        <= OPERATIONAL_ACTION_TOLERANCE_KWH
+        and float(item.get("max_discharge_delta_kwh", 0.0) or 0.0)
+        <= OPERATIONAL_ACTION_TOLERANCE_KWH
+        and float(item.get("max_budget_delta_kwh", 0.0) or 0.0)
+        <= OPERATIONAL_BUDGET_TOLERANCE_KWH
+        and float(item.get("max_soc_delta_pct", 0.0) or 0.0) <= 0.035
+    )
+    item["status"] = "match" if operational_match else "mismatch"
+    item["mismatch_slots"] = 0 if operational_match else int(
+        item.get("exact_mismatch_slots", 0) or 0
+    )
+    item.setdefault(
+        "operational_action_tolerance_kwh", OPERATIONAL_ACTION_TOLERANCE_KWH
+    )
+    item.setdefault(
+        "operational_budget_tolerance_kwh", OPERATIONAL_BUDGET_TOLERANCE_KWH
+    )
+    return item
