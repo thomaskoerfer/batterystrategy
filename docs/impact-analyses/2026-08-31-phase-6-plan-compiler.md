@@ -8,9 +8,9 @@ translation of the current plan slot, slot-local progress accounting and
 coordinator-owned state. Phase 6 moves only the deterministic translation behind
 the approved state-explicit `PlanCompiler.compile(...)` contract.
 
-This preparation is stacked on the Phase-5 shadow branch. It does not change the
-authoritative optimizer, coordinator, live controller or actuator and is not a
-deployment candidate.
+This preparation now includes the deployed Phase-5 pure-optimizer cutover. It
+does not change the coordinator's plan compilation, live controller or actuator
+and is not itself a deployment candidate.
 
 ## Contract interpretation
 
@@ -55,7 +55,8 @@ will:
 
 - Full contract, optimizer and integration regressions pass.
 - The compiler module has no HA runtime or I/O dependency.
-- Phase-5 cutover and stabilization complete first.
+- Phase-5 cutover is complete; its stabilization window continues before the
+  compiler becomes authoritative.
 - Shadow directives match the production path across grid charge, PV-only
   charge, price-sensitive discharge, load discharge, EV activity, manual mode,
   SoC limits, restart recovery and within-slot re-optimization.
@@ -113,4 +114,4 @@ migration remains subject to the Phase-5 and Phase-6 gates.
 - Contract approval: approved by owner on 2026-08-31
 - Contract implementation: prepared locally
 - Production integration: not started
-- Deployment: blocked by Phase-5 cutover/stabilization and Phase-6 shadow parity
+- Deployment: blocked by Phase-5 stabilization and Phase-6 shadow parity

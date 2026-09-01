@@ -65,7 +65,7 @@ replays assess economic quality but never participate in live actuation.
 
 ## Migration status
 
-The pure optimizer currently runs in isolated shadow mode while the previous
-economic kernel remains authoritative. Cutover requires retained-history parity,
-live observation and explicit approval. The old kernel is removed after a short
-verified rollback window rather than retained as a permanent selector.
+The pure optimizer is authoritative after retained shadow results passed
+operational parity. Exact sub-resolution differences remain visible. The old
+kernel runs only as a temporary non-authoritative comparator and is removed
+after the verified rollback window rather than retained as a permanent selector.

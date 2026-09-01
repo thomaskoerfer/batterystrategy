@@ -50,6 +50,10 @@ optional EV meter; quarter-hour market data; and normalized weather. Supported
 load-component profiles currently include a heat pump, shared-meter air
 conditioning and a generic metered consumer.
 
+Transient weather-provider failures may reuse the last successful snapshot for
+the same grid for a bounded period. Reused slots are explicitly marked as
+estimated; expired or incompatible snapshots remain missing.
+
 These are supported source classes, not assumptions in downstream contracts.
 New devices are mapped to the same normalized flows and feature keys.
 
@@ -64,7 +68,8 @@ where diagnostics must redact sensitive values.
 
 Tests cover unit/sign normalization, time-weighting, restart gaps, counter
 resets, missing inputs, component reconciliation, schema migration, retention
-and recorder independence. A data-layer change must prove that forecast,
+and recorder independence. Weather tests also cover bounded stale-if-error
+reuse, quality marking and expiry. A data-layer change must prove that forecast,
 optimizer and live-command outputs remain unchanged unless a separately
 approved downstream contract change is intended.
 

@@ -181,14 +181,15 @@ That module is a migration source, not the desired permanent boundary.
 
 ## Migration plan and gates
 
-Current status: `0.2.0-rc.2` is deployed. The finalized feature store is the
-sole production forecast source and the authoritative optimizer consumes an
-explicit `ForecastBundle`. The Phase-5 pure optimizer runs in isolated shadow
-mode on the same immutable inputs; it cannot reach planning, live control or
-actuation. It must pass its parity and observation gate before cutover.
-Phase 6 has a stacked, non-production preparation branch containing only the
-pure compiler, approved contract extensions, documentation and boundary tests.
-It cannot be integrated or deployed before Phase 5 is authoritative and stable.
+Current status: `0.2.0-rc.4` is deployed. The finalized feature store is the
+sole production forecast source and the Phase-5 pure optimizer is authoritative
+on one explicit `ForecastBundle`. Its retained shadow gate passed operational
+parity before cutover; exact sub-resolution deltas remain diagnostic. The old
+kernel is non-authoritative during the short rollback window.
+Phase 6 has a non-production preparation branch containing the pure compiler,
+approved contract extensions, documentation and boundary tests. It includes
+the Phase-5 cutover and bounded weather-cache patch, but compiler production
+integration has not started.
 
 ### Phase 0: Baseline and contracts
 
