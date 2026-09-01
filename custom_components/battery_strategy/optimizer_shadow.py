@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .contracts import (
     BatteryConstraints,
+    BatteryPlan,
     BatteryState,
     CommercialPolicy,
     ForecastBundle,
@@ -45,7 +46,34 @@ def evaluate_optimizer_shadow(
     evaluated_at_ms: int,
 ) -> dict:
     """Compare one pure result with the authoritative legacy plan."""
-    problem = OptimizationProblem(
+    problem = build_optimizer_problem(
+        intervals=intervals,
+        forecast=forecast,
+        start_energy_kwh=start_energy_kwh,
+        constraints=constraints,
+        policy=policy,
+        evaluated_at_ms=evaluated_at_ms,
+    )
+    candidate = DynamicProgrammingOptimizer().optimize(problem)
+    return compare_optimizer_plan(
+        problem=problem,
+        candidate=candidate,
+        legacy_plan=legacy_plan,
+        evaluated_at_ms=evaluated_at_ms,
+    )
+
+
+def build_optimizer_problem(
+    *,
+    intervals,
+    forecast: ForecastBundle,
+    start_energy_kwh: float,
+    constraints: BatteryConstraints,
+    policy: CommercialPolicy,
+    evaluated_at_ms: int,
+) -> OptimizationProblem:
+    """Build the explicit pure-optimizer input from one captured snapshot."""
+    return OptimizationProblem(
         problem_id=(
             f"shadow:{evaluated_at_ms}:{forecast.load.forecast_id}:"
             f"{forecast.pv.forecast_id}"
@@ -80,7 +108,23 @@ def evaluate_optimizer_shadow(
         constraints=constraints,
         policy=policy,
     )
-    candidate = DynamicProgrammingOptimizer().optimize(problem)
+
+
+def optimize_optimizer_snapshot(**kwargs) -> tuple[OptimizationProblem, BatteryPlan]:
+    """Return the production candidate and its explicit problem."""
+    problem = build_optimizer_problem(**kwargs)
+    return problem, DynamicProgrammingOptimizer().optimize(problem)
+
+
+def compare_optimizer_plan(
+    *,
+    problem: OptimizationProblem,
+    candidate: BatteryPlan,
+    legacy_plan: dict,
+    evaluated_at_ms: int,
+) -> dict:
+    """Compare one already-computed pure plan with the transitional plan."""
+    constraints = problem.constraints
     legacy_points = tuple(legacy_plan.get("points") or ())
     if len(legacy_points) != len(candidate.slots):
         raise ValueError("legacy and pure plans have different slot counts")

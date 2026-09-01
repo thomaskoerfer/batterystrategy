@@ -151,8 +151,12 @@ def test_retained_exact_mismatch_is_reclassified_without_losing_deltas(tmp_path)
     assert records[0]["max_budget_delta_kwh"] == old["max_budget_delta_kwh"]
 
 
-def test_authoritative_plan_is_built_before_shadow_evaluation():
+def test_pure_plan_replaces_legacy_decisions_before_downstream_use():
     source = Path(optimizer_engine.__file__).read_text(encoding="utf-8")
-    plan_call = source.index("plan = build_virtual_plan(")
-    shadow_call = source.index("shadow_summary = safe_evaluate_optimizer_shadow(")
-    assert plan_call < shadow_call
+    legacy_call = source.index("legacy_plan = build_virtual_plan(")
+    pure_call = source.index(
+        "optimizer_problem, pure_plan = optimize_optimizer_snapshot("
+    )
+    adapter_call = source.index("plan = adapt_pure_optimizer_plan(")
+    downstream_use = source.index("future_points = plan[\"points\"]")
+    assert legacy_call < pure_call < adapter_call < downstream_use

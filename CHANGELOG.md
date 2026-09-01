@@ -4,6 +4,25 @@ All notable changes to Battery Strategy are documented here.
 
 ## Unreleased
 
+## [0.2.0-rc.3] - 2026-09-01
+
+### Changed
+
+- Made the contract-based pure economic optimizer authoritative after 242
+  retained shadow runs passed operational parity.
+- Kept exact numerical deltas visible while classifying sub-resolution legacy
+  serialization differences separately from operational mismatches.
+- Adapted the typed `BatteryPlan` to the existing downstream profile format so
+  the plan compiler, live controller, dashboards and actuator remain unchanged.
+
+### Safety
+
+- The previous kernel remains non-authoritative for one short rollback window
+  and continues to provide comparison diagnostics only.
+- Pure-optimizer failure fails the planning run closed; it does not silently
+  restore the previous decision path.
+- The live controller and actuator are unchanged.
+
 ## [0.2.0-rc.2] - 2026-08-30
 
 ### Added

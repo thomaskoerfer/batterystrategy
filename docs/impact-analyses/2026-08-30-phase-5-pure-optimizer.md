@@ -79,4 +79,5 @@ old/new runtime selector is introduced.
 - Proposed: 2026-08-30
 - Contract approval: approved by owner on 2026-08-30
 - Local implementation: shadow candidate ready
-- Production cutover: blocked by Phase-4 observation gate and approval
+- Production cutover: prepared after 242 retained runs passed operational
+  parity on 2026-09-01; deployment remains a separate controlled step

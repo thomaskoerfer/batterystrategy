@@ -18,10 +18,11 @@ from sqlalchemy import text
 
 from .contracts import (
     BatteryConstraints,
+    BatteryPlan,
+    CommercialPolicy,
     ForecastBundle,
     ForecastRequest,
     LoadForecastContext,
-    CommercialPolicy,
     SlotKey,
 )
 from .forecasting import (
@@ -31,11 +32,15 @@ from .forecasting import (
     build_feature_store_forecast,
     feature_store_forecast_readiness,
 )
+from .optimizer_shadow import (
+    append_shadow_record,
+    compare_optimizer_plan,
+    optimize_optimizer_snapshot,
+)
 from .optimizer_state import load_state_document, save_state_document
-from .optimizer_shadow import append_shadow_record, safe_evaluate_optimizer_shadow
 
 STATE_FILE = "/config/battery_strategy_optimizer_state.json"
-SCRIPT_VERSION = "1.8.14"
+SCRIPT_VERSION = "1.8.15"
 _DB_ENGINE = None
 _RUNTIME_STATES = {}
 _RUNTIME_PRICE_INTERVALS = []
@@ -2197,6 +2202,135 @@ def build_virtual_plan(
     }
 
 
+def adapt_pure_optimizer_plan(
+    candidate: BatteryPlan,
+    intervals,
+    forecast_bundle: ForecastBundle,
+    legacy_metadata: dict,
+) -> dict:
+    """Translate the pure plan into the existing downstream profile shape."""
+    if not (
+        len(candidate.slots)
+        == len(intervals)
+        == len(forecast_bundle.load.slots)
+        == len(forecast_bundle.pv.slots)
+    ):
+        raise ValueError("pure plan and forecast grids differ")
+
+    points = []
+    daily: dict[str, dict[str, float]] = {}
+    for interval, load_slot, pv_slot, pure in zip(
+        intervals,
+        forecast_bundle.load.slots,
+        forecast_bundle.pv.slots,
+        candidate.slots,
+        strict=True,
+    ):
+        if not (
+            pure.slot == load_slot.slot
+            and pure.slot == pv_slot.slot
+            and pure.slot.start_ms == int(interval["dt"].timestamp() * 1000)
+        ):
+            raise ValueError("pure plan slot does not match the published grid")
+        date = interval["dt"].date().isoformat()
+        price_ct = float(interval["price_eur"]) * 100.0
+        load_kwh = max(0.0, load_slot.energy.p50_kwh)
+        pv_kwh = max(0.0, pv_slot.energy.p50_kwh)
+        net_load_kwh = max(0.0, load_kwh - pv_kwh)
+        surplus_kwh = max(0.0, pv_kwh - load_kwh)
+        charge_kwh = pure.planned_charge_kwh
+        discharge_kwh = pure.planned_discharge_kwh
+        pv_charge_kwh = pure.planned_pv_charge_kwh
+        grid_charge_kwh = pure.planned_grid_charge_kwh
+        grid_import_kwh = max(0.0, net_load_kwh - discharge_kwh) + grid_charge_kwh
+        grid_export_kwh = max(0.0, surplus_kwh - pv_charge_kwh) + max(
+            0.0, discharge_kwh - net_load_kwh
+        )
+        power_w = (charge_kwh - discharge_kwh) / SLOT_H * 1000.0
+        points.append(
+            {
+                "ts_ms": pure.slot.start_ms,
+                "date": date,
+                "price_ct": round(price_ct, 3),
+                "soc_pct": round(pure.expected_soc_start_pct, 2),
+                "power_w": round(power_w, 1),
+                "charge_fc_w": round(charge_kwh / SLOT_H * 1000.0, 1),
+                "pv_charge_fc_w": round(pv_charge_kwh / SLOT_H * 1000.0, 1),
+                "grid_charge_fc_w": round(
+                    grid_charge_kwh / SLOT_H * 1000.0, 1
+                ),
+                "required_charge_fc_w": round(
+                    pure.required_charge_kwh / SLOT_H * 1000.0, 1
+                ),
+                "discharge_fc_w": round(discharge_kwh / SLOT_H * 1000.0, 1),
+                "discharge_budget_kwh": round(pure.discharge_budget_kwh, 3),
+                "mode": pure.mode.value,
+                "load_fc_w": round(load_kwh / SLOT_H * 1000.0, 1),
+                "pv_fc_w": round(pv_kwh / SLOT_H * 1000.0, 1),
+                "discharge_eligible_fc_w": round(
+                    net_load_kwh / SLOT_H * 1000.0, 1
+                ),
+                "grid_import_fc_w": round(
+                    grid_import_kwh / SLOT_H * 1000.0, 1
+                ),
+                "grid_export_fc_w": round(
+                    grid_export_kwh / SLOT_H * 1000.0, 1
+                ),
+                "grid_net_fc_w": round(
+                    (grid_import_kwh - grid_export_kwh) / SLOT_H * 1000.0,
+                    1,
+                ),
+            }
+        )
+        values = daily.setdefault(date, {"base": 0.0, "with_bat": 0.0})
+        values["base"] += (
+            net_load_kwh * price_ct
+            - surplus_kwh * PV_EXPORT_OPPORTUNITY_CT
+        ) / 100.0
+        values["with_bat"] += (
+            grid_import_kwh * price_ct
+            - grid_export_kwh * PV_EXPORT_OPPORTUNITY_CT
+        ) / 100.0
+
+    daily_costs = {
+        date: {
+            "base_eur": round(values["base"], 3),
+            "with_bat_eur": round(values["with_bat"], 3),
+            "saving_eur": round(values["base"] - values["with_bat"], 3),
+        }
+        for date, values in daily.items()
+    }
+    today_date = (legacy_metadata.get("today") or {}).get("date")
+    tomorrow_date = (legacy_metadata.get("tomorrow") or {}).get("date")
+    result = dict(legacy_metadata)
+    result.update(
+        {
+            "points": points,
+            "today": {
+                "date": today_date,
+                "saving_eur": daily_costs.get(today_date, {}).get(
+                    "saving_eur", 0.0
+                ),
+            },
+            "tomorrow": {
+                "date": tomorrow_date,
+                "saving_eur": daily_costs.get(tomorrow_date, {}).get(
+                    "saving_eur", 0.0
+                ),
+            },
+            "end_soc": round(
+                candidate.slots[-1].expected_soc_end_pct
+                if candidate.slots
+                else 0.0,
+                2,
+            ),
+            "daily_costs": daily_costs,
+            "optimizer_source": candidate.optimizer_version,
+        }
+    )
+    return result
+
+
 def compress_points_hourly(points):
     buckets = {}
     for p in points:
@@ -3141,7 +3275,7 @@ def main():
         pv_capacity_kwp=PV_CAPACITY_KWP,
         pv_inverter_kw=PV_INVERTER_KW,
     )
-    plan = build_virtual_plan(
+    legacy_plan = build_virtual_plan(
         intervals,
         data["samples"],
         start_e,
@@ -3150,42 +3284,54 @@ def main():
         forecast_bundle=forecast_bundle,
         forecast_diagnostics=forecast_diagnostics,
     )
+    price_stats = legacy_plan.get("price_stats") or {}
+    optimizer_constraints = BatteryConstraints(
+        CAP_KWH,
+        SOC_MIN,
+        SOC_MAX,
+        MAX_CHARGE_P_W,
+        MAX_DISCHARGE_P_W,
+        ETA_RT,
+    )
+    optimizer_policy = CommercialPolicy(
+        min_margin_ct_per_kwh=MIN_MARGIN_CT,
+        terminal_value_ct_per_kwh=float(
+            price_stats.get("terminal_value_ct") or 0.0
+        ),
+        export_opportunity_ct_per_kwh=PV_EXPORT_OPPORTUNITY_CT,
+        discharge_floor_ct_per_kwh=price_stats.get("discharge_floor_ct"),
+        pv_charging_allowed=PV_CHARGING_ENABLED,
+        grid_charging_allowed=GRID_CHARGING_ENABLED,
+        discharge_allowed=DISCHARGE_ENABLED,
+        pv_recovery_confidence=PV_RECOVERY_CONFIDENCE,
+        pv_recovery_reserve_kwh=PV_RECOVERY_RESERVE_KWH,
+    )
+    optimizer_problem, pure_plan = optimize_optimizer_snapshot(
+        intervals=intervals,
+        forecast=forecast_bundle,
+        start_energy_kwh=start_e,
+        constraints=optimizer_constraints,
+        policy=optimizer_policy,
+        evaluated_at_ms=now_ts_ms,
+    )
     shadow_slot_ms = int(now_floor.timestamp() * 1000)
     shadow_summary = data.get("optimizer_shadow_summary") or {
         "status": "pending"
     }
     if int(data.get("optimizer_shadow_last_slot_ms") or 0) != shadow_slot_ms:
-        price_stats = plan.get("price_stats") or {}
-        shadow_summary = safe_evaluate_optimizer_shadow(
-            intervals=intervals,
-            forecast=forecast_bundle,
-            start_energy_kwh=start_e,
-            legacy_plan=plan,
-            constraints=BatteryConstraints(
-                CAP_KWH,
-                SOC_MIN,
-                SOC_MAX,
-                MAX_CHARGE_P_W,
-                MAX_DISCHARGE_P_W,
-                ETA_RT,
-            ),
-            policy=CommercialPolicy(
-                min_margin_ct_per_kwh=MIN_MARGIN_CT,
-                terminal_value_ct_per_kwh=float(
-                    price_stats.get("terminal_value_ct") or 0.0
-                ),
-                export_opportunity_ct_per_kwh=PV_EXPORT_OPPORTUNITY_CT,
-                discharge_floor_ct_per_kwh=price_stats.get(
-                    "discharge_floor_ct"
-                ),
-                pv_charging_allowed=PV_CHARGING_ENABLED,
-                grid_charging_allowed=GRID_CHARGING_ENABLED,
-                discharge_allowed=DISCHARGE_ENABLED,
-                pv_recovery_confidence=PV_RECOVERY_CONFIDENCE,
-                pv_recovery_reserve_kwh=PV_RECOVERY_RESERVE_KWH,
-            ),
-            evaluated_at_ms=now_ts_ms,
-        )
+        try:
+            shadow_summary = compare_optimizer_plan(
+                problem=optimizer_problem,
+                candidate=pure_plan,
+                legacy_plan=legacy_plan,
+                evaluated_at_ms=now_ts_ms,
+            )
+        except Exception as exc:  # noqa: BLE001 - comparison is non-authoritative.
+            shadow_summary = {
+                "ts_ms": now_ts_ms,
+                "status": "error",
+                "error": f"{type(exc).__name__}: {exc}",
+            }
         shadow_path = os.path.join(
             os.path.dirname(STATE_FILE),
             "battery_strategy_optimizer_shadow.jsonl",
@@ -3200,6 +3346,12 @@ def main():
             }
         data["optimizer_shadow_last_slot_ms"] = shadow_slot_ms
         data["optimizer_shadow_summary"] = shadow_summary
+    plan = adapt_pure_optimizer_plan(
+        pure_plan,
+        intervals,
+        forecast_bundle,
+        legacy_plan,
+    )
     forecast_diagnostics = plan.get("forecast_diagnostics", {})
     future_points = plan["points"]
     next_hour_points = future_points[:4]
@@ -3364,6 +3516,7 @@ def main():
         "backtest_hit_rate_24h_pct": round(hit24, 1) if hit24 is not None else None,
         "weather_factor": round(weather_factor, 3),
         "script_version": SCRIPT_VERSION,
+        "optimizer_source": plan.get("optimizer_source", "transitional"),
         "optimizer_shadow_status": shadow_summary.get("status"),
         "optimizer_shadow_mismatch_slots": shadow_summary.get("mismatch_slots"),
         "optimizer_shadow_max_charge_delta_kwh": shadow_summary.get(
