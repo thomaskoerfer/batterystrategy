@@ -61,12 +61,12 @@ from .feature_store import (
     FeatureAggregator,
     FeatureObservation,
 )
+from .live_control import DirectionHysteresis, P1UpdateGate
 from .load_components import (
     LoadComponentCollection,
     add_central_weather,
     collect_load_components,
 )
-from .live_control import DirectionHysteresis, P1UpdateGate
 from .models import StrategyCommand, StrategyInputs, StrategyOptions
 from .optimizer_adapter import OptimizerEngineAdapter
 from .optimizer_state import last_known_soc_pct
@@ -498,13 +498,18 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         """Update the normalized weather snapshot without affecting control."""
         try:
             self._weather = await self._weather_provider.load(request)
-            self._weather_error = None
+            self._weather_error = self._weather_provider.last_error
             self._optimizer_engine.set_forecast_environment(
                 self._feature_history,
                 self._weather,
                 self._load_components.drivers,
                 self._load_components.specs,
             )
+            if self._weather_error:
+                LOGGER.warning(
+                    "Weather refresh failed; using bounded estimated cache: %s",
+                    self._weather_error,
+                )
         except Exception as err:  # noqa: BLE001 - weather is optional input.
             self._weather = ()
             self._weather_error = f"{type(err).__name__}: {err}"

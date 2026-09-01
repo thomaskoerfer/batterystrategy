@@ -4,6 +4,22 @@ All notable changes to Battery Strategy are documented here.
 
 ## Unreleased
 
+## [0.2.0-rc.4] - 2026-09-01
+
+### Fixed
+
+- Kept the last successful normalized weather snapshot for up to six hours
+  during transient provider failures instead of immediately removing weather
+  context from load-component forecasts.
+- Marked stale-if-error weather slots as estimated and retained the provider
+  error in diagnostics while continuing quarter-hour refresh attempts.
+
+### Safety
+
+- The fallback is bounded and never affects the live meter-following or
+  actuator path. After six hours the adapter returns to explicit missing
+  weather rather than silently retaining an old forecast.
+
 ## [0.2.0-rc.3] - 2026-09-01
 
 ### Changed

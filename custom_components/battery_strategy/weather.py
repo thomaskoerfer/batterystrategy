@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import time
+from dataclasses import replace
 
 from .contracts import DataQuality, ForecastRequest, QualityFlag, WeatherSlot
 
 OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
 WEATHER_CACHE_TTL_S = 10 * 60
+WEATHER_STALE_MAX_S = 6 * 60 * 60
 
 
 class OpenMeteoWeatherProvider:
@@ -22,6 +24,7 @@ class OpenMeteoWeatherProvider:
         self._cache_at = 0.0
         self._cache: tuple[WeatherSlot, ...] = ()
         self._lock = asyncio.Lock()
+        self.last_error: str | None = None
 
     async def load(self, request: ForecastRequest) -> tuple[WeatherSlot, ...]:
         """Return requested slots, explicitly marking absent provider values."""
@@ -31,9 +34,18 @@ class OpenMeteoWeatherProvider:
                 key != self._cache_key
                 or time.monotonic() - self._cache_at >= WEATHER_CACHE_TTL_S
             ):
-                self._cache = await self._fetch(request)
+                try:
+                    refreshed = await self._fetch(request)
+                except Exception as err:
+                    age_s = time.monotonic() - self._cache_at
+                    if key != self._cache_key or not self._cache or age_s > WEATHER_STALE_MAX_S:
+                        raise
+                    self.last_error = f"{type(err).__name__}: {err}"
+                    return _mark_estimated(self._cache)
+                self._cache = refreshed
                 self._cache_key = key
                 self._cache_at = time.monotonic()
+                self.last_error = None
             return self._cache
 
     async def _fetch(self, request: ForecastRequest) -> tuple[WeatherSlot, ...]:
@@ -89,3 +101,19 @@ def _optional(values, index: int) -> float | None:
     if index >= len(values) or values[index] is None:
         return None
     return float(values[index])
+
+
+def _mark_estimated(slots: tuple[WeatherSlot, ...]) -> tuple[WeatherSlot, ...]:
+    """Mark a bounded stale-if-error snapshot without changing its values."""
+    result = []
+    for item in slots:
+        flags = item.quality.flags
+        if QualityFlag.ESTIMATED not in flags:
+            flags = (*flags, QualityFlag.ESTIMATED)
+        result.append(
+            replace(
+                item,
+                quality=DataQuality(item.quality.coverage, flags),
+            )
+        )
+    return tuple(result)
