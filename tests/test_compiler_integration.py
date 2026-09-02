@@ -14,15 +14,17 @@ from custom_components.battery_strategy.const import (
     GRID_CHARGING_PRICE_SENSITIVE,
     PV_CHARGING_ON,
 )
+from custom_components.battery_strategy.coordinator import BatteryStrategyCoordinator
 from custom_components.battery_strategy.contracts import (
     PlanCompilationState,
     SlotProgress,
 )
-from custom_components.battery_strategy.models import StrategyOptions
+from custom_components.battery_strategy.models import StrategyInputs, StrategyOptions
 from custom_components.battery_strategy.plan_compiler import (
     DeterministicPlanCompiler,
 )
 from custom_components.battery_strategy.plan_compiler_adapter import (
+    closed_published_directive,
     contract_plan_from_strategy_plan,
     published_directive_from_contract,
 )
@@ -164,3 +166,73 @@ def test_shadow_comparison_reports_semantic_mismatch():
     )
     assert result["status"] == "mismatch"
     assert result["mismatch_fields"] == ["grid_charge_allowed"]
+
+
+def test_closed_directive_has_no_automatic_permissions():
+    directive = closed_published_directive(_options(), slot_start_ms=1_800_000_000_000)
+
+    assert not directive.pv_charge_allowed
+    assert not directive.grid_charge_allowed
+    assert directive.must_charge_w == 0
+    assert directive.must_charge_remaining_kwh == 0.0
+    assert directive.discharge_budget_kwh == 0.0
+
+
+def _cutover_coordinator() -> BatteryStrategyCoordinator:
+    coordinator = object.__new__(BatteryStrategyCoordinator)
+    coordinator._plan_compiler = DeterministicPlanCompiler()
+    coordinator._plan_compilation_state = PlanCompilationState()
+    coordinator._plan_compiler_error = None
+    coordinator._slot_charged_kwh = 0.0
+    coordinator._slot_discharged_kwh = 0.0
+    return coordinator
+
+
+def _inputs(*, soc_pct: float = 50.0) -> StrategyInputs:
+    return StrategyInputs(500.0, 0.0, 0.0, 0.0, soc_pct=soc_pct)
+
+
+def test_cutover_compiler_owns_progress_and_replan_latch():
+    start_ms = 1_800_000_000_000
+    first_plan = StrategyPlan(
+        [_point(start_ms, discharge_w=1200, discharge_budget_kwh=0.6)],
+        COMMAND_OUTPUT,
+        1200,
+        "first",
+    )
+    reduced_plan = StrategyPlan(
+        [_point(start_ms, discharge_w=800, discharge_budget_kwh=0.2)],
+        COMMAND_OUTPUT,
+        800,
+        "reduced",
+    )
+    coordinator = _cutover_coordinator()
+
+    first = coordinator._compile_authoritative_directive(
+        first_plan, _options(), _inputs(), start_ms
+    )
+    coordinator._slot_discharged_kwh = 0.1
+    reduced = coordinator._compile_authoritative_directive(
+        reduced_plan, _options(), _inputs(), start_ms + 60_000
+    )
+    reopened = coordinator._compile_authoritative_directive(
+        first_plan, _options(), _inputs(), start_ms + 120_000
+    )
+
+    assert first.discharge_budget_kwh == 0.6
+    assert reduced.discharge_budget_kwh == 0.1
+    assert reopened.discharge_budget_kwh == 0.1
+
+
+def test_cutover_compiler_fails_closed_without_plan():
+    coordinator = _cutover_coordinator()
+    plan = StrategyPlan([], "idle", 0, "missing")
+
+    directive = coordinator._compile_authoritative_directive(
+        plan, _options(), _inputs(), 1_800_000_000_000
+    )
+
+    assert coordinator._plan_compiler_error == "no_plan"
+    assert not directive.pv_charge_allowed
+    assert not directive.grid_charge_allowed
+    assert directive.discharge_budget_kwh == 0.0

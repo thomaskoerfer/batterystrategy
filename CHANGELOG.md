@@ -11,11 +11,16 @@ All notable changes to Battery Strategy are documented here.
   established directive path.
 - Added bounded compiler-parity diagnostics and a dedicated Home Assistant
   status sensor without exposing the shadow to live control or actuation.
+- Prepared the separate Phase-6 cutover in which the deterministic compiler is
+  the sole plan-directive authority while the established live controller and
+  actuator remain unchanged.
 
 ### Safety
 
 - The established directive remains solely authoritative in the shadow
   release. Compiler errors and trace failures cannot alter battery commands.
+- The prepared cutover fails closed on missing or invalid plans and keeps the
+  old translator only as non-authoritative comparison code until Phase 7.
 
 ## [0.2.0-rc.4] - 2026-09-01
 

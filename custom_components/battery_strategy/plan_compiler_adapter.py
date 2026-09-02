@@ -135,6 +135,27 @@ def published_directive_from_contract(
     )
 
 
+def closed_published_directive(
+    options: StrategyOptions,
+    *,
+    slot_start_ms: int = 0,
+) -> PublishedDirective:
+    """Return a fail-closed directive without commercial permissions."""
+    slot_start_ms = max(0, int(slot_start_ms))
+    return PublishedDirective(
+        slot_id=str(slot_start_ms) if slot_start_ms else "current",
+        slot_start_ts=slot_start_ms,
+        slot_end_ts=slot_start_ms + SLOT_MS if slot_start_ms else 0,
+        pv_charge_allowed=False,
+        must_charge_w=0,
+        must_charge_remaining_kwh=0.0,
+        grid_charge_allowed=False,
+        discharge_budget_kwh=0.0,
+        battery_min_soc_pct=float(options.min_soc_pct),
+        battery_max_soc_pct=float(options.max_soc_pct),
+    )
+
+
 def _contract_slot(
     point: PlanPoint,
     next_point: PlanPoint | None,

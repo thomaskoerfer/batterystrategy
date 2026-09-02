@@ -8,9 +8,10 @@ translation of the current plan slot, slot-local progress accounting and
 coordinator-owned state. Phase 6 moves only the deterministic translation behind
 the approved state-explicit `PlanCompiler.compile(...)` contract.
 
-This preparation now includes the deployed Phase-5 pure-optimizer cutover. It
-does not change the coordinator's plan compilation, live controller or actuator
-and is not itself a deployment candidate.
+This preparation now includes the deployed Phase-5 pure-optimizer cutover. The
+shadow branch does not change production authority. The separate cutover branch
+makes only plan compilation authoritative; live control and actuation remain
+unchanged.
 
 ## Contract interpretation
 
@@ -52,6 +53,9 @@ tests. The prepared shadow release now:
 The separately prepared cutover commit makes the pure compiler authoritative
 only after explicit owner approval and the observation gate. It retains the old
 translation for one comparison window; Phase 7 removes that transitional path.
+Missing plans, invalid slots and compiler exceptions return a closed directive
+with no automatic charge or discharge permission. They never fall back to the
+old translator.
 
 ## Gate and rollback
 

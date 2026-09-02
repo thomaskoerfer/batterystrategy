@@ -79,6 +79,7 @@ from .optimizer_adapter import OptimizerEngineAdapter
 from .optimizer_state import last_known_soc_pct
 from .plan_compiler import DeterministicPlanCompiler
 from .plan_compiler_adapter import (
+    closed_published_directive,
     contract_plan_from_strategy_plan,
     published_directive_from_contract,
 )
@@ -149,6 +150,9 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         self._active_discharge_mode: str | None = None
         self._compiler_shadow = DeterministicPlanCompiler()
         self._compiler_shadow_state = PlanCompilationState()
+        self._plan_compiler = DeterministicPlanCompiler()
+        self._plan_compilation_state = PlanCompilationState()
+        self._plan_compiler_error: str | None = None
         self._compiler_shadow_samples = 0
         self._compiler_shadow_matches = 0
         self._compiler_shadow_mismatches = 0
@@ -412,6 +416,44 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             return summary, summary
         return summary, None
 
+    def _compile_authoritative_directive(
+        self,
+        plan,
+        options: StrategyOptions,
+        inputs: StrategyInputs,
+        now_ms: int,
+    ) -> PlanLiveDirective:
+        """Compile the directive consumed by the established live controller."""
+        if not plan.points:
+            self._plan_compilation_state = PlanCompilationState()
+            self._plan_compiler_error = "no_plan"
+            return closed_published_directive(options)
+        try:
+            contract_plan = contract_plan_from_strategy_plan(plan, options, now_ms)
+            current_slot = contract_plan.slots[0].slot
+            compiled, next_state = self._plan_compiler.compile(
+                contract_plan,
+                SlotProgress(
+                    slot=current_slot,
+                    charged_kwh=max(0.0, self._slot_charged_kwh),
+                    discharged_kwh=max(0.0, self._slot_discharged_kwh),
+                    soc_pct=float(inputs.soc_pct),
+                ),
+                self._plan_compilation_state,
+                issued_at_ms=now_ms,
+            )
+            self._plan_compilation_state = next_state
+            self._plan_compiler_error = None
+            return published_directive_from_contract(compiled, plan, options)
+        except Exception as err:  # noqa: BLE001 - control must fail closed.
+            self._plan_compilation_state = PlanCompilationState()
+            self._plan_compiler_error = f"{type(err).__name__}: {err}"
+            LOGGER.error("Plan compiler failed closed: %s", self._plan_compiler_error)
+            return closed_published_directive(
+                options,
+                slot_start_ms=int(plan.points[0].ts_ms),
+            )
+
     async def _async_update_data(self):
         """Fetch current states and calculate command."""
         if (
@@ -472,19 +514,26 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
                 inputs, options, runtime_context, force=force_optimizer
             )
         plan, self._optimizer_attrs = self._planner.current(inputs, options)
-        directive = self._directive_with_progress(
+        legacy_directive = self._directive_with_progress(
             plan_live_directive_from_plan(
                 plan, options, current_soc_pct=inputs.soc_pct
             ),
             discharge_mode=options.discharge,
             allow_discharge_budget_increase=options.discharge == DISCHARGE_LOAD,
         )
+        now_ms = int(now.timestamp() * 1000)
+        directive = self._compile_authoritative_directive(
+            plan,
+            options,
+            inputs,
+            now_ms,
+        )
         compiler_shadow, compiler_shadow_record = self._evaluate_compiler_shadow(
             plan,
             options,
             inputs,
-            directive,
-            int(now.timestamp() * 1000),
+            legacy_directive,
+            now_ms,
         )
         command = live_command_from_directive(
             directive, simple_command, inputs, options
@@ -511,6 +560,7 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             "optimizer_attrs": self._optimizer_attrs,
             "plan_to_live": directive,
             "compiler_shadow": compiler_shadow,
+            "plan_compiler_error": self._plan_compiler_error,
             "send_commands": strategy_enabled,
             "strategy_enabled": strategy_enabled,
             "actuation": self.last_actuation,
