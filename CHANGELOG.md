@@ -24,6 +24,11 @@ All notable changes to Battery Strategy are documented here.
   calibration bootstrap independently of the Recorder backend.
 - Added regression guards that prevent a second optimizer path, dormant shadow
   runtime or direct SQL dependency from returning.
+- Removed the completed compiler shadow, the previous plan translator and the
+  duplicate coordinator slot latch after stacking Phase 7 on the prepared
+  compiler cutover.
+- Moved every battery-related Home Assistant service call into the dedicated
+  actuator boundary without changing write order, retry or safe-zero behavior.
 - Split the commercial runtime into cohesive market-context, planning-service
   and measured-savings components without changing approved contracts.
 - Kept missing-price savings events pending instead of advancing their energy

@@ -12,7 +12,6 @@ from .const import (
     COMMAND_INPUT,
     COMMAND_OUTPUT,
     DISCHARGE_LOAD,
-    DISCHARGE_PRICE_SENSITIVE,
     GRID_CHARGING_PRICE_SENSITIVE,
     MANUAL_CHARGE,
     MANUAL_DISCHARGE,
@@ -20,9 +19,7 @@ from .const import (
     PV_CHARGING_ON,
 )
 from .models import StrategyCommand, StrategyInputs, StrategyOptions
-from .plan_models import PlanLiveDirective, StrategyPlan
-
-SLOT_H = 0.25
+from .plan_models import PlanLiveDirective
 
 
 def clamp(value: float, low: float, high: float) -> float:
@@ -32,7 +29,11 @@ def clamp(value: float, low: float, high: float) -> float:
 
 def net_no_battery_with_ev_w(inputs: StrategyInputs) -> float:
     """Net grid demand reconstructed without battery influence, EV included."""
-    return float(inputs.grid_import_w) - float(inputs.grid_export_w) + float(inputs.battery_power_w)
+    return (
+        float(inputs.grid_import_w)
+        - float(inputs.grid_export_w)
+        + float(inputs.battery_power_w)
+    )
 
 
 def active_ev_power_w(inputs: StrategyInputs, options: StrategyOptions) -> float:
@@ -68,7 +69,9 @@ def allowed_discharge_load_w(inputs: StrategyInputs, options: StrategyOptions) -
     return max(0.0, residual)
 
 
-def current_house_loads_w(inputs: StrategyInputs, options: StrategyOptions) -> tuple[float, float]:
+def current_house_loads_w(
+    inputs: StrategyInputs, options: StrategyOptions
+) -> tuple[float, float]:
     """Return total house load and house load excluding active EV."""
     total = max(
         0.0,
@@ -87,7 +90,9 @@ def apply_minimum_power(power_w: float, options: StrategyOptions) -> int:
     return int(round(power_w))
 
 
-def calculate_command(inputs: StrategyInputs, options: StrategyOptions) -> StrategyCommand:
+def calculate_command(
+    inputs: StrategyInputs, options: StrategyOptions
+) -> StrategyCommand:
     """Calculate the current battery command."""
     residual_with_ev = net_no_battery_with_ev_w(inputs)
     residual_no_ev = net_no_battery_no_ev_w(inputs, options)
@@ -104,14 +109,18 @@ def calculate_command(inputs: StrategyInputs, options: StrategyOptions) -> Strat
             reason = "max_soc"
         else:
             mode = COMMAND_INPUT
-            power = clamp(float(options.manual_power_w), 0.0, float(options.max_charge_power_w))
+            power = clamp(
+                float(options.manual_power_w), 0.0, float(options.max_charge_power_w)
+            )
             reason = "manual_charge"
     elif options.manual_mode == MANUAL_DISCHARGE:
         if float(inputs.soc_pct) <= float(options.min_soc_pct):
             reason = "min_soc"
         else:
             mode = COMMAND_OUTPUT
-            power = clamp(float(options.manual_power_w), 0.0, float(options.max_discharge_power_w))
+            power = clamp(
+                float(options.manual_power_w), 0.0, float(options.max_discharge_power_w)
+            )
             reason = "manual_discharge"
     elif float(inputs.soc_pct) <= float(options.min_soc_pct):
         reason = "min_soc"
@@ -151,68 +160,6 @@ def calculate_command(inputs: StrategyInputs, options: StrategyOptions) -> Strat
     )
 
 
-def live_command_from_plan(
-    plan: StrategyPlan,
-    live_command: StrategyCommand,
-    inputs: StrategyInputs,
-    options: StrategyOptions,
-) -> StrategyCommand:
-    """Return a safe live command using the current plan directive."""
-    directive = plan_live_directive_from_plan(plan, options, current_soc_pct=inputs.soc_pct)
-    return live_command_from_directive(directive, live_command, inputs, options)
-
-
-def plan_live_directive_from_plan(
-    plan: StrategyPlan,
-    options: StrategyOptions,
-    current_soc_pct: float | None = None,
-) -> PlanLiveDirective:
-    """Translate the optimizer plan into the minimal live-control directive."""
-    manual = options.manual_mode in (MANUAL_CHARGE, MANUAL_DISCHARGE)
-    current_point = plan.points[0] if plan.points else None
-    slot_start_ts = int(current_point.ts_ms) if current_point is not None else 0
-    slot_end_ts = slot_start_ts + int(SLOT_H * 3600 * 1000) if slot_start_ts else 0
-    slot_id = str(slot_start_ts) if slot_start_ts else "current"
-    pv_charge_allowed = options.pv_charging == PV_CHARGING_ON and not manual
-    planned_grid_charge_w = _planned_grid_charge_w(current_point)
-    required_charge_w = _required_charge_w(current_point)
-    grid_charge_allowed = bool(
-        options.grid_charging == GRID_CHARGING_PRICE_SENSITIVE
-        and planned_grid_charge_w >= float(options.min_command_power_w)
-        and required_charge_w >= float(options.min_command_power_w)
-        and not manual
-    )
-    must_charge_w = (
-        int(round(min(float(options.max_charge_power_w), required_charge_w)))
-        if grid_charge_allowed
-        else 0
-    )
-    must_charge_remaining_kwh = _power_w_to_slot_kwh(must_charge_w) if grid_charge_allowed else 0.0
-
-    discharge_budget_kwh = 0.0
-    if not manual and options.discharge == DISCHARGE_LOAD:
-        discharge_budget_kwh = _power_w_to_slot_kwh(float(options.max_discharge_power_w))
-    elif not manual and options.discharge == DISCHARGE_PRICE_SENSITIVE:
-        discharge_budget_kwh = (
-            _planned_discharge_budget_kwh(plan, options, current_soc_pct=current_soc_pct)
-            if must_charge_w <= 0
-            else 0.0
-        )
-
-    return PlanLiveDirective(
-        slot_id=slot_id,
-        slot_start_ts=slot_start_ts,
-        slot_end_ts=slot_end_ts,
-        pv_charge_allowed=pv_charge_allowed,
-        must_charge_w=must_charge_w,
-        must_charge_remaining_kwh=must_charge_remaining_kwh,
-        grid_charge_allowed=grid_charge_allowed,
-        discharge_budget_kwh=round(discharge_budget_kwh, 3),
-        battery_min_soc_pct=float(options.min_soc_pct),
-        battery_max_soc_pct=float(options.max_soc_pct),
-    )
-
-
 def live_command_from_directive(
     directive: PlanLiveDirective,
     live_command: StrategyCommand,
@@ -229,7 +176,9 @@ def live_command_from_directive(
         and directive.grid_charge_allowed
         and float(inputs.soc_pct) < float(directive.battery_max_soc_pct)
     ):
-        pv_part_w = float(live_command.pv_surplus_w) if directive.pv_charge_allowed else 0.0
+        pv_part_w = (
+            float(live_command.pv_surplus_w) if directive.pv_charge_allowed else 0.0
+        )
         grid_part_w = max(0.0, float(directive.must_charge_w) - pv_part_w)
         power = min(pv_part_w + grid_part_w, float(options.max_charge_power_w))
         return _command_like(live_command, COMMAND_INPUT, power, "must_charge")
@@ -254,7 +203,10 @@ def live_command_from_directive(
         and live_command.allowed_discharge_load_w > 0
         and float(inputs.soc_pct) > float(directive.battery_min_soc_pct)
     ):
-        power = min(float(live_command.allowed_discharge_load_w), float(options.max_discharge_power_w))
+        power = min(
+            float(live_command.allowed_discharge_load_w),
+            float(options.max_discharge_power_w),
+        )
         return _command_like(live_command, COMMAND_OUTPUT, power, "budget_discharge")
 
     if float(inputs.soc_pct) <= float(directive.battery_min_soc_pct):
@@ -263,8 +215,12 @@ def live_command_from_directive(
     return _idle_like(live_command, "live_idle")
 
 
-def _command_like(diagnostics: StrategyCommand, mode: str, power_w: float, reason: str) -> StrategyCommand:
-    power = apply_minimum_power(max(0.0, power_w), StrategyOptions(min_command_power_w=0.0))
+def _command_like(
+    diagnostics: StrategyCommand, mode: str, power_w: float, reason: str
+) -> StrategyCommand:
+    power = apply_minimum_power(
+        max(0.0, power_w), StrategyOptions(min_command_power_w=0.0)
+    )
     if power <= 0:
         mode = COMMAND_IDLE
     return StrategyCommand(
@@ -286,65 +242,3 @@ def _idle_like(diagnostics: StrategyCommand, reason: str) -> StrategyCommand:
 
 def _with_reason(command: StrategyCommand, reason: str) -> StrategyCommand:
     return _command_like(command, command.mode, command.power_w, reason)
-
-
-def _planned_charge_w(plan: StrategyPlan) -> float:
-    point = plan.points[0] if plan.points else None
-    if point is not None:
-        return max(0.0, float(point.charge_fc_w))
-    return float(plan.current_power_w) if plan.current_mode == COMMAND_INPUT else 0.0
-
-
-def _planned_discharge_budget_kwh(
-    plan: StrategyPlan,
-    options: StrategyOptions,
-    current_soc_pct: float | None = None,
-) -> float:
-    point = plan.points[0] if plan.points else None
-    if point is None:
-        return 0.0
-    budget = max(0.0, float(getattr(point, "discharge_budget_kwh", 0.0)))
-    soc_pct = float(point.soc_pct) if current_soc_pct is None else float(current_soc_pct)
-    available = _available_above_min_kwh(soc_pct, options)
-    return round(min(available, budget), 3)
-
-
-def _planned_grid_charge_kwh(point) -> float:
-    return _power_w_to_slot_kwh_precise(_planned_grid_charge_w(point))
-
-
-def _planned_grid_charge_w(point) -> float:
-    if point is None:
-        return 0.0
-    explicit = getattr(point, "grid_charge_fc_w", None)
-    if explicit is not None:
-        return max(0.0, float(explicit))
-    planned_charge_w = max(0.0, float(point.charge_fc_w))
-    planned_pv_surplus_w = max(0.0, float(point.pv_fc_w) - float(point.load_fc_w))
-    return max(0.0, planned_charge_w - planned_pv_surplus_w)
-
-
-def _required_charge_w(point) -> float:
-    if point is None:
-        return 0.0
-    explicit = getattr(point, "required_charge_fc_w", None)
-    if explicit is not None:
-        return max(0.0, float(explicit))
-    return (
-        max(0.0, float(point.charge_fc_w))
-        if _planned_grid_charge_w(point) > 0.0
-        else 0.0
-    )
-
-
-def _power_w_to_slot_kwh_precise(power_w: float) -> float:
-    return max(0.0, float(power_w)) * SLOT_H / 1000.0
-
-
-def _power_w_to_slot_kwh(power_w: float) -> float:
-    return round(max(0.0, float(power_w)) * SLOT_H / 1000.0, 3)
-
-
-def _available_above_min_kwh(soc_pct: float, options: StrategyOptions) -> float:
-    capacity_kwh = max(0.5, float(options.battery_capacity_kwh))
-    return capacity_kwh * max(0.0, float(soc_pct) - float(options.min_soc_pct)) / 100.0

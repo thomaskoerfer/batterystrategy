@@ -16,11 +16,8 @@ from custom_components.battery_strategy.const import (
     DISCHARGE_LOAD,
     DISCHARGE_OFF,
     DISCHARGE_PRICE_SENSITIVE,
-    CONF_ZENDURE_INPUT_LIMIT_ENTITY,
-    CONF_ZENDURE_OUTPUT_LIMIT_ENTITY,
     CONFIG_ENTRY_VERSION,
     GRID_MODE_SIGNED,
-    GRID_CHARGING_OFF,
     GRID_CHARGING_PRICE_SENSITIVE,
     MANUAL_CHARGE,
     MANUAL_DISCHARGE,
@@ -35,7 +32,9 @@ from custom_components.battery_strategy.models import (
 from custom_components.battery_strategy.contracts import (
     ForecastRequest,
     LoadForecastContext,
+    PlanCompilationState,
     SlotKey,
+    SlotProgress,
 )
 from custom_components.battery_strategy.forecasting import (
     ForecastModelConfig,
@@ -54,6 +53,11 @@ from custom_components.battery_strategy.optimizer_state import (
     save_state_document,
 )
 from custom_components.battery_strategy.planner import BackgroundPlanner
+from custom_components.battery_strategy.plan_compiler import DeterministicPlanCompiler
+from custom_components.battery_strategy.plan_compiler_adapter import (
+    contract_plan_from_strategy_plan,
+    published_directive_from_contract,
+)
 from custom_components.battery_strategy.plan_models import (
     PlanLiveDirective,
     PlanPoint,
@@ -76,9 +80,37 @@ from custom_components.battery_strategy import (
 )
 from custom_components.battery_strategy.strategy import (
     calculate_command,
-    live_command_from_plan,
-    plan_live_directive_from_plan,
+    live_command_from_directive,
 )
+
+
+def plan_live_directive_from_plan(plan, options, current_soc_pct=None):
+    """Compile a plan through the production Phase-7 boundary for tests."""
+    contract_plan = contract_plan_from_strategy_plan(
+        plan, options, plan.points[0].ts_ms
+    )
+    directive, _ = DeterministicPlanCompiler().compile(
+        contract_plan,
+        SlotProgress(
+            contract_plan.slots[0].slot,
+            0.0,
+            0.0,
+            float(
+                current_soc_pct
+                if current_soc_pct is not None
+                else plan.points[0].soc_pct
+            ),
+        ),
+        PlanCompilationState(),
+        plan.points[0].ts_ms,
+    )
+    return published_directive_from_contract(directive, plan, options)
+
+
+def live_command_from_plan(plan, live_command, inputs, options):
+    """Run plan compilation and the established live policy in tests."""
+    directive = plan_live_directive_from_plan(plan, options, inputs.soc_pct)
+    return live_command_from_directive(directive, live_command, inputs, options)
 
 
 class HacsStrategyTests(unittest.TestCase):
@@ -122,7 +154,9 @@ class HacsStrategyTests(unittest.TestCase):
             pv_slot_biases=(1.0,) * 96,
             current_weather_factor=weather_factor,
             current_pv_w=current_pv_w,
-            tomorrow_date=(intervals[0]["dt"].date() + dt.timedelta(days=1)).isoformat(),
+            tomorrow_date=(
+                intervals[0]["dt"].date() + dt.timedelta(days=1)
+            ).isoformat(),
             tomorrow_energy_kwh=None,
             pv_capacity_kwp=optimizer_engine.PV_CAPACITY_KWP,
             pv_inverter_kw=optimizer_engine.PV_INVERTER_KW,
@@ -279,9 +313,7 @@ class HacsStrategyTests(unittest.TestCase):
 
     def test_optimizer_history_normalizes_mapped_power_units(self):
         original_series = dict(optimizer_engine._RUNTIME_HISTORY_SERIES)
-        optimizer_engine._RUNTIME_HISTORY_SERIES = {
-            "pv_power": ((100.0, 1250.0),)
-        }
+        optimizer_engine._RUNTIME_HISTORY_SERIES = {"pv_power": ((100.0, 1250.0),)}
         try:
             result = optimizer_engine.fetch_sensor_series_many(["pv_power"], 0.0)
         finally:
@@ -503,77 +535,6 @@ class HacsStrategyTests(unittest.TestCase):
         coordinator._account_actual_battery_power(now)
         self.assertAlmostEqual(coordinator._slot_charged_kwh, 0.01, places=4)
         self.assertEqual(coordinator._slot_discharged_kwh, 0.0)
-
-    def test_failsafe_zeros_limits_only_once_per_fault(self):
-        calls = []
-
-        class Services:
-            @staticmethod
-            async def async_call(domain, service, data, blocking=False):
-                calls.append((domain, service, data, blocking))
-
-        coordinator = object.__new__(BatteryStrategyCoordinator)
-        coordinator.hass = SimpleNamespace(services=Services())
-        coordinator._failsafe_zeroed_reason = None
-        coordinator._entity_id = lambda key: key
-        coordinator._state_available = lambda _entity: True
-        coordinator._raw_state_float = lambda _entity: 200.0
-
-        async def scenario():
-            await coordinator._async_failsafe_zero_once("grid_inputs_stale")
-            await coordinator._async_failsafe_zero_once("grid_inputs_stale")
-
-        asyncio.run(scenario())
-        self.assertEqual(len(calls), 2)
-        self.assertTrue(all(call[2]["value"] == 0 for call in calls))
-        self.assertEqual(coordinator.last_actuation["status"], "failsafe_no_write")
-
-    def test_disabled_zero_retries_when_control_entities_recover(self):
-        calls = []
-        available = False
-
-        class Services:
-            @staticmethod
-            async def async_call(domain, service, data, blocking=False):
-                calls.append((domain, service, data, blocking))
-
-        coordinator = object.__new__(BatteryStrategyCoordinator)
-        coordinator.hass = SimpleNamespace(services=Services())
-        coordinator._entity_id = lambda key: key
-        coordinator._state_available = lambda _entity: available
-        coordinator._raw_state_float = lambda _entity: 200.0
-
-        async def scenario():
-            nonlocal available
-            first = await coordinator._async_zero_limits_once()
-            available = True
-            second = await coordinator._async_zero_limits_once()
-            return first, second
-
-        first, second = asyncio.run(scenario())
-        self.assertFalse(first)
-        self.assertTrue(second)
-        self.assertEqual(len(calls), 2)
-        self.assertEqual(coordinator.last_actuation["status"], "disabled_zeroed")
-
-    def test_safe_stop_writes_both_zero_limits_even_if_reported_state_is_zero(self):
-        calls = []
-
-        class Services:
-            @staticmethod
-            async def async_call(domain, service, data, blocking=False):
-                calls.append((domain, service, data, blocking))
-
-        coordinator = object.__new__(BatteryStrategyCoordinator)
-        coordinator.hass = SimpleNamespace(services=Services())
-        coordinator._entity_id = lambda key: key
-        coordinator._state_available = lambda _entity: True
-        coordinator._raw_state_float = lambda _entity: 0.0
-
-        self.assertTrue(asyncio.run(coordinator._async_zero_limits_once(blocking=True)))
-        self.assertEqual(len(calls), 2)
-        self.assertTrue(all(call[2]["value"] == 0 for call in calls))
-        self.assertTrue(all(call[3] for call in calls))
 
     def test_ev_power_dropout_bridges_then_marks_discharge_input_unsafe(self):
         now = dt.datetime.now(dt.timezone.utc)
@@ -937,67 +898,6 @@ class HacsStrategyTests(unittest.TestCase):
             battery_sensor._command_source(data), "external_control_strategy_disabled"
         )
 
-    def test_strategy_disabled_zeroes_once_then_stays_hands_off(self):
-        async def run_case():
-            calls = []
-
-            class FakeState:
-                def __init__(self, state):
-                    self.state = state
-                    self.last_changed = dt.datetime.now(dt.timezone.utc) - dt.timedelta(
-                        seconds=60
-                    )
-
-            class FakeStates:
-                def __init__(self):
-                    self.values = {
-                        "number.battery_input_limit": FakeState("400"),
-                        "number.battery_output_limit": FakeState("300"),
-                    }
-
-                def get(self, entity_id):
-                    return self.values.get(entity_id)
-
-            class FakeServices:
-                async def async_call(self, domain, service, data, blocking=False):
-                    calls.append((domain, service, data, blocking))
-
-            coordinator = object.__new__(BatteryStrategyCoordinator)
-            coordinator.hass = SimpleNamespace(
-                states=FakeStates(), services=FakeServices()
-            )
-            coordinator.entry = SimpleNamespace(
-                data={
-                    CONF_ZENDURE_INPUT_LIMIT_ENTITY: "number.battery_input_limit",
-                    CONF_ZENDURE_OUTPUT_LIMIT_ENTITY: "number.battery_output_limit",
-                },
-                options={"strategy_enabled": False},
-            )
-            coordinator.last_actuation = {"status": "not_started"}
-            coordinator._strategy_was_enabled = True
-            coordinator._disabled_zeroed = False
-
-            await coordinator._async_zero_limits_once()
-            coordinator._strategy_was_enabled = False
-            coordinator._disabled_zeroed = True
-
-            self.assertEqual(len(calls), 2)
-            self.assertEqual(
-                calls[0][2], {"entity_id": "number.battery_input_limit", "value": 0}
-            )
-            self.assertEqual(
-                calls[1][2], {"entity_id": "number.battery_output_limit", "value": 0}
-            )
-            self.assertEqual(coordinator.last_actuation["status"], "disabled_zeroed")
-
-            calls.clear()
-            if coordinator._strategy_was_enabled and not coordinator._disabled_zeroed:
-                await coordinator._async_zero_limits_once()
-
-            self.assertEqual(calls, [])
-
-        asyncio.run(run_case())
-
     def test_current_simple_mode_discharges_against_load_without_feeding_ev(self):
         cmd = calculate_command(
             StrategyInputs(
@@ -1056,137 +956,6 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertEqual(cmd.mode, COMMAND_IDLE)
         self.assertEqual(cmd.power_w, 0)
         self.assertEqual(cmd.allowed_discharge_load_w, 0)
-
-    def test_ev_discharge_block_is_visible_for_an_open_live_budget(self):
-        inputs = StrategyInputs(
-            grid_import_w=5000,
-            grid_export_w=0,
-            pv_w=0,
-            battery_power_w=0,
-            ev_power_w=4200,
-            soc_pct=80,
-        )
-        options = StrategyOptions(
-            discharge=DISCHARGE_LOAD,
-            discharge_during_ev_charging=False,
-            battery_may_feed_ev=False,
-            ev_active_threshold_w=300,
-        )
-        diagnostics = calculate_command(inputs, options)
-        cmd = live_command_from_plan(
-            StrategyPlan(
-                points=[], current_mode=COMMAND_IDLE, current_power_w=0, reason="test"
-            ),
-            diagnostics,
-            inputs,
-            options,
-        )
-        self.assertEqual(cmd.mode, COMMAND_IDLE)
-        self.assertEqual(cmd.power_w, 0)
-        self.assertEqual(cmd.reason, "ev_discharge_blocked")
-
-    def test_ev_discharge_block_does_not_block_live_pv_surplus_charging(self):
-        inputs = StrategyInputs(
-            grid_import_w=0,
-            grid_export_w=500,
-            pv_w=1500,
-            battery_power_w=0,
-            ev_power_w=1000,
-            soc_pct=50,
-        )
-        options = StrategyOptions(
-            pv_charging=PV_CHARGING_ON,
-            discharge=DISCHARGE_LOAD,
-            discharge_during_ev_charging=False,
-            battery_may_feed_ev=False,
-            ev_active_threshold_w=300,
-        )
-        diagnostics = calculate_command(inputs, options)
-        cmd = live_command_from_plan(
-            StrategyPlan(
-                points=[], current_mode=COMMAND_IDLE, current_power_w=0, reason="test"
-            ),
-            diagnostics,
-            inputs,
-            options,
-        )
-        self.assertEqual(cmd.mode, COMMAND_INPUT)
-        self.assertEqual(cmd.power_w, 500)
-        self.assertEqual(cmd.reason, "live_pv_surplus")
-
-    def test_live_command_clamps_stale_plan_discharge_to_current_load(self):
-        inputs = StrategyInputs(
-            grid_import_w=180,
-            grid_export_w=0,
-            pv_w=4,
-            battery_power_w=0,
-            ev_power_w=0,
-            soc_pct=70,
-        )
-        options = StrategyOptions(discharge=DISCHARGE_LOAD, max_discharge_power_w=2400)
-        diagnostics = calculate_command(inputs, options)
-        plan = StrategyPlan(
-            points=[],
-            current_mode=COMMAND_OUTPUT,
-            current_power_w=2046,
-            reason="stale optimizer slot",
-        )
-        cmd = live_command_from_plan(plan, diagnostics, inputs, options)
-        self.assertEqual(cmd.mode, COMMAND_OUTPUT)
-        self.assertEqual(cmd.power_w, 180)
-        self.assertEqual(cmd.reason, "budget_discharge")
-
-    def test_live_command_load_mode_overrides_plan_reservation(self):
-        inputs = StrategyInputs(
-            grid_import_w=8186,
-            grid_export_w=0,
-            pv_w=600,
-            battery_power_w=0,
-            ev_power_w=4700,
-            soc_pct=99,
-        )
-        options = StrategyOptions(
-            discharge=DISCHARGE_LOAD,
-            battery_may_feed_ev=False,
-            ev_active_threshold_w=300,
-            max_discharge_power_w=2400,
-        )
-        diagnostics = calculate_command(inputs, options)
-        plan = StrategyPlan(
-            points=[],
-            current_mode=COMMAND_IDLE,
-            current_power_w=0,
-            reason="battery reserved for later higher-value slots",
-        )
-        cmd = live_command_from_plan(plan, diagnostics, inputs, options)
-        self.assertEqual(cmd.mode, COMMAND_OUTPUT)
-        self.assertEqual(cmd.power_w, 2400)
-
-    def test_live_command_pv_charge_does_not_follow_plan_into_grid_import(self):
-        inputs = StrategyInputs(
-            grid_import_w=656,
-            grid_export_w=0,
-            pv_w=1441,
-            battery_power_w=-789,
-            ev_power_w=0,
-            soc_pct=62,
-        )
-        options = StrategyOptions(
-            pv_charging=PV_CHARGING_ON,
-            grid_charging=GRID_CHARGING_OFF,
-            discharge=DISCHARGE_OFF,
-            max_charge_power_w=2400,
-        )
-        diagnostics = calculate_command(inputs, options)
-        plan = StrategyPlan(
-            points=[],
-            current_mode=COMMAND_INPUT,
-            current_power_w=1672,
-            reason="stale optimizer slot",
-        )
-        cmd = live_command_from_plan(plan, diagnostics, inputs, options)
-        self.assertEqual(cmd.mode, COMMAND_INPUT)
-        self.assertEqual(cmd.power_w, 133)
 
     def test_must_charge_blocks_discharge_and_charges_from_grid(self):
         now = dt.datetime(2026, 5, 29, 12, tzinfo=dt.timezone.utc)
@@ -1532,106 +1301,6 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertEqual(cmd.mode, COMMAND_IDLE)
         self.assertEqual(cmd.power_w, 0)
 
-    def test_current_slot_discharge_budget_cannot_increase_on_reoptimization(self):
-        coordinator = object.__new__(BatteryStrategyCoordinator)
-        coordinator._active_directive_slot_id = None
-        coordinator._active_directive_slot_end_ts_ms = 0
-        coordinator._slot_charged_kwh = 0.0
-        coordinator._slot_discharged_kwh = 0.0
-        coordinator._active_discharge_budget_base_kwh = 0.0
-
-        def directive(slot_id, budget):
-            return PlanLiveDirective(
-                slot_id=slot_id,
-                slot_start_ts=1,
-                slot_end_ts=2,
-                pv_charge_allowed=True,
-                must_charge_w=0,
-                must_charge_remaining_kwh=0.0,
-                grid_charge_allowed=False,
-                discharge_budget_kwh=budget,
-                battery_min_soc_pct=10.0,
-                battery_max_soc_pct=100.0,
-            )
-
-        first = coordinator._directive_with_progress(directive("slot-a", 0.10))
-        coordinator._slot_discharged_kwh = 0.04
-        raised = coordinator._directive_with_progress(directive("slot-a", 0.20))
-        lowered = coordinator._directive_with_progress(directive("slot-a", 0.05))
-        next_slot = coordinator._directive_with_progress(directive("slot-b", 0.20))
-
-        self.assertEqual(first.discharge_budget_kwh, 0.10)
-        self.assertEqual(raised.discharge_budget_kwh, 0.06)
-        self.assertEqual(lowered.discharge_budget_kwh, 0.01)
-        self.assertEqual(next_slot.discharge_budget_kwh, 0.20)
-
-    def test_load_discharge_can_open_budget_inside_current_slot(self):
-        coordinator = object.__new__(BatteryStrategyCoordinator)
-        coordinator._active_directive_slot_id = None
-        coordinator._active_directive_slot_end_ts_ms = 0
-        coordinator._slot_charged_kwh = 0.0
-        coordinator._slot_discharged_kwh = 0.0
-        coordinator._active_discharge_budget_base_kwh = 0.0
-
-        def directive(slot_id, budget):
-            return PlanLiveDirective(
-                slot_id=slot_id,
-                slot_start_ts=1,
-                slot_end_ts=2,
-                pv_charge_allowed=True,
-                must_charge_w=0,
-                must_charge_remaining_kwh=0.0,
-                grid_charge_allowed=False,
-                discharge_budget_kwh=budget,
-                battery_min_soc_pct=10.0,
-                battery_max_soc_pct=100.0,
-            )
-
-        first = coordinator._directive_with_progress(directive("slot-a", 0.0))
-        opened = coordinator._directive_with_progress(
-            directive("slot-a", 0.6),
-            allow_discharge_budget_increase=True,
-        )
-
-        self.assertEqual(first.discharge_budget_kwh, 0.0)
-        self.assertEqual(opened.discharge_budget_kwh, 0.6)
-
-    def test_discharge_mode_change_resets_current_slot_budget_context(self):
-        coordinator = object.__new__(BatteryStrategyCoordinator)
-        coordinator._active_directive_slot_id = None
-        coordinator._active_directive_slot_end_ts_ms = 0
-        coordinator._slot_charged_kwh = 0.0
-        coordinator._slot_discharged_kwh = 0.0
-        coordinator._active_discharge_budget_base_kwh = 0.0
-        coordinator._active_discharge_mode = None
-
-        def directive(slot_id, budget):
-            return PlanLiveDirective(
-                slot_id=slot_id,
-                slot_start_ts=1,
-                slot_end_ts=2,
-                pv_charge_allowed=True,
-                must_charge_w=0,
-                must_charge_remaining_kwh=0.0,
-                grid_charge_allowed=False,
-                discharge_budget_kwh=budget,
-                battery_min_soc_pct=10.0,
-                battery_max_soc_pct=100.0,
-            )
-
-        load_open = coordinator._directive_with_progress(
-            directive("slot-a", 0.6),
-            discharge_mode=DISCHARGE_LOAD,
-            allow_discharge_budget_increase=True,
-        )
-        price_sensitive = coordinator._directive_with_progress(
-            directive("slot-a", 0.05),
-            discharge_mode=DISCHARGE_PRICE_SENSITIVE,
-        )
-
-        self.assertEqual(load_open.discharge_budget_kwh, 0.6)
-        self.assertEqual(price_sensitive.discharge_budget_kwh, 0.05)
-
     def test_price_sensitive_low_price_does_not_use_pv_charge_as_free_replacement(self):
         now = dt.datetime(2026, 5, 29, 12, tzinfo=dt.timezone.utc)
         points = [
@@ -1825,88 +1494,6 @@ class HacsStrategyTests(unittest.TestCase):
                 0,
                 "grid replacement is not cheap after losses",
                 price_stats={"p_high": 32.0, "discharge_floor_ct": 30.0},
-            ),
-            StrategyOptions(
-                grid_charging=GRID_CHARGING_PRICE_SENSITIVE,
-                discharge=DISCHARGE_PRICE_SENSITIVE,
-                round_trip_efficiency=0.8,
-                min_margin_ct_per_kwh=2.0,
-                min_soc_pct=5,
-            ),
-        )
-        self.assertEqual(directive.discharge_budget_kwh, 0.0)
-
-    def test_price_sensitive_planned_discharge_does_not_create_budget_floor(self):
-        now = dt.datetime(2026, 5, 29, 9, 30, tzinfo=dt.timezone.utc)
-        points = [
-            PlanPoint(
-                int(now.timestamp() * 1000),
-                now.date().isoformat(),
-                20.64,
-                886,
-                402,
-                37,
-                0,
-                37,
-                COMMAND_OUTPUT,
-                447,
-                0,
-                447,
-                6.92,
-            ),
-            PlanPoint(
-                int((now + dt.timedelta(minutes=15)).timestamp() * 1000),
-                now.date().isoformat(),
-                19.36,
-                482,
-                402,
-                0,
-                0,
-                0,
-                COMMAND_INPUT,
-                270,
-                270,
-                0,
-                6.92,
-            ),
-            PlanPoint(
-                int((now + dt.timedelta(minutes=30)).timestamp() * 1000),
-                now.date().isoformat(),
-                19.88,
-                358,
-                398,
-                0,
-                39,
-                -39,
-                COMMAND_IDLE,
-                0,
-                0,
-                0,
-                7.93,
-            ),
-            PlanPoint(
-                int((now + dt.timedelta(hours=11)).timestamp() * 1000),
-                now.date().isoformat(),
-                32.43,
-                200,
-                0,
-                111,
-                0,
-                111,
-                COMMAND_OUTPUT,
-                89,
-                0,
-                89,
-                50.0,
-            ),
-        ]
-        directive = plan_live_directive_from_plan(
-            StrategyPlan(
-                points,
-                COMMAND_OUTPUT,
-                447,
-                "low price planned discharge must still be replaceable",
-                price_stats={"p_high": 30.69, "discharge_floor_ct": 24.738},
             ),
             StrategyOptions(
                 grid_charging=GRID_CHARGING_PRICE_SENSITIVE,
@@ -2876,9 +2463,7 @@ class HacsStrategyTests(unittest.TestCase):
         )
         for point in points:
             planned_kwh = (
-                float(point["discharge_fc_w"])
-                * optimizer_engine.SLOT_H
-                / 1000.0
+                float(point["discharge_fc_w"]) * optimizer_engine.SLOT_H / 1000.0
             )
             self.assertLessEqual(
                 planned_kwh,
@@ -3083,7 +2668,9 @@ class HacsStrategyTests(unittest.TestCase):
         ]
         self.assertTrue(charging_points)
         self.assertTrue(
-            all(float(point["discharge_budget_kwh"]) == 0.0 for point in charging_points)
+            all(
+                float(point["discharge_budget_kwh"]) == 0.0 for point in charging_points
+            )
         )
 
     def test_headroom_budget_use_does_not_trigger_meaningful_grid_repurchase(self):
@@ -3866,7 +3453,9 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertEqual([point.ts_ms for point in points], [current_ts])
 
     def test_optimizer_adapter_preserves_explicit_charge_sources_and_requirement(self):
-        ts = int(dt.datetime(2026, 8, 23, 13, tzinfo=dt.timezone.utc).timestamp() * 1000)
+        ts = int(
+            dt.datetime(2026, 8, 23, 13, tzinfo=dt.timezone.utc).timestamp() * 1000
+        )
         output = {
             "profile_48h_price": [[ts, 17.55]],
             "profile_48h_charge_fc_power": [[ts, 1700.0]],
@@ -3946,7 +3535,7 @@ class HacsStrategyTests(unittest.TestCase):
                 "soc_pct": 12.0,
                 "price_ct": 40.0,
                 "discharge_budget_kwh": 0.075,
-            }
+            },
         ]
 
         forecast_today, forecast_tomorrow, profile_today, profile_tomorrow = (
@@ -3971,10 +3560,7 @@ class HacsStrategyTests(unittest.TestCase):
             profile_tomorrow["soc"],
             [
                 [
-                    int(
-                        (now + dt.timedelta(days=1, minutes=15)).timestamp()
-                        * 1000
-                    ),
+                    int((now + dt.timedelta(days=1, minutes=15)).timestamp() * 1000),
                     12.0,
                 ]
             ],

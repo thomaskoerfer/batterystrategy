@@ -163,7 +163,12 @@ def _contract_slot(
     options: StrategyOptions,
 ) -> BatteryPlanSlot:
     charge_kwh = _power_to_energy(point.charge_fc_w)
-    discharge_kwh = _power_to_energy(point.discharge_fc_w)
+    planned_discharge_kwh = _power_to_energy(point.discharge_fc_w)
+    # The published dashboard trajectory may contain a hypothetical discharge
+    # while live permission is deliberately zero. The compiler contract carries
+    # only executable flow, so clamp it to the explicit commercial budget.
+    discharge_budget_kwh = max(0.0, float(point.discharge_budget_kwh))
+    discharge_kwh = min(planned_discharge_kwh, discharge_budget_kwh)
     explicit_grid_w = getattr(point, "grid_charge_fc_w", None)
     if explicit_grid_w is None:
         pv_surplus_w = max(0.0, float(point.pv_fc_w) - float(point.load_fc_w))
@@ -179,10 +184,6 @@ def _contract_slot(
     )
     if grid_charge_kwh <= ENERGY_EPSILON_KWH:
         required_charge_kwh = 0.0
-    discharge_budget_kwh = max(
-        discharge_kwh,
-        max(0.0, float(point.discharge_budget_kwh)),
-    )
     mode = PlanMode.IDLE
     if charge_kwh > ENERGY_EPSILON_KWH:
         mode = PlanMode.CHARGE

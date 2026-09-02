@@ -49,22 +49,21 @@ live policy and one actuator boundary. Contracts prohibit the important failure
 modes: hidden I/O in forecasting/optimization, economics in live control and
 multiple hardware writers.
 
-The implementation is not yet at that target. Three high-priority blockers
-remain before Phase 7 can be called complete:
+The stacked ready branch closes the high-priority structural findings without
+changing the approved contracts:
 
-1. The pure Phase-6 compiler is not authoritative. `strategy.py` and
-   `coordinator.py` still translate plan fields and latch slot progress.
-2. Home Assistant service writes remain in `coordinator.py`; `actuator.py`
-   currently computes targets and write decisions but is not the sole writer.
-3. `optimizer_engine.py` still combines forecast composition, output assembly
-   and mutable runtime orchestration. Market enrichment, planning/publication
-   and savings accounting are now delegated to dedicated coarse components,
-   but the compatibility facade is not the permanent application entry point.
+1. The pure Phase-6 compiler is the sole directive authority. Coordinator
+   shadow state and the previous slot latch are removed.
+2. Home Assistant battery service calls are owned exclusively by
+   `HomeAssistantZendureActuator`; the coordinator only orchestrates safety and
+   enable/disable transitions.
+3. Forecasting, market context, optimization, planning and savings are
+   delegated to documented coarse components. `optimizer_engine.py` remains a
+   deliberately thin runtime compatibility facade rather than being split into
+   installation-specific micro-layers.
 
-These are structural findings, not reasons to change working live control in
-this cleanup branch. Phase-6 parity must be observed first; actuation relocation
-then requires service-call parity tests; orchestration extraction can proceed
-behind unchanged contracts without changing decisions.
+Static architecture tests prevent the old compiler path, shadow modules,
+direct database access and coordinator hardware writes from returning.
 
 ## Verification and gate
 
@@ -77,8 +76,8 @@ the removed modules and SQL tokens. Before deployment it additionally requires:
 - a non-production Recorder-history timing and savings-parity check;
 - HACS and Hassfest validation;
 - explicit owner approval for cutover;
-- several days of live health and command-trace review before deleting the
-  remaining coordinator compiler and moving service writes.
+- a short live health and command-trace review after each separately approved
+  deployment stage.
 
 Rollback before deployment is branch deletion. A later deployment must be
 based on a tagged Phase-6 release and retain its documented server rollback.

@@ -15,12 +15,10 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
-from .actuator import ActuationWriteTracker, zendure_targets
-from .compiler_evaluation import append_bounded_record, compare_published_directives
+from .actuator import HomeAssistantZendureActuator
 from .const import (
     BATTERY_PROFILE_ZENDURE,
     COMMAND_IDLE,
-    COMMAND_INPUT,
     COMMAND_OUTPUT,
     CONF_BATTERY_CAPACITY_KWH,
     CONF_BATTERY_POWER_ENTITY,
@@ -85,11 +83,7 @@ from .plan_compiler_adapter import (
 )
 from .plan_models import PlanLiveDirective
 from .planner import BackgroundPlanner
-from .strategy import (
-    calculate_command,
-    live_command_from_directive,
-    plan_live_directive_from_plan,
-)
+from .strategy import calculate_command, live_command_from_directive
 from .weather import OpenMeteoWeatherProvider
 
 LOGGER = logging.getLogger(__name__)
@@ -100,7 +94,6 @@ EV_POWER_BRIDGE_MAX_AGE_S = 180
 OPTIMIZER_STATE_FILE = "battery_strategy_optimizer_state.json"
 FEATURE_STORE_FILE = "battery_strategy_features.json.gz"
 COMMAND_TRACE_FILE = "battery_strategy_command_trace.jsonl"
-COMPILER_SHADOW_TRACE_FILE = "battery_strategy_compiler_shadow.jsonl"
 COMMAND_TRACE_MAX_BYTES = 64 * 1024 * 1024
 COMMAND_TRACE_RETAIN_LINES = 50000
 GRID_INPUT_MAX_AGE_S = 30
@@ -146,18 +139,9 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         self._last_optimizer_force_key: str | None = None
         self._slot_charged_kwh = 0.0
         self._slot_discharged_kwh = 0.0
-        self._active_discharge_budget_base_kwh = 0.0
-        self._active_discharge_mode: str | None = None
-        self._compiler_shadow = DeterministicPlanCompiler()
-        self._compiler_shadow_state = PlanCompilationState()
         self._plan_compiler = DeterministicPlanCompiler()
         self._plan_compilation_state = PlanCompilationState()
         self._plan_compiler_error: str | None = None
-        self._compiler_shadow_samples = 0
-        self._compiler_shadow_matches = 0
-        self._compiler_shadow_mismatches = 0
-        self._compiler_shadow_last_record_signature: tuple | None = None
-        self._compiler_shadow_last_record_ms = 0
         self._last_live_accounting_ts: dt.datetime | None = None
         self._last_actual_battery_power_w: float | None = None
         self._last_known_soc_pct = last_known_soc_pct
@@ -166,8 +150,12 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         self._last_valid_soc_at = (
             dt.datetime.now(dt.timezone.utc) if last_known_soc_pct is not None else None
         )
-        self._failsafe_zeroed_reason: str | None = None
-        self._write_tracker = ActuationWriteTracker()
+        self._actuator = HomeAssistantZendureActuator(
+            hass,
+            str(entry.data.get(CONF_ZENDURE_AC_MODE_ENTITY, "")),
+            str(entry.data.get(CONF_ZENDURE_INPUT_LIMIT_ENTITY, "")),
+            str(entry.data.get(CONF_ZENDURE_OUTPUT_LIMIT_ENTITY, "")),
+        )
         self._p1_update_gate = P1UpdateGate()
         self._direction_hysteresis = DirectionHysteresis()
         self._live_event_unsubs: list[object] = []
@@ -208,14 +196,6 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         self._manual_mode = MANUAL_OFF
         self._manual_power_w = 0.0
         self._manual_until = None
-
-    def _actuation_write_tracker(self) -> ActuationWriteTracker:
-        """Return the tracker, including for lightweight test coordinators."""
-        tracker = getattr(self, "_write_tracker", None)
-        if tracker is None:
-            tracker = ActuationWriteTracker()
-            self._write_tracker = tracker
-        return tracker
 
     def async_start_live_tracking(self) -> None:
         """Track meter and safety inputs for event-driven live control."""
@@ -296,125 +276,15 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         elif energy_kwh > 0.0:
             self._slot_discharged_kwh += energy_kwh
 
-    def _directive_with_progress(
-        self,
-        directive: PlanLiveDirective,
-        *,
-        discharge_mode: str | None = None,
-        allow_discharge_budget_increase: bool = False,
-    ) -> PlanLiveDirective:
-        """Return directive with slot-local charge/discharge budgets decremented."""
-        slot_changed = directive.slot_id != self._active_directive_slot_id
-        active_mode = getattr(self, "_active_discharge_mode", None)
-        mode_changed = discharge_mode is not None and discharge_mode != active_mode
-        if slot_changed or mode_changed:
-            self._active_directive_slot_id = directive.slot_id
-            self._active_directive_slot_end_ts_ms = int(directive.slot_end_ts)
-            if slot_changed:
-                self._slot_charged_kwh = 0.0
-                self._slot_discharged_kwh = 0.0
-            self._active_discharge_mode = discharge_mode
-            self._active_discharge_budget_base_kwh = max(
-                0.0, float(directive.discharge_budget_kwh)
-            )
-        else:
-            current_base = max(
-                0.0, float(getattr(self, "_active_discharge_budget_base_kwh", 0.0))
-            )
-            new_base = max(0.0, float(directive.discharge_budget_kwh))
-            if allow_discharge_budget_increase:
-                self._active_discharge_budget_base_kwh = max(current_base, new_base)
-            else:
-                self._active_discharge_budget_base_kwh = min(current_base, new_base)
-        return replace(
-            directive,
-            must_charge_remaining_kwh=round(
-                max(0.0, directive.must_charge_remaining_kwh - self._slot_charged_kwh),
-                3,
-            ),
-            discharge_budget_kwh=round(
-                max(
-                    0.0,
-                    self._active_discharge_budget_base_kwh - self._slot_discharged_kwh,
-                ),
-                3,
-            ),
-        )
-
-    def _evaluate_compiler_shadow(
-        self,
-        plan,
-        options: StrategyOptions,
-        inputs: StrategyInputs,
-        authoritative: PlanLiveDirective,
-        now_ms: int,
-    ) -> tuple[dict, dict | None]:
-        """Compile the current slot without influencing live control."""
-        if not plan.points:
-            return {
-                "status": "no_plan",
-                "samples": self._compiler_shadow_samples,
-                "matches": self._compiler_shadow_matches,
-                "mismatches": self._compiler_shadow_mismatches,
-            }, None
-        try:
-            contract_plan = contract_plan_from_strategy_plan(plan, options, now_ms)
-            current_slot = contract_plan.slots[0].slot
-            candidate, next_state = self._compiler_shadow.compile(
-                contract_plan,
-                SlotProgress(
-                    slot=current_slot,
-                    charged_kwh=max(0.0, self._slot_charged_kwh),
-                    discharged_kwh=max(0.0, self._slot_discharged_kwh),
-                    soc_pct=float(inputs.soc_pct),
-                ),
-                self._compiler_shadow_state,
-                issued_at_ms=now_ms,
-            )
-            self._compiler_shadow_state = next_state
-            published_candidate = published_directive_from_contract(
-                candidate, plan, options
-            )
-            result = compare_published_directives(
-                authoritative,
-                published_candidate,
-                discharge_mode=options.discharge,
-                captured_at_ms=now_ms,
-            )
-        except Exception as err:  # noqa: BLE001 - shadow cannot affect control.
-            result = {
-                "captured_at_ms": now_ms,
-                "slot_start_ms": int(authoritative.slot_start_ts),
-                "status": "error",
-                "mismatch_fields": [],
-                "error": f"{type(err).__name__}: {err}",
-            }
-        self._compiler_shadow_samples += 1
-        if result["status"] == "match":
-            self._compiler_shadow_matches += 1
-        else:
-            self._compiler_shadow_mismatches += 1
-        summary = {
-            **result,
-            "samples": self._compiler_shadow_samples,
-            "matches": self._compiler_shadow_matches,
-            "mismatches": self._compiler_shadow_mismatches,
-        }
-        signature = (
-            summary["status"],
-            tuple(summary.get("mismatch_fields") or ()),
-            summary.get("slot_start_ms"),
-        )
-        should_record = (
-            signature != self._compiler_shadow_last_record_signature
-            or now_ms - self._compiler_shadow_last_record_ms >= 60_000
-            or summary["status"] != "match"
-        )
-        if should_record:
-            self._compiler_shadow_last_record_signature = signature
-            self._compiler_shadow_last_record_ms = now_ms
-            return summary, summary
-        return summary, None
+    def _sync_slot_progress(self, slot_start_ms: int) -> None:
+        """Reset measured progress exactly once at a 15-minute boundary."""
+        slot_id = str(max(0, int(slot_start_ms)))
+        if slot_id == self._active_directive_slot_id:
+            return
+        self._active_directive_slot_id = slot_id
+        self._active_directive_slot_end_ts_ms = int(slot_start_ms) + SLOT_MS
+        self._slot_charged_kwh = 0.0
+        self._slot_discharged_kwh = 0.0
 
     def _compile_authoritative_directive(
         self,
@@ -514,25 +384,13 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
                 inputs, options, runtime_context, force=force_optimizer
             )
         plan, self._optimizer_attrs = self._planner.current(inputs, options)
-        legacy_directive = self._directive_with_progress(
-            plan_live_directive_from_plan(
-                plan, options, current_soc_pct=inputs.soc_pct
-            ),
-            discharge_mode=options.discharge,
-            allow_discharge_budget_increase=options.discharge == DISCHARGE_LOAD,
-        )
         now_ms = int(now.timestamp() * 1000)
+        slot_start_ms = int(plan.points[0].ts_ms) if plan.points else 0
+        self._sync_slot_progress(slot_start_ms)
         directive = self._compile_authoritative_directive(
             plan,
             options,
             inputs,
-            now_ms,
-        )
-        compiler_shadow, compiler_shadow_record = self._evaluate_compiler_shadow(
-            plan,
-            options,
-            inputs,
-            legacy_directive,
             now_ms,
         )
         command = live_command_from_directive(
@@ -559,7 +417,6 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             "plan": plan,
             "optimizer_attrs": self._optimizer_attrs,
             "plan_to_live": directive,
-            "compiler_shadow": compiler_shadow,
             "plan_compiler_error": self._plan_compiler_error,
             "send_commands": strategy_enabled,
             "strategy_enabled": strategy_enabled,
@@ -590,13 +447,6 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             data["actuation"] = self.last_actuation
         if bool(self.entry.options.get("trace_enabled", False)):
             await self.hass.async_add_executor_job(self._append_command_trace, data)
-        if compiler_shadow_record is not None:
-            shadow_path = Path(self.hass.config.path(COMPILER_SHADOW_TRACE_FILE))
-            await self.hass.async_add_executor_job(
-                append_bounded_record,
-                shadow_path,
-                compiler_shadow_record,
-            )
         if finalized_features:
             try:
                 await self._feature_store.upsert(finalized_features)
@@ -1035,57 +885,15 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
 
     async def _async_zero_limits_once(self, *, blocking: bool = False) -> bool:
         """Stop once when disabled; retry only until the safe stop can be issued."""
-        input_limit_entity = self._entity_id(CONF_ZENDURE_INPUT_LIMIT_ENTITY)
-        output_limit_entity = self._entity_id(CONF_ZENDURE_OUTPUT_LIMIT_ENTITY)
-        required_entities = [input_limit_entity, output_limit_entity]
-        if not all(self._state_available(entity) for entity in required_entities):
-            self.last_actuation = {
-                "status": "skipped",
-                "reason": "control_entity_unavailable",
-            }
-            return False
-
-        current_input = self._raw_state_float(input_limit_entity)
-        current_output = self._raw_state_float(output_limit_entity)
-        actions = ["input_limit=0", "output_limit=0"]
-        now_s = time.monotonic()
-        await self.hass.services.async_call(
-            "number",
-            "set_value",
-            {"entity_id": input_limit_entity, "value": 0},
-            blocking=blocking,
+        self.last_actuation = await self._actuator.zero(
+            "strategy_disabled", blocking=blocking, always_write=True
         )
-        self._actuation_write_tracker().record(input_limit_entity, 0.0, now_s)
-        await self.hass.services.async_call(
-            "number",
-            "set_value",
-            {"entity_id": output_limit_entity, "value": 0},
-            blocking=blocking,
-        )
-        self._actuation_write_tracker().record(output_limit_entity, 0.0, now_s)
-        self.last_actuation = {
-            "status": "disabled_zeroed",
-            "reason": "strategy_disabled",
-            "actions": actions,
-            "current_input_limit_w": current_input,
-            "current_output_limit_w": current_output,
-        }
-        return True
+        return self.last_actuation.get("status") != "skipped"
 
     async def _async_apply_command(
         self, command: StrategyCommand, options: StrategyOptions
     ) -> None:
         """Apply the command to Zendure with anti-oscillation guardrails."""
-        ac_mode_entity = self._entity_id(CONF_ZENDURE_AC_MODE_ENTITY)
-        input_limit_entity = self._entity_id(CONF_ZENDURE_INPUT_LIMIT_ENTITY)
-        output_limit_entity = self._entity_id(CONF_ZENDURE_OUTPUT_LIMIT_ENTITY)
-        required_entities = [ac_mode_entity, input_limit_entity, output_limit_entity]
-        if not all(self._state_available(entity) for entity in required_entities):
-            self.last_actuation = {
-                "status": "skipped",
-                "reason": "control_entity_unavailable",
-            }
-            return
         if not self._soc_control_ready:
             await self._async_failsafe_zero_once("battery_soc_unavailable")
             return
@@ -1103,135 +911,11 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         ):
             await self._async_failsafe_zero_once("ev_power_unavailable")
             return
-
-        self._failsafe_zeroed_reason = None
-
-        targets = zendure_targets(command)
-        current_mode = self.hass.states.get(ac_mode_entity).state
-        current_input = self._raw_state_float(input_limit_entity)
-        current_output = self._raw_state_float(output_limit_entity)
-        actions: list[str] = []
-        now_s = time.monotonic()
-        write_tracker = self._actuation_write_tracker()
-
-        async def write_limit(entity_id: str, value: int, label: str) -> None:
-            await self.hass.services.async_call(
-                "number",
-                "set_value",
-                {"entity_id": entity_id, "value": value},
-                blocking=True,
-            )
-            write_tracker.record(entity_id, float(value), now_s)
-            actions.append(f"{label}={value}")
-
-        # Zendure sends one full direction command. With HA entities we cannot
-        # write atomically, so make the equivalent sequence explicit: stop the
-        # opposite direction, switch mode, then publish the new target.
-        if command.mode == COMMAND_OUTPUT and write_tracker.should_write_limit(
-            input_limit_entity,
-            current_input,
-            0,
-            now_s,
-            options,
-            force_zero=True,
-        ):
-            await write_limit(input_limit_entity, 0, "input_limit")
-            current_input = 0
-        elif command.mode == COMMAND_INPUT and write_tracker.should_write_limit(
-            output_limit_entity,
-            current_output,
-            0,
-            now_s,
-            options,
-            force_zero=True,
-        ):
-            await write_limit(output_limit_entity, 0, "output_limit")
-            current_output = 0
-
-        if command.mode != COMMAND_IDLE and write_tracker.should_write_mode(
-            ac_mode_entity,
-            current_mode,
-            targets.mode_option,
-            now_s,
-        ):
-            await self.hass.services.async_call(
-                "select",
-                "select_option",
-                {"entity_id": ac_mode_entity, "option": targets.mode_option},
-                blocking=True,
-            )
-            write_tracker.record(ac_mode_entity, targets.mode_option or "", now_s)
-            actions.append(f"mode={targets.mode_option}")
-
-        if write_tracker.should_write_limit(
-            input_limit_entity,
-            current_input,
-            targets.input_limit_w,
-            now_s,
-            options,
-            force_zero=True,
-        ):
-            await write_limit(input_limit_entity, targets.input_limit_w, "input_limit")
-
-        if write_tracker.should_write_limit(
-            output_limit_entity,
-            current_output,
-            targets.output_limit_w,
-            now_s,
-            options,
-            force_zero=True,
-        ):
-            await write_limit(
-                output_limit_entity, targets.output_limit_w, "output_limit"
-            )
-
-        self.last_actuation = {
-            "status": "written" if actions else "no_change",
-            "actions": actions,
-            "target_mode": targets.mode_option,
-            "target_input_limit_w": targets.input_limit_w,
-            "target_output_limit_w": targets.output_limit_w,
-            "current_mode": current_mode,
-            "current_input_limit_w": current_input,
-            "current_output_limit_w": current_output,
-        }
+        self.last_actuation = await self._actuator.apply(command, options)
 
     async def _async_failsafe_zero_once(self, reason: str) -> None:
         """Zero both limits once while a safety-critical input is invalid."""
-        if self._failsafe_zeroed_reason == reason:
-            self.last_actuation = {"status": "failsafe_no_write", "reason": reason}
-            return
-        input_entity = self._entity_id(CONF_ZENDURE_INPUT_LIMIT_ENTITY)
-        output_entity = self._entity_id(CONF_ZENDURE_OUTPUT_LIMIT_ENTITY)
-        if not all(
-            self._state_available(entity) for entity in (input_entity, output_entity)
-        ):
-            self.last_actuation = {
-                "status": "skipped",
-                "reason": "control_entity_unavailable",
-            }
-            return
-        actions = []
-        now_s = time.monotonic()
-        for entity, label in (
-            (input_entity, "input_limit"),
-            (output_entity, "output_limit"),
-        ):
-            if self._raw_state_float(entity) > 0:
-                await self.hass.services.async_call(
-                    "number",
-                    "set_value",
-                    {"entity_id": entity, "value": 0},
-                    blocking=True,
-                )
-                self._actuation_write_tracker().record(entity, 0.0, now_s)
-                actions.append(f"{label}=0")
-        self._failsafe_zeroed_reason = reason
-        self.last_actuation = {
-            "status": "failsafe_zeroed",
-            "reason": reason,
-            "actions": actions,
-        }
+        self.last_actuation = await self._actuator.failsafe_zero_once(reason)
 
     async def async_prepare_unload(self) -> None:
         """Stop active output before a reload, then shut down the planner."""

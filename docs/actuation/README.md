@@ -49,7 +49,9 @@ rollback release and the shortest practical Home Assistant interruption.
 
 ## Migration status
 
-The vendor translation and write tracker are separated, while orchestration is
-still partly coordinator-owned. Phase 6 preserves this proven path. Final
-cleanup may move wiring but must not alter write order or safety semantics
-without separate approval.
+The vendor translation, write tracker and all Home Assistant battery service
+calls are owned by `HomeAssistantZendureActuator`. The coordinator decides when
+normal, disabled or fail-safe actuation is required, but it cannot write
+hardware entities directly. The established runtime command model remains a
+local adapter into this port; changing the public actuator contract still
+requires impact analysis and owner approval.

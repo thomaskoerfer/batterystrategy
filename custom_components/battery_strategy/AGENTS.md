@@ -18,11 +18,12 @@ documented impact analysis and explicit owner approval.
   not influence planning or live control.
 - Runtime compatibility facade: `optimizer_engine.py`; do not add new market,
   planning or savings logic to it.
-- Plan compiler: `plan_compiler.py`; compiler orchestration still present in
-  coordinator/strategy code is transitional.
+- Plan compiler: `plan_compiler.py`; the coordinator supplies explicit plan and
+  progress state but may not recreate compiler semantics.
 - Live control: `live_control.py`, `strategy.py` and live orchestration in
   `coordinator.py`.
-- Actuation: `actuator.py` and actuator wiring only.
+- Actuation: `actuator.py`; it is the only module allowed to call Home
+  Assistant services for battery hardware.
 - Evaluation: diagnostics, bounded command traces, backtests and
   measured-savings reporting.
 

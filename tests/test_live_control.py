@@ -3,14 +3,16 @@
 import asyncio
 from types import SimpleNamespace
 
-from custom_components.battery_strategy.actuator import ActuationWriteTracker
+from custom_components.battery_strategy.actuator import (
+    ActuationWriteTracker,
+    HomeAssistantZendureActuator,
+)
 from custom_components.battery_strategy.const import (
     COMMAND_IDLE,
     COMMAND_INPUT,
     COMMAND_OUTPUT,
     DISCHARGE_LOAD,
 )
-from custom_components.battery_strategy.coordinator import BatteryStrategyCoordinator
 from custom_components.battery_strategy.live_control import (
     DirectionHysteresis,
     P1UpdateGate,
@@ -98,29 +100,12 @@ def test_direction_change_stops_opposite_limit_before_mode_and_target():
         "input_limit": SimpleNamespace(state="400"),
         "output_limit": SimpleNamespace(state="0"),
     }
-    coordinator = object.__new__(BatteryStrategyCoordinator)
-    coordinator.hass = SimpleNamespace(
-        services=Services(), states=SimpleNamespace(get=states.get)
+    hass = SimpleNamespace(services=Services(), states=SimpleNamespace(get=states.get))
+    actuator = HomeAssistantZendureActuator(
+        hass, "ac_mode", "input_limit", "output_limit"
     )
-    coordinator.entry = SimpleNamespace(data={})
-    coordinator._entity_id = lambda key: {
-        "zendure_ac_mode_entity": "ac_mode",
-        "zendure_input_limit_entity": "input_limit",
-        "zendure_output_limit_entity": "output_limit",
-    }[key]
-    coordinator._state_available = lambda entity: entity in states
-    coordinator._raw_state_float = lambda entity: float(states[entity].state)
-    coordinator._grid_inputs_fresh = lambda: True
-    coordinator._soc_control_ready = True
-    coordinator._ev_control_ready = True
-    coordinator._failsafe_zeroed_reason = None
-    coordinator._write_tracker = ActuationWriteTracker()
 
-    asyncio.run(
-        coordinator._async_apply_command(
-            command(COMMAND_OUTPUT, 600), StrategyOptions()
-        )
-    )
+    asyncio.run(actuator.apply(command(COMMAND_OUTPUT, 600), StrategyOptions()))
 
     assert calls == [
         (
@@ -141,6 +126,45 @@ def test_direction_change_stops_opposite_limit_before_mode_and_target():
             {"entity_id": "output_limit", "value": 600},
             True,
         ),
+    ]
+
+
+def test_actuator_failsafe_and_disabled_zero_write_semantics():
+    calls = []
+
+    class Services:
+        @staticmethod
+        async def async_call(domain, service, data, blocking=False):
+            calls.append((domain, service, data, blocking))
+
+    states = {
+        "ac_mode": SimpleNamespace(state="Output mode"),
+        "input_limit": SimpleNamespace(state="0"),
+        "output_limit": SimpleNamespace(state="300"),
+    }
+    actuator = HomeAssistantZendureActuator(
+        SimpleNamespace(services=Services(), states=SimpleNamespace(get=states.get)),
+        "ac_mode",
+        "input_limit",
+        "output_limit",
+    )
+
+    async def scenario():
+        first = await actuator.failsafe_zero_once("grid_inputs_stale")
+        second = await actuator.failsafe_zero_once("grid_inputs_stale")
+        disabled = await actuator.zero(
+            "strategy_disabled", blocking=True, always_write=True
+        )
+        return first, second, disabled
+
+    first, second, disabled = asyncio.run(scenario())
+    assert first["status"] == "failsafe_zeroed"
+    assert second["status"] == "failsafe_no_write"
+    assert disabled["status"] == "disabled_zeroed"
+    assert [call[2] for call in calls] == [
+        {"entity_id": "output_limit", "value": 0},
+        {"entity_id": "input_limit", "value": 0},
+        {"entity_id": "output_limit", "value": 0},
     ]
 
 

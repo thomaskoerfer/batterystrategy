@@ -4,9 +4,6 @@ from __future__ import annotations
 
 import datetime as dt
 
-from custom_components.battery_strategy.compiler_evaluation import (
-    compare_published_directives,
-)
 from custom_components.battery_strategy.const import (
     COMMAND_INPUT,
     COMMAND_OUTPUT,
@@ -29,9 +26,6 @@ from custom_components.battery_strategy.plan_compiler_adapter import (
     published_directive_from_contract,
 )
 from custom_components.battery_strategy.plan_models import PlanPoint, StrategyPlan
-from custom_components.battery_strategy.strategy import (
-    plan_live_directive_from_plan,
-)
 
 
 def _point(
@@ -78,7 +72,7 @@ def _options() -> StrategyOptions:
     )
 
 
-def test_compiler_adapter_matches_existing_grid_charge_directive():
+def test_compiler_adapter_publishes_grid_charge_directive():
     start_ms = int(
         dt.datetime(2026, 9, 2, 12, tzinfo=dt.timezone.utc).timestamp() * 1000
     )
@@ -97,7 +91,6 @@ def test_compiler_adapter_matches_existing_grid_charge_directive():
         reason="test",
     )
     options = _options()
-    authoritative = plan_live_directive_from_plan(plan, options, 50.0)
     contract_plan = contract_plan_from_strategy_plan(plan, options, start_ms)
     compiled, _ = DeterministicPlanCompiler().compile(
         contract_plan,
@@ -107,13 +100,10 @@ def test_compiler_adapter_matches_existing_grid_charge_directive():
     )
     candidate = published_directive_from_contract(compiled, plan, options)
 
-    result = compare_published_directives(
-        authoritative,
-        candidate,
-        discharge_mode=options.discharge,
-        captured_at_ms=start_ms,
-    )
-    assert result["status"] == "match"
+    assert candidate.grid_charge_allowed
+    assert candidate.must_charge_w == 1700
+    assert candidate.must_charge_remaining_kwh == 0.425
+    assert candidate.discharge_budget_kwh == 0.0
 
 
 def test_compiler_adapter_preserves_discharge_progress_and_budget():
@@ -143,29 +133,6 @@ def test_compiler_adapter_preserves_discharge_progress_and_budget():
     candidate = published_directive_from_contract(compiled, plan, options)
     assert candidate.discharge_budget_kwh == 0.4
     assert candidate.must_charge_w == 0
-
-
-def test_shadow_comparison_reports_semantic_mismatch():
-    start_ms = 1_800_000_000_000
-    plan = StrategyPlan(
-        [_point(start_ms)],
-        current_mode="idle",
-        current_power_w=0,
-        reason="test",
-    )
-    options = _options()
-    authoritative = plan_live_directive_from_plan(plan, options, 50.0)
-    candidate = authoritative.__class__(
-        **{**authoritative.__dict__, "grid_charge_allowed": True}
-    )
-    result = compare_published_directives(
-        authoritative,
-        candidate,
-        discharge_mode=options.discharge,
-        captured_at_ms=start_ms,
-    )
-    assert result["status"] == "mismatch"
-    assert result["mismatch_fields"] == ["grid_charge_allowed"]
 
 
 def test_closed_directive_has_no_automatic_permissions():

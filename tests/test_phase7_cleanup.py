@@ -15,6 +15,7 @@ def test_completed_shadow_and_legacy_optimizer_modules_are_absent():
         "forecast_shadow_runner.py",
         "forecast_shadow_store.py",
         "forecasting/shadow.py",
+        "compiler_evaluation.py",
     )
     assert all(not (PACKAGE / name).exists() for name in obsolete)
 
@@ -45,6 +46,28 @@ def test_runtime_facade_delegates_coarse_application_boundaries():
     assert "PlanningService(" in source
     assert "MarketContextService(" in source
     assert "SavingsLedger(" in source
+
+
+def test_coordinator_has_one_authoritative_plan_compiler_path():
+    source = (PACKAGE / "coordinator.py").read_text(encoding="utf-8")
+    forbidden = (
+        "plan_live_directive_from_plan",
+        "_directive_with_progress",
+        "_evaluate_compiler_shadow",
+        "COMPILER_SHADOW_TRACE_FILE",
+    )
+    assert all(token not in source for token in forbidden)
+    assert source.count("DeterministicPlanCompiler()") == 1
+    strategy = (PACKAGE / "strategy.py").read_text(encoding="utf-8")
+    assert "def plan_live_directive_from_plan" not in strategy
+    assert "def live_command_from_plan" not in strategy
+
+
+def test_actuator_is_the_only_hardware_service_writer():
+    coordinator = (PACKAGE / "coordinator.py").read_text(encoding="utf-8")
+    actuator = (PACKAGE / "actuator.py").read_text(encoding="utf-8")
+    assert "services.async_call" not in coordinator
+    assert "services.async_call" in actuator
 
 
 def test_application_boundaries_do_not_cross_layer_ownership():

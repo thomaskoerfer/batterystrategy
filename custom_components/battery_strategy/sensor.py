@@ -268,14 +268,6 @@ SENSORS: tuple[BatteryStrategySensorDescription, ...] = (
         native_unit_of_measurement="kWh",
     ),
     BatteryStrategySensorDescription(
-        key="compiler_shadow",
-        name="Compiler Shadow",
-        value_fn=lambda data: (data.get("compiler_shadow") or {}).get(
-            "status", "pending"
-        ),
-        attr_fn=lambda data: dict(data.get("compiler_shadow") or {}),
-    ),
-    BatteryStrategySensorDescription(
         key="load_forecast_next_1h",
         name="Load Forecast Next 1h",
         value_fn=lambda data: _plan(data).load_forecast_next_1h_kwh,
