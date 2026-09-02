@@ -175,11 +175,13 @@ downstream layer receives a recorder engine or depends on recorder tables.
 ## Current implementation debt
 
 The existing live boundary is partly separated across `coordinator.py`,
-`strategy.py` and `actuator.py`. The active forecast composition, market
-enrichment, savings accounting and orchestration are still combined in
-`optimizer_engine.py`, with normalized runtime data supplied by
+`strategy.py` and `actuator.py`. Forecast composition, market enrichment,
+planning orchestration and measured savings now have separate implementation
+boundaries. `optimizer_engine.py` remains a runtime compatibility facade around
+those components, with normalized runtime data supplied by
 `optimizer_adapter.py`. Hardware service calls also remain coordinator-owned.
-Those are migration sources, not the desired permanent boundaries.
+Those remaining facade and actuation dependencies are migration sources, not
+the desired permanent boundaries.
 
 ## Migration plan and gates
 
@@ -193,9 +195,11 @@ approved contract extensions, documentation and boundary tests. It includes
 the Phase-5 cutover and bounded weather-cache patch, but compiler production
 integration has not started. A stacked Phase-7 preparation removes completed
 forecast/optimizer shadow paths, the old optimizer kernel and direct recorder
-schema access. It is not deployable until the Phase-6 compiler gate has passed;
-coordinator-owned compilation/actuation and the orchestration monolith remain
-explicit blockers to declaring the transformation complete.
+schema access. It also separates market context, one-shot planning orchestration
+and measured savings behind unchanged contracts. It is not deployable until
+the Phase-6 compiler gate has passed; coordinator-owned compilation/actuation
+and the remaining runtime facade are explicit blockers to declaring the
+transformation complete.
 
 ### Phase 0: Baseline and contracts
 

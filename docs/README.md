@@ -8,10 +8,13 @@ describing how coding agents must work in that boundary.
 | --- | --- |
 | Data adapters and feature store | [README](data-feature-store/README.md) |
 | Forecasting | [README](forecasting/README.md) |
+| Market context | [README](market-context/README.md) |
 | Optimization | [README](optimization/README.md) |
+| Planning service | [README](planning-service/README.md) |
 | Plan compiler | [README](plan-compiler/README.md) |
 | Live control | [README](live-control/README.md) |
 | Actuation | [README](actuation/README.md) |
+| Measured savings | [README](savings/README.md) |
 | Evaluation and diagnostics | [README](evaluation/README.md) |
 
 The root [architecture](../ARCHITECTURE.md) defines the data flow. The

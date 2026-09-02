@@ -15,6 +15,10 @@ violate the migration order and remove the proven rollback point.
 - The completed forecast and optimizer shadow runners, stores, diagnostics and
   tests are deleted. Their one-time optimizer trace is removed during upgrade.
 - Commercial horizon metadata is computed without running a second plan.
+- Market context, one-shot planning orchestration and measured savings are
+  extracted into three cohesive components rather than speculative
+  micro-services. `optimizer_engine.py` delegates through compatibility
+  facades while existing callers migrate.
 - Direct SQLAlchemy and Recorder-table access is deleted. Bounded numeric
   history is captured through Home Assistant's public history API by the data
   adapter, while calibration bootstrap uses canonical finalized feature slots.
@@ -52,10 +56,10 @@ remain before Phase 7 can be called complete:
    `coordinator.py` still translate plan fields and latch slot progress.
 2. Home Assistant service writes remain in `coordinator.py`; `actuator.py`
    currently computes targets and write decisions but is not the sole writer.
-3. `optimizer_engine.py` still combines market enrichment, forecast
-   composition, savings accounting, publication and mutable runtime
-   orchestration. Its pure economic calculation is separated, but the
-   orchestration module is too broad to be the permanent application layer.
+3. `optimizer_engine.py` still combines forecast composition, output assembly
+   and mutable runtime orchestration. Market enrichment, planning/publication
+   and savings accounting are now delegated to dedicated coarse components,
+   but the compatibility facade is not the permanent application entry point.
 
 These are structural findings, not reasons to change working live control in
 this cleanup branch. Phase-6 parity must be observed first; actuation relocation

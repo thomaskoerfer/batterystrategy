@@ -9,9 +9,15 @@ documented impact analysis and explicit owner approval.
 - Data and feature store: `feature_store.py`, `weather.py`,
   `load_components.py`, `component_config.py` and configuration adapters.
 - Forecasting: the `forecasting` package and forecast composition runners.
-- Optimization: `economic_optimizer.py` and `optimization_problem.py`;
-  orchestration and publication code remaining in `optimizer_engine.py`,
-  `optimizer_adapter.py` and `planner.py` is transitional.
+- Market context: `market_context.py`; provider enrichment and commercial
+  price context must not enter forecasting or the pure optimizer.
+- Optimization: `economic_optimizer.py` and `optimization_problem.py`.
+- Planning application: `planning_service.py`; invoke the optimizer once and
+  publish its plan without constructing forecasts.
+- Measured savings: `savings.py`; actual accounting is observational and must
+  not influence planning or live control.
+- Runtime compatibility facade: `optimizer_engine.py`; do not add new market,
+  planning or savings logic to it.
 - Plan compiler: `plan_compiler.py`; compiler orchestration still present in
   coordinator/strategy code is transitional.
 - Live control: `live_control.py`, `strategy.py` and live orchestration in

@@ -24,6 +24,10 @@ All notable changes to Battery Strategy are documented here.
   calibration bootstrap independently of the Recorder backend.
 - Added regression guards that prevent a second optimizer path, dormant shadow
   runtime or direct SQL dependency from returning.
+- Split the commercial runtime into cohesive market-context, planning-service
+  and measured-savings components without changing approved contracts.
+- Kept missing-price savings events pending instead of advancing their energy
+  counter baseline without a usable tariff.
 
 ### Safety
 
