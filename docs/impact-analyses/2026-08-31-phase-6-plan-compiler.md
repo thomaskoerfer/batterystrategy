@@ -38,18 +38,20 @@ charge source or modifies the optimizer's future SoC trajectory.
 
 ## Preparation and production cutover
 
-The first change introduces a side-effect-free compiler and executable boundary
-tests only. After Phase 5 is authoritative and stable, a separate cutover change
-will:
+The first change introduced a side-effect-free compiler and executable boundary
+tests. The prepared shadow release now:
 
 1. capture the same immutable `BatteryPlan` and slot-progress snapshot for the
    old and new compiler;
 2. compare directives outside Home Assistant Recorder;
 3. prove parity for required charge, source permissions, discharge budget, SoC
    limits and slot validity;
-4. make the pure compiler authoritative only after explicit owner approval;
-5. remove coordinator-owned commercial reinterpretation after the observation
-   gate, retaining only measured progress acquisition.
+4. keeps the established directive solely authoritative;
+5. writes a bounded comparison trace and exposes a diagnostic status sensor.
+
+The separately prepared cutover commit makes the pure compiler authoritative
+only after explicit owner approval and the observation gate. It retains the old
+translation for one comparison window; Phase 7 removes that transitional path.
 
 ## Gate and rollback
 
@@ -113,5 +115,6 @@ migration remains subject to the Phase-5 and Phase-6 gates.
 - Proposed and locally prepared: 2026-08-31
 - Contract approval: approved by owner on 2026-08-31
 - Contract implementation: prepared locally
-- Production integration: not started
-- Deployment: blocked by Phase-5 stabilization and Phase-6 shadow parity
+- Production shadow integration: implemented locally
+- Authoritative cutover: prepared separately, not deployed
+- Deployment: ready for the 12-24 hour Phase-6 shadow gate

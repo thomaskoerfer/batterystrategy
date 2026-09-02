@@ -7,12 +7,14 @@ import datetime as dt
 from typing import Callable
 
 from homeassistant.components.sensor import SensorEntity, SensorEntityDescription
+
 try:
     from homeassistant.components.sensor import SensorStateClass
 except ImportError:  # pragma: no cover - compatibility with older HA versions.
     SensorStateClass = None
 from homeassistant.const import UnitOfPower
 from homeassistant.util import dt as dt_util
+
 try:
     from homeassistant.const import PERCENTAGE
 except ImportError:  # pragma: no cover - compatibility with older HA versions.
@@ -21,7 +23,9 @@ except ImportError:  # pragma: no cover - compatibility with older HA versions.
 from .const import DOMAIN
 from .entity import BatteryStrategyEntity
 
-STATE_CLASS_MEASUREMENT = SensorStateClass.MEASUREMENT if SensorStateClass is not None else "measurement"
+STATE_CLASS_MEASUREMENT = (
+    SensorStateClass.MEASUREMENT if SensorStateClass is not None else "measurement"
+)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -62,6 +66,7 @@ def _optimizer_discharge_budget_kwh(data) -> float:
         return 0.0
     return round(max(0.0, float(getattr(points[0], "discharge_budget_kwh", 0.0))), 3)
 
+
 def _raw_float(data, key: str, default: float = 0.0) -> float:
     try:
         return float((data.get("optimizer_attrs") or {}).get(key, default))
@@ -70,21 +75,29 @@ def _raw_float(data, key: str, default: float = 0.0) -> float:
 
 
 def _actual_charge_total_kwh(data) -> float:
-    return round(_raw_float(data, "actual_battery_charge_grid_today_kwh") + _raw_float(data, "actual_battery_charge_pv_today_kwh"), 3)
+    return round(
+        _raw_float(data, "actual_battery_charge_grid_today_kwh")
+        + _raw_float(data, "actual_battery_charge_pv_today_kwh"),
+        3,
+    )
 
 
 def _actual_avg_charge_price_ct(data) -> float:
     kwh = _actual_charge_total_kwh(data)
     if kwh <= 0.01:
         return 0.0
-    return round((_raw_float(data, "actual_battery_charge_cost_today_eur") / kwh) * 100.0, 1)
+    return round(
+        (_raw_float(data, "actual_battery_charge_cost_today_eur") / kwh) * 100.0, 1
+    )
 
 
 def _actual_avg_discharge_price_ct(data) -> float:
     kwh = _raw_float(data, "actual_battery_discharge_credited_today_kwh")
     if kwh <= 0.01:
         return 0.0
-    return round((_raw_float(data, "actual_battery_discharge_credit_today_eur") / kwh) * 100.0, 1)
+    return round(
+        (_raw_float(data, "actual_battery_discharge_credit_today_eur") / kwh) * 100.0, 1
+    )
 
 
 def _today(data):
@@ -96,15 +109,21 @@ def _tomorrow(data):
 
 
 SENSORS: tuple[BatteryStrategySensorDescription, ...] = (
-    BatteryStrategySensorDescription(key="mode", name="Mode", value_fn=lambda data: _command(data).mode),
+    BatteryStrategySensorDescription(
+        key="mode", name="Mode", value_fn=lambda data: _command(data).mode
+    ),
     BatteryStrategySensorDescription(
         key="command_power",
         name="Command Power",
         value_fn=lambda data: _command(data).power_w,
         native_unit_of_measurement=UnitOfPower.WATT,
     ),
-    BatteryStrategySensorDescription(key="command_source", name="Command Source", value_fn=_command_source),
-    BatteryStrategySensorDescription(key="reason", name="Reason", value_fn=lambda data: _command(data).reason),
+    BatteryStrategySensorDescription(
+        key="command_source", name="Command Source", value_fn=_command_source
+    ),
+    BatteryStrategySensorDescription(
+        key="reason", name="Reason", value_fn=lambda data: _command(data).reason
+    ),
     BatteryStrategySensorDescription(
         key="residual_with_ev",
         name="Residual With EV",
@@ -189,13 +208,17 @@ SENSORS: tuple[BatteryStrategySensorDescription, ...] = (
     BatteryStrategySensorDescription(
         key="planned_charge_power",
         name="Planned Charge Power",
-        value_fn=lambda data: _plan(data).current_power_w if _plan(data).current_mode == "input" else 0,
+        value_fn=lambda data: _plan(data).current_power_w
+        if _plan(data).current_mode == "input"
+        else 0,
         native_unit_of_measurement=UnitOfPower.WATT,
     ),
     BatteryStrategySensorDescription(
         key="planned_discharge_power",
         name="Planned Discharge Power",
-        value_fn=lambda data: _plan(data).current_power_w if _plan(data).current_mode == "output" else 0,
+        value_fn=lambda data: _plan(data).current_power_w
+        if _plan(data).current_mode == "output"
+        else 0,
         native_unit_of_measurement=UnitOfPower.WATT,
     ),
     BatteryStrategySensorDescription(
@@ -228,7 +251,9 @@ SENSORS: tuple[BatteryStrategySensorDescription, ...] = (
     BatteryStrategySensorDescription(
         key="plan_live_grid_charge_allowed",
         name="Grid Charge Allowed",
-        value_fn=lambda data: "on" if _plan_to_live(data).grid_charge_allowed else "off",
+        value_fn=lambda data: "on"
+        if _plan_to_live(data).grid_charge_allowed
+        else "off",
     ),
     BatteryStrategySensorDescription(
         key="plan_live_discharge_budget",
@@ -241,6 +266,14 @@ SENSORS: tuple[BatteryStrategySensorDescription, ...] = (
         name="Optimizer Discharge Budget",
         value_fn=_optimizer_discharge_budget_kwh,
         native_unit_of_measurement="kWh",
+    ),
+    BatteryStrategySensorDescription(
+        key="compiler_shadow",
+        name="Compiler Shadow",
+        value_fn=lambda data: (data.get("compiler_shadow") or {}).get(
+            "status", "pending"
+        ),
+        attr_fn=lambda data: dict(data.get("compiler_shadow") or {}),
     ),
     BatteryStrategySensorDescription(
         key="load_forecast_next_1h",
@@ -281,37 +314,61 @@ SENSORS: tuple[BatteryStrategySensorDescription, ...] = (
     BatteryStrategySensorDescription(
         key="baseline_cost_today",
         name="Baseline Cost Today",
-        value_fn=lambda data: (_plan(data).daily_costs.get(_today(data)).base_eur if _today(data) in _plan(data).daily_costs else 0),
+        value_fn=lambda data: (
+            _plan(data).daily_costs.get(_today(data)).base_eur
+            if _today(data) in _plan(data).daily_costs
+            else 0
+        ),
         native_unit_of_measurement="EUR",
     ),
     BatteryStrategySensorDescription(
         key="optimized_cost_today",
         name="Optimized Cost Today",
-        value_fn=lambda data: (_plan(data).daily_costs.get(_today(data)).with_bat_eur if _today(data) in _plan(data).daily_costs else 0),
+        value_fn=lambda data: (
+            _plan(data).daily_costs.get(_today(data)).with_bat_eur
+            if _today(data) in _plan(data).daily_costs
+            else 0
+        ),
         native_unit_of_measurement="EUR",
     ),
     BatteryStrategySensorDescription(
         key="estimated_savings_today",
         name="Estimated Savings Today",
-        value_fn=lambda data: (_plan(data).daily_costs.get(_today(data)).saving_eur if _today(data) in _plan(data).daily_costs else 0),
+        value_fn=lambda data: (
+            _plan(data).daily_costs.get(_today(data)).saving_eur
+            if _today(data) in _plan(data).daily_costs
+            else 0
+        ),
         native_unit_of_measurement="EUR",
     ),
     BatteryStrategySensorDescription(
         key="baseline_cost_tomorrow",
         name="Baseline Cost Tomorrow",
-        value_fn=lambda data: (_plan(data).daily_costs.get(_tomorrow(data)).base_eur if _tomorrow(data) in _plan(data).daily_costs else 0),
+        value_fn=lambda data: (
+            _plan(data).daily_costs.get(_tomorrow(data)).base_eur
+            if _tomorrow(data) in _plan(data).daily_costs
+            else 0
+        ),
         native_unit_of_measurement="EUR",
     ),
     BatteryStrategySensorDescription(
         key="optimized_cost_tomorrow",
         name="Optimized Cost Tomorrow",
-        value_fn=lambda data: (_plan(data).daily_costs.get(_tomorrow(data)).with_bat_eur if _tomorrow(data) in _plan(data).daily_costs else 0),
+        value_fn=lambda data: (
+            _plan(data).daily_costs.get(_tomorrow(data)).with_bat_eur
+            if _tomorrow(data) in _plan(data).daily_costs
+            else 0
+        ),
         native_unit_of_measurement="EUR",
     ),
     BatteryStrategySensorDescription(
         key="estimated_savings_tomorrow",
         name="Estimated Savings Tomorrow",
-        value_fn=lambda data: (_plan(data).daily_costs.get(_tomorrow(data)).saving_eur if _tomorrow(data) in _plan(data).daily_costs else 0),
+        value_fn=lambda data: (
+            _plan(data).daily_costs.get(_tomorrow(data)).saving_eur
+            if _tomorrow(data) in _plan(data).daily_costs
+            else 0
+        ),
         native_unit_of_measurement="EUR",
     ),
     BatteryStrategySensorDescription(
@@ -324,7 +381,14 @@ SENSORS: tuple[BatteryStrategySensorDescription, ...] = (
     BatteryStrategySensorDescription(
         key="actual_savings_cumulative",
         name="Actual Savings Cumulative",
-        value_fn=lambda data: round(_raw_float(data, "actual_savings_cumulative_eur", _raw_float(data, "actual_savings_lifetime_eur")), 3),
+        value_fn=lambda data: round(
+            _raw_float(
+                data,
+                "actual_savings_cumulative_eur",
+                _raw_float(data, "actual_savings_lifetime_eur"),
+            ),
+            3,
+        ),
         native_unit_of_measurement="EUR",
         state_class=STATE_CLASS_MEASUREMENT,
     ),
@@ -338,14 +402,18 @@ SENSORS: tuple[BatteryStrategySensorDescription, ...] = (
     BatteryStrategySensorDescription(
         key="actual_charge_grid_today",
         name="Actual Charge Grid Today",
-        value_fn=lambda data: round(_raw_float(data, "actual_battery_charge_grid_today_kwh"), 3),
+        value_fn=lambda data: round(
+            _raw_float(data, "actual_battery_charge_grid_today_kwh"), 3
+        ),
         native_unit_of_measurement="kWh",
         state_class=STATE_CLASS_MEASUREMENT,
     ),
     BatteryStrategySensorDescription(
         key="actual_charge_pv_today",
         name="Actual Charge PV Today",
-        value_fn=lambda data: round(_raw_float(data, "actual_battery_charge_pv_today_kwh"), 3),
+        value_fn=lambda data: round(
+            _raw_float(data, "actual_battery_charge_pv_today_kwh"), 3
+        ),
         native_unit_of_measurement="kWh",
         state_class=STATE_CLASS_MEASUREMENT,
     ),
@@ -358,7 +426,9 @@ SENSORS: tuple[BatteryStrategySensorDescription, ...] = (
     BatteryStrategySensorDescription(
         key="actual_discharge_credited_today",
         name="Actual Discharge Credited Today",
-        value_fn=lambda data: round(_raw_float(data, "actual_battery_discharge_credited_today_kwh"), 3),
+        value_fn=lambda data: round(
+            _raw_float(data, "actual_battery_discharge_credited_today_kwh"), 3
+        ),
         native_unit_of_measurement="kWh",
         state_class=STATE_CLASS_MEASUREMENT,
     ),
@@ -371,13 +441,17 @@ SENSORS: tuple[BatteryStrategySensorDescription, ...] = (
     BatteryStrategySensorDescription(
         key="profile_today",
         name="Profile Today",
-        value_fn=lambda data: len([p for p in _plan(data).points if p.date == _today(data)]),
+        value_fn=lambda data: len(
+            [p for p in _plan(data).points if p.date == _today(data)]
+        ),
         attr_fn=lambda data: _profile_attrs(data, _today(data)),
     ),
     BatteryStrategySensorDescription(
         key="profile_tomorrow",
         name="Profile Tomorrow",
-        value_fn=lambda data: len([p for p in _plan(data).points if p.date == _tomorrow(data)]),
+        value_fn=lambda data: len(
+            [p for p in _plan(data).points if p.date == _tomorrow(data)]
+        ),
         attr_fn=lambda data: _profile_attrs(data, _tomorrow(data)),
     ),
     BatteryStrategySensorDescription(
@@ -411,9 +485,7 @@ def _plan_slot_attrs(data):
             if point.grid_charge_fc_w is None
             else max(0.0, float(point.grid_charge_fc_w))
         )
-        required_charge_w = (
-            charge_w if grid_charge_w > 0.0 else 0.0
-        )
+        required_charge_w = charge_w if grid_charge_w > 0.0 else 0.0
         if point.required_charge_fc_w is not None:
             required_charge_w = max(0.0, float(point.required_charge_fc_w))
         rows.append(
@@ -502,7 +574,10 @@ def _raw_profile_attrs(raw: dict, date):
         }
     else:
         key_map = {"price": "price", "soc": "soc"}
-    attrs = {name: _profile(raw.get(f"{prefix}_{raw_key}")) for name, raw_key in key_map.items()}
+    attrs = {
+        name: _profile(raw.get(f"{prefix}_{raw_key}"))
+        for name, raw_key in key_map.items()
+    }
     if any(attrs.values()):
         return attrs
     return None
@@ -531,8 +606,7 @@ async def async_setup_entry(hass, entry, async_add_entities) -> None:
     """Set up Battery Strategy sensors."""
     coordinator = hass.data[DOMAIN][entry.entry_id]
     async_add_entities(
-        BatteryStrategySensor(coordinator, description)
-        for description in SENSORS
+        BatteryStrategySensor(coordinator, description) for description in SENSORS
     )
 
 

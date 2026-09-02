@@ -16,6 +16,7 @@ from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from .actuator import ActuationWriteTracker, zendure_targets
+from .compiler_evaluation import append_bounded_record, compare_published_directives
 from .const import (
     BATTERY_PROFILE_ZENDURE,
     COMMAND_IDLE,
@@ -53,7 +54,13 @@ from .const import (
     MANUAL_OFF,
     PV_CHARGING_ON,
 )
-from .contracts import ForecastRequest, QualityFlag, SlotKey
+from .contracts import (
+    ForecastRequest,
+    PlanCompilationState,
+    QualityFlag,
+    SlotKey,
+    SlotProgress,
+)
 from .contracts.common import SLOT_MS
 from .feature_store import (
     CompressedFeatureStore,
@@ -70,6 +77,11 @@ from .load_components import (
 from .models import StrategyCommand, StrategyInputs, StrategyOptions
 from .optimizer_adapter import OptimizerEngineAdapter
 from .optimizer_state import last_known_soc_pct
+from .plan_compiler import DeterministicPlanCompiler
+from .plan_compiler_adapter import (
+    contract_plan_from_strategy_plan,
+    published_directive_from_contract,
+)
 from .plan_models import PlanLiveDirective
 from .planner import BackgroundPlanner
 from .strategy import (
@@ -87,6 +99,7 @@ EV_POWER_BRIDGE_MAX_AGE_S = 180
 OPTIMIZER_STATE_FILE = "battery_strategy_optimizer_state.json"
 FEATURE_STORE_FILE = "battery_strategy_features.json.gz"
 COMMAND_TRACE_FILE = "battery_strategy_command_trace.jsonl"
+COMPILER_SHADOW_TRACE_FILE = "battery_strategy_compiler_shadow.jsonl"
 COMMAND_TRACE_MAX_BYTES = 64 * 1024 * 1024
 COMMAND_TRACE_RETAIN_LINES = 50000
 GRID_INPUT_MAX_AGE_S = 30
@@ -134,6 +147,13 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         self._slot_discharged_kwh = 0.0
         self._active_discharge_budget_base_kwh = 0.0
         self._active_discharge_mode: str | None = None
+        self._compiler_shadow = DeterministicPlanCompiler()
+        self._compiler_shadow_state = PlanCompilationState()
+        self._compiler_shadow_samples = 0
+        self._compiler_shadow_matches = 0
+        self._compiler_shadow_mismatches = 0
+        self._compiler_shadow_last_record_signature: tuple | None = None
+        self._compiler_shadow_last_record_ms = 0
         self._last_live_accounting_ts: dt.datetime | None = None
         self._last_actual_battery_power_w: float | None = None
         self._last_known_soc_pct = last_known_soc_pct
@@ -317,6 +337,81 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             ),
         )
 
+    def _evaluate_compiler_shadow(
+        self,
+        plan,
+        options: StrategyOptions,
+        inputs: StrategyInputs,
+        authoritative: PlanLiveDirective,
+        now_ms: int,
+    ) -> tuple[dict, dict | None]:
+        """Compile the current slot without influencing live control."""
+        if not plan.points:
+            return {
+                "status": "no_plan",
+                "samples": self._compiler_shadow_samples,
+                "matches": self._compiler_shadow_matches,
+                "mismatches": self._compiler_shadow_mismatches,
+            }, None
+        try:
+            contract_plan = contract_plan_from_strategy_plan(plan, options, now_ms)
+            current_slot = contract_plan.slots[0].slot
+            candidate, next_state = self._compiler_shadow.compile(
+                contract_plan,
+                SlotProgress(
+                    slot=current_slot,
+                    charged_kwh=max(0.0, self._slot_charged_kwh),
+                    discharged_kwh=max(0.0, self._slot_discharged_kwh),
+                    soc_pct=float(inputs.soc_pct),
+                ),
+                self._compiler_shadow_state,
+                issued_at_ms=now_ms,
+            )
+            self._compiler_shadow_state = next_state
+            published_candidate = published_directive_from_contract(
+                candidate, plan, options
+            )
+            result = compare_published_directives(
+                authoritative,
+                published_candidate,
+                discharge_mode=options.discharge,
+                captured_at_ms=now_ms,
+            )
+        except Exception as err:  # noqa: BLE001 - shadow cannot affect control.
+            result = {
+                "captured_at_ms": now_ms,
+                "slot_start_ms": int(authoritative.slot_start_ts),
+                "status": "error",
+                "mismatch_fields": [],
+                "error": f"{type(err).__name__}: {err}",
+            }
+        self._compiler_shadow_samples += 1
+        if result["status"] == "match":
+            self._compiler_shadow_matches += 1
+        else:
+            self._compiler_shadow_mismatches += 1
+        summary = {
+            **result,
+            "samples": self._compiler_shadow_samples,
+            "matches": self._compiler_shadow_matches,
+            "mismatches": self._compiler_shadow_mismatches,
+        }
+        signature = (
+            summary["status"],
+            tuple(summary.get("mismatch_fields") or ()),
+            summary.get("slot_start_ms"),
+        )
+        should_record = (
+            signature != self._compiler_shadow_last_record_signature
+            or now_ms - self._compiler_shadow_last_record_ms >= 60_000
+            or summary["status"] != "match"
+        )
+        if should_record:
+            self._compiler_shadow_last_record_signature = signature
+            self._compiler_shadow_last_record_ms = now_ms
+            return summary, summary
+        return summary, None
+
     async def _async_update_data(self):
         """Fetch current states and calculate command."""
         if (
@@ -384,6 +479,13 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             discharge_mode=options.discharge,
             allow_discharge_budget_increase=options.discharge == DISCHARGE_LOAD,
         )
+        compiler_shadow, compiler_shadow_record = self._evaluate_compiler_shadow(
+            plan,
+            options,
+            inputs,
+            directive,
+            int(now.timestamp() * 1000),
+        )
         command = live_command_from_directive(
             directive, simple_command, inputs, options
         )
@@ -408,6 +510,7 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             "plan": plan,
             "optimizer_attrs": self._optimizer_attrs,
             "plan_to_live": directive,
+            "compiler_shadow": compiler_shadow,
             "send_commands": strategy_enabled,
             "strategy_enabled": strategy_enabled,
             "actuation": self.last_actuation,
@@ -437,6 +540,13 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             data["actuation"] = self.last_actuation
         if bool(self.entry.options.get("trace_enabled", False)):
             await self.hass.async_add_executor_job(self._append_command_trace, data)
+        if compiler_shadow_record is not None:
+            shadow_path = Path(self.hass.config.path(COMPILER_SHADOW_TRACE_FILE))
+            await self.hass.async_add_executor_job(
+                append_bounded_record,
+                shadow_path,
+                compiler_shadow_record,
+            )
         if finalized_features:
             try:
                 await self._feature_store.upsert(finalized_features)
@@ -967,29 +1077,23 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         # Zendure sends one full direction command. With HA entities we cannot
         # write atomically, so make the equivalent sequence explicit: stop the
         # opposite direction, switch mode, then publish the new target.
-        if (
-            command.mode == COMMAND_OUTPUT
-            and write_tracker.should_write_limit(
-                input_limit_entity,
-                current_input,
-                0,
-                now_s,
-                options,
-                force_zero=True,
-            )
+        if command.mode == COMMAND_OUTPUT and write_tracker.should_write_limit(
+            input_limit_entity,
+            current_input,
+            0,
+            now_s,
+            options,
+            force_zero=True,
         ):
             await write_limit(input_limit_entity, 0, "input_limit")
             current_input = 0
-        elif (
-            command.mode == COMMAND_INPUT
-            and write_tracker.should_write_limit(
-                output_limit_entity,
-                current_output,
-                0,
-                now_s,
-                options,
-                force_zero=True,
-            )
+        elif command.mode == COMMAND_INPUT and write_tracker.should_write_limit(
+            output_limit_entity,
+            current_output,
+            0,
+            now_s,
+            options,
+            force_zero=True,
         ):
             await write_limit(output_limit_entity, 0, "output_limit")
             current_output = 0
@@ -1017,9 +1121,7 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             options,
             force_zero=True,
         ):
-            await write_limit(
-                input_limit_entity, targets.input_limit_w, "input_limit"
-            )
+            await write_limit(input_limit_entity, targets.input_limit_w, "input_limit")
 
         if write_tracker.should_write_limit(
             output_limit_entity,

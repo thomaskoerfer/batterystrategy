@@ -4,6 +4,19 @@ All notable changes to Battery Strategy are documented here.
 
 ## Unreleased
 
+### Added
+
+- Wired the deterministic Phase-6 plan compiler into a non-authoritative live
+  shadow using the same published plan, measured slot progress and SoC as the
+  established directive path.
+- Added bounded compiler-parity diagnostics and a dedicated Home Assistant
+  status sensor without exposing the shadow to live control or actuation.
+
+### Safety
+
+- The established directive remains solely authoritative in the shadow
+  release. Compiler errors and trace failures cannot alter battery commands.
+
 ## [0.2.0-rc.4] - 2026-09-01
 
 ### Fixed
