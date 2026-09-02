@@ -74,12 +74,16 @@ async def async_setup_entry(hass, entry) -> bool:
 
 def _migrate_runtime_files(config_dir: str) -> None:
     """Preserve learned state and traces from pre-release filenames."""
-    current = Path(config_dir) / OPTIMIZER_STATE_FILE
-    legacy = Path(config_dir) / "battery_strategy_hacs_optimizer_state.json"
+    root = Path(config_dir)
+    # Completed parity windows are not runtime dependencies. Remove their
+    # bounded traces during upgrade instead of retaining permanent dead state.
+    (root / "battery_strategy_optimizer_shadow.jsonl").unlink(missing_ok=True)
+    current = root / OPTIMIZER_STATE_FILE
+    legacy = root / "battery_strategy_hacs_optimizer_state.json"
     if not current.exists() and legacy.exists():
         current.write_bytes(legacy.read_bytes())
 
-    trace = Path(config_dir) / COMMAND_TRACE_FILE
+    trace = root / COMMAND_TRACE_FILE
     if trace.exists():
         return
     for legacy_name in (

@@ -127,12 +127,12 @@ class ForecastProductionTests(unittest.TestCase):
 
     def test_optimizer_requires_explicit_forecast_bundle(self):
         with self.assertRaisesRegex(TypeError, "forecast_bundle"):
-            optimizer_engine.build_virtual_plan(
+            optimizer_engine.build_authoritative_plan(
                 self.intervals, [], 3.0
             )
 
     def test_optimizer_does_not_construct_forecasts(self):
-        source = inspect.getsource(optimizer_engine.build_virtual_plan)
+        source = inspect.getsource(optimizer_engine.build_authoritative_plan)
         self.assertNotIn("build_production_forecast", source)
         self.assertNotIn("build_feature_store_forecast", source)
 

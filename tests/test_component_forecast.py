@@ -18,8 +18,8 @@ from custom_components.battery_strategy.contracts import (
 from custom_components.battery_strategy.forecasting.components import (
     build_component_load_forecast,
 )
-from custom_components.battery_strategy.forecasting.history import LegacyForecastTarget
-from custom_components.battery_strategy.forecasting.load import LegacyLoadForecastConfig
+from custom_components.battery_strategy.forecasting.history import ForecastTargetInput
+from custom_components.battery_strategy.forecasting.load import LoadForecastModelConfig
 
 SLOT_MS = 900_000
 
@@ -54,11 +54,11 @@ class ComponentForecastTests(unittest.TestCase):
         forecast = build_component_load_forecast(
             request,
             history,
-            (LegacyForecastTarget(local, 1.0),),
+            (ForecastTargetInput(local, 1.0),),
             LoadForecastContext(800.0),
             (),
             (LoadComponentSpec("air_conditioning", LOAD_PROFILE_AIR_CONDITIONING),),
-            LegacyLoadForecastConfig("Europe/Berlin", 1.0, (1.0,) * 96),
+            LoadForecastModelConfig("Europe/Berlin", 1.0, (1.0,) * 96),
         )
         self.assertEqual(
             [item.component_key for item in forecast.components],
@@ -80,11 +80,11 @@ class ComponentForecastTests(unittest.TestCase):
         forecast = build_component_load_forecast(
             request,
             history,
-            (LegacyForecastTarget(local, 1.0),),
+            (ForecastTargetInput(local, 1.0),),
             LoadForecastContext(800.0),
             (),
             (LoadComponentSpec("air_conditioning", LOAD_PROFILE_AIR_CONDITIONING),),
-            LegacyLoadForecastConfig("Europe/Berlin", 1.0, (1.0,) * 96),
+            LoadForecastModelConfig("Europe/Berlin", 1.0, (1.0,) * 96),
         )
         component = next(
             item

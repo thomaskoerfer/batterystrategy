@@ -1,18 +1,18 @@
-"""Compatibility facade composing independently owned load and PV forecasts."""
+"""Configuration facade composing independently owned load and PV forecasts."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
 from ..contracts import ForecastBundle, ForecastRequest, LoadForecastContext
-from .history import LegacyForecastSample, LegacyForecastTarget
-from .load import LegacyLoadForecastConfig, build_legacy_load_forecast
-from .pv import LegacyPvForecastConfig, build_legacy_pv_forecast
+from .history import ForecastHistorySample, ForecastTargetInput
+from .load import LoadForecastModelConfig, build_load_forecast
+from .pv import PvForecastModelConfig, build_pv_forecast
 
 
 @dataclass(frozen=True, slots=True)
-class LegacyForecastConfig:
-    """Transitional aggregate config kept for production-call compatibility."""
+class ForecastModelConfig:
+    """Shared immutable configuration split into load- and PV-owned subsets."""
 
     timezone: str
     load_bias: float
@@ -26,15 +26,15 @@ class LegacyForecastConfig:
     pv_capacity_kwp: float
     pv_inverter_kw: float
 
-    def load_config(self) -> LegacyLoadForecastConfig:
+    def load_config(self) -> LoadForecastModelConfig:
         """Return only state owned by the load model."""
-        return LegacyLoadForecastConfig(
+        return LoadForecastModelConfig(
             self.timezone, self.load_bias, self.load_slot_biases
         )
 
-    def pv_config(self) -> LegacyPvForecastConfig:
+    def pv_config(self) -> PvForecastModelConfig:
         """Return only state owned by the PV model."""
-        return LegacyPvForecastConfig(
+        return PvForecastModelConfig(
             self.timezone,
             self.pv_global_bias,
             self.pv_slot_biases,
@@ -47,17 +47,17 @@ class LegacyForecastConfig:
         )
 
 
-def build_legacy_forecast(
+def build_forecast_bundle(
     request: ForecastRequest,
-    samples: tuple[LegacyForecastSample, ...],
-    targets: tuple[LegacyForecastTarget, ...],
+    samples: tuple[ForecastHistorySample, ...],
+    targets: tuple[ForecastTargetInput, ...],
     load_context: LoadForecastContext,
-    config: LegacyForecastConfig,
+    config: ForecastModelConfig,
 ) -> ForecastBundle:
     """Compose independent load and PV results for the optimizer boundary."""
     return ForecastBundle(
-        load=build_legacy_load_forecast(
+        load=build_load_forecast(
             request, samples, targets, load_context, config.load_config()
         ),
-        pv=build_legacy_pv_forecast(request, samples, targets, config.pv_config()),
+        pv=build_pv_forecast(request, samples, targets, config.pv_config()),
     )

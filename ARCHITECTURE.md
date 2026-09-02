@@ -168,16 +168,18 @@ and strategy value can be backtested without reconstructing what the system
 would have known at the time.
 
 The Home Assistant recorder backend may be MariaDB, PostgreSQL or SQLite. Its
-choice must not affect forecasting or optimization semantics. Direct recorder
-schema queries are transitional and must not spread beyond the history adapter.
+choice must not affect forecasting or optimization semantics. Bounded history
+is read through Home Assistant's public history API in the data adapter; no
+downstream layer receives a recorder engine or depends on recorder tables.
 
 ## Current implementation debt
 
 The existing live boundary is partly separated across `coordinator.py`,
-`strategy.py` and `actuator.py`. The active forecast, recorder access, weather,
-market enrichment, savings and optimization are still combined in
-`optimizer_engine.py`, with runtime data supplied by `optimizer_adapter.py`.
-That module is a migration source, not the desired permanent boundary.
+`strategy.py` and `actuator.py`. The active forecast composition, market
+enrichment, savings accounting and orchestration are still combined in
+`optimizer_engine.py`, with normalized runtime data supplied by
+`optimizer_adapter.py`. Hardware service calls also remain coordinator-owned.
+Those are migration sources, not the desired permanent boundaries.
 
 ## Migration plan and gates
 
@@ -189,7 +191,11 @@ kernel is non-authoritative during the short rollback window.
 Phase 6 has a non-production preparation branch containing the pure compiler,
 approved contract extensions, documentation and boundary tests. It includes
 the Phase-5 cutover and bounded weather-cache patch, but compiler production
-integration has not started.
+integration has not started. A stacked Phase-7 preparation removes completed
+forecast/optimizer shadow paths, the old optimizer kernel and direct recorder
+schema access. It is not deployable until the Phase-6 compiler gate has passed;
+coordinator-owned compilation/actuation and the orchestration monolith remain
+explicit blockers to declaring the transformation complete.
 
 ### Phase 0: Baseline and contracts
 
@@ -308,6 +314,10 @@ Gate: plan/directive/live contract tests and several days of command-trace revie
 - Update diagnostics, documentation, release notes and migration tests.
 
 Gate: HACS, Hassfest, unit tests, historical backtests and live health checks pass.
+
+Phase 7 is the final transformation phase, but not the end of normal product
+development. Completion means every target boundary is authoritative and the
+superseded path is gone; a local cleanup branch alone does not satisfy the gate.
 
 ## Refactoring rule
 

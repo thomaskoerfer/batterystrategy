@@ -32,6 +32,7 @@ from .contracts import (
     LoadForecastContext,
     WeatherSlot,
 )
+from .history_adapter import read_recorder_series
 from .models import StrategyInputs, StrategyOptions
 from .plan_models import DailyCost, PlanPoint, StrategyPlan
 
@@ -118,6 +119,19 @@ class OptimizerEngineAdapter:
         # never mutate the module-global optimizer context or state file together.
         with _ENGINE_RUN_LOCK:
             if runtime_context:
+                runtime_context = dict(runtime_context)
+                if self._hass is not None:
+                    try:
+                        runtime_context["history_series"] = read_recorder_series(
+                            self._hass,
+                            runtime_context.get("entity_map") or {},
+                            runtime_context.get("entity_scale") or {},
+                            start_time=dt.datetime.now(dt.timezone.utc)
+                            - dt.timedelta(hours=49),
+                        )
+                    except Exception as err:  # Recorder failure must not stop control.
+                        LOGGER.warning("Recorder history snapshot failed: %s", err)
+                        runtime_context["history_series"] = {}
                 engine.configure_runtime(runtime_context)
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
@@ -139,13 +153,6 @@ class OptimizerEngineAdapter:
         price_intervals = (
             list(price_state.attributes.get("data") or []) if price_state else []
         )
-        db_engine = None
-        try:
-            from homeassistant.components.recorder import get_instance
-
-            db_engine = get_instance(self._hass).engine
-        except (ImportError, RuntimeError, AttributeError):
-            pass
         states = {
             "grid_import": inputs.grid_import_w,
             "grid_export": inputs.grid_export_w,
@@ -182,7 +189,6 @@ class OptimizerEngineAdapter:
         pv_entity = data.get(CONF_PV_POWER_ENTITY)
         return {
             "config_dir": self._hass.config.config_dir,
-            "db_engine": db_engine,
             "latitude": self._hass.config.latitude,
             "longitude": self._hass.config.longitude,
             "timezone": self._hass.config.time_zone,

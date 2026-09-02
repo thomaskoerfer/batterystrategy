@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 
 @dataclass(frozen=True, slots=True)
-class LegacyForecastSample:
+class ForecastHistorySample:
     """Immutable normalized history sample used by extracted forecasters."""
 
     ts_s: float
@@ -19,7 +19,7 @@ class LegacyForecastSample:
     pv_valid: bool = True
 
     @classmethod
-    def from_mapping(cls, sample: dict) -> LegacyForecastSample:
+    def from_mapping(cls, sample: dict) -> ForecastHistorySample:
         """Normalize the fields consumed by the production forecast."""
         return cls(
             ts_s=float(sample.get("ts", 0.0) or 0.0),
@@ -40,7 +40,7 @@ class LegacyForecastSample:
 
 
 @dataclass(frozen=True, slots=True)
-class LegacyForecastTarget:
+class ForecastTargetInput:
     """One requested slot and its normalized weather factor."""
 
     local_start: dt.datetime

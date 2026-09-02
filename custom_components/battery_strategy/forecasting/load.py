@@ -16,13 +16,13 @@ from ..contracts import (
     LoadForecastContext,
     QuantileEnergy,
 )
-from .history import LegacyForecastSample, LegacyForecastTarget
+from .history import ForecastHistorySample, ForecastTargetInput
 
 SLOT_H = 0.25
 
 
 @dataclass(frozen=True, slots=True)
-class LegacyLoadForecastConfig:
+class LoadForecastModelConfig:
     timezone: str
     load_bias: float
     load_slot_biases: tuple[float, ...]
@@ -32,12 +32,12 @@ class LegacyLoadForecastConfig:
             raise ValueError("load slot bias array must contain 96 values")
 
 
-def build_legacy_load_forecast(
+def build_load_forecast(
     request: ForecastRequest,
-    samples: tuple[LegacyForecastSample, ...],
-    targets: tuple[LegacyForecastTarget, ...],
+    samples: tuple[ForecastHistorySample, ...],
+    targets: tuple[ForecastTargetInput, ...],
     context: LoadForecastContext,
-    config: LegacyLoadForecastConfig,
+    config: LoadForecastModelConfig,
 ) -> LoadForecast:
     """Forecast EV-free load without importing PV configuration or logic."""
     if len(request.slots) != len(targets):
@@ -80,14 +80,14 @@ def build_legacy_load_forecast(
         int(max((sample.ts_s for sample in samples), default=0.0) * 1000),
     )
     return LoadForecast(
-        forecast_id=f"legacy-{request.as_of_ms}-load",
+        forecast_id=f"slot-profile-{request.as_of_ms}-load",
         generated_at_ms=request.as_of_ms,
         training_cutoff_ms=cutoff,
-        model_version="legacy-load-v1",
+        model_version="slot-profile-load-v1",
         slots=slots,
         components=(
             LoadForecastComponent(
-                "general_house_load", "legacy-load-v1", cutoff, slots
+                "general_house_load", "slot-profile-load-v1", cutoff, slots
             ),
         ),
     )

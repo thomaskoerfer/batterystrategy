@@ -285,7 +285,7 @@ def test_pure_optimizer_matches_current_economic_kernel(
         DISCHARGE_ENABLED=True,
         PV_EXPORT_OPPORTUNITY_CT=0.0,
     ):
-        current = optimizer_engine.build_virtual_plan(
+        current = optimizer_engine.build_authoritative_plan(
             intervals,
             [],
             6.0 * soc / 100.0,

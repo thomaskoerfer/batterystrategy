@@ -15,11 +15,11 @@ from ..contracts import (
     QualityFlag,
     WeatherSlot,
 )
+from .baseline import ForecastModelConfig
 from .components import build_component_load_forecast
-from .history import LegacyForecastSample, LegacyForecastTarget
-from .legacy import LegacyForecastConfig
-from .load import build_legacy_load_forecast
-from .pv import build_legacy_pv_forecast
+from .history import ForecastHistorySample, ForecastTargetInput
+from .load import build_load_forecast
+from .pv import build_pv_forecast
 
 SLOT_H = 0.25
 MIN_PRODUCTION_HISTORY_SLOTS = 7 * 96
@@ -55,9 +55,9 @@ class FeatureStoreForecastReadiness:
 def build_feature_store_forecast(
     request: ForecastRequest,
     history: tuple[HistoricalFeatureSlot, ...],
-    targets: tuple[LegacyForecastTarget, ...],
+    targets: tuple[ForecastTargetInput, ...],
     context: LoadForecastContext,
-    config: LegacyForecastConfig,
+    config: ForecastModelConfig,
     *,
     weather: tuple[WeatherSlot, ...] = (),
     component_specs: tuple[LoadComponentSpec, ...] = (),
@@ -91,10 +91,10 @@ def build_feature_store_forecast(
 def build_feature_store_load_forecast(
     request: ForecastRequest,
     history: tuple[HistoricalFeatureSlot, ...],
-    samples: tuple[LegacyForecastSample, ...],
-    targets: tuple[LegacyForecastTarget, ...],
+    samples: tuple[ForecastHistorySample, ...],
+    targets: tuple[ForecastTargetInput, ...],
     context: LoadForecastContext,
-    config: LegacyForecastConfig,
+    config: ForecastModelConfig,
     *,
     weather: tuple[WeatherSlot, ...] = (),
     component_specs: tuple[LoadComponentSpec, ...] = (),
@@ -110,19 +110,19 @@ def build_feature_store_load_forecast(
             component_specs,
             config.load_config(),
         )
-    return build_legacy_load_forecast(
+    return build_load_forecast(
         request, samples, targets, context, config.load_config()
     )
 
 
 def build_feature_store_pv_forecast(
     request: ForecastRequest,
-    samples: tuple[LegacyForecastSample, ...],
-    targets: tuple[LegacyForecastTarget, ...],
-    config: LegacyForecastConfig,
+    samples: tuple[ForecastHistorySample, ...],
+    targets: tuple[ForecastTargetInput, ...],
+    config: ForecastModelConfig,
 ) -> PvForecast:
     """Build PV independently from load components and load context."""
-    return build_legacy_pv_forecast(
+    return build_pv_forecast(
         request, samples, targets, config.pv_config()
     )
 
@@ -136,13 +136,13 @@ def eligible_feature_history(
 
 def feature_samples(
     history: tuple[HistoricalFeatureSlot, ...],
-) -> tuple[LegacyForecastSample, ...]:
-    """Adapt canonical slot energy to the legacy forecast mathematics."""
+) -> tuple[ForecastHistorySample, ...]:
+    """Adapt canonical slot energy to the pure slot-profile mathematics."""
     samples = []
     for item in history[-6000:]:
         flags = frozenset(item.quality.flags)
         samples.append(
-            LegacyForecastSample(
+            ForecastHistorySample(
                 ts_s=item.slot.start_ms / 1000.0,
                 load_w=item.house_load_no_ev_kwh / SLOT_H * 1000.0,
                 pv_w=item.pv_generation_kwh / SLOT_H * 1000.0,

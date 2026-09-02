@@ -68,7 +68,6 @@ changes cannot affect each other unintentionally.
 
 ## Migration status
 
-Feature-store forecasting is authoritative. Older functions whose names retain
-`legacy` are parity-preserving mathematical migration sources, not a second
-runtime forecast selector. They are removed after the corresponding rollback
-window closes.
+Feature-store forecasting is authoritative. The slot-profile helpers are its
+single parity-preserving mathematical source, not a second runtime selector.
+Completed shadow composition and rollback-only paths are removed in Phase 7.

@@ -14,8 +14,6 @@ from functools import lru_cache
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import text
-
 from .contracts import (
     BatteryConstraints,
     BatteryPlan,
@@ -27,25 +25,19 @@ from .contracts import (
 )
 from .forecasting import (
     FeatureStoreForecastNotReady,
-    LegacyForecastConfig,
-    LegacyForecastTarget,
+    ForecastModelConfig,
+    ForecastTargetInput,
     build_feature_store_forecast,
     feature_store_forecast_readiness,
 )
-from .optimizer_shadow import (
-    append_shadow_record,
-    compare_optimizer_plan,
-    optimize_optimizer_snapshot,
-)
+from .optimization_problem import optimize_snapshot
 from .optimizer_state import load_state_document, save_state_document
 
 STATE_FILE = "/config/battery_strategy_optimizer_state.json"
 SCRIPT_VERSION = "1.8.15"
-_DB_ENGINE = None
 _RUNTIME_STATES = {}
+_RUNTIME_HISTORY_SERIES = {}
 _RUNTIME_PRICE_INTERVALS = []
-_ENTITY_MAP = {}
-_ENTITY_SCALE = {}
 _RUNTIME_FORECAST_HISTORY = ()
 _RUNTIME_FORECAST_WEATHER = ()
 _RUNTIME_FORECAST_CONTEXT = None
@@ -144,8 +136,8 @@ OPEN_METEO_URL = (
 
 def configure_runtime(context):
     """Apply one config-entry runtime context before an optimizer run."""
-    global STATE_FILE, _DB_ENGINE
-    global _RUNTIME_STATES, _RUNTIME_PRICE_INTERVALS, _ENTITY_MAP, _ENTITY_SCALE
+    global STATE_FILE
+    global _RUNTIME_STATES, _RUNTIME_HISTORY_SERIES, _RUNTIME_PRICE_INTERVALS
     global _RUNTIME_FORECAST_HISTORY, _RUNTIME_FORECAST_WEATHER
     global _RUNTIME_FORECAST_CONTEXT, _RUNTIME_FORECAST_COMPONENT_SPECS
     global CAP_KWH, SOC_MIN, SOC_MAX, MIN_E_KWH, MAX_E_KWH, MAX_P_W, MAX_E_SLOT_KWH
@@ -156,15 +148,12 @@ def configure_runtime(context):
 
     config_dir = str(context.get("config_dir") or "/config")
     STATE_FILE = os.path.join(config_dir, "battery_strategy_optimizer_state.json")
-    _DB_ENGINE = context.get("db_engine")
     _RUNTIME_STATES = dict(context.get("states") or {})
-    _RUNTIME_PRICE_INTERVALS = list(context.get("price_intervals") or [])
-    _ENTITY_MAP = {key: value for key, value in (context.get("entity_map") or {}).items() if value}
-    _ENTITY_SCALE = {
-        key: float(value)
-        for key, value in (context.get("entity_scale") or {}).items()
-        if value is not None
+    _RUNTIME_HISTORY_SERIES = {
+        key: tuple(values)
+        for key, values in (context.get("history_series") or {}).items()
     }
+    _RUNTIME_PRICE_INTERVALS = list(context.get("price_intervals") or [])
     _RUNTIME_FORECAST_HISTORY = tuple(context.get("forecast_history") or ())
     _RUNTIME_FORECAST_WEATHER = tuple(context.get("forecast_weather") or ())
     _RUNTIME_FORECAST_CONTEXT = context.get("forecast_context")
@@ -212,161 +201,27 @@ def configure_runtime(context):
     local_dt_from_ts.cache_clear()
 
 
-def _entity_id(key):
-    return _ENTITY_MAP.get(key, key)
-
-
-def _get_db_engine():
-    if _DB_ENGINE is None:
-        raise RuntimeError("Home Assistant recorder engine is unavailable")
-    return _DB_ENGINE
-
-
-def _query_latest_state_sql(entity_id):
-    entity_id = _entity_id(entity_id)
-    q = text(
-        """
-        SELECT s.state
-        FROM states s
-        JOIN states_meta sm ON sm.metadata_id = s.metadata_id
-        WHERE sm.entity_id = :entity_id
-        ORDER BY s.state_id DESC
-        LIMIT 1
-        """
-    )
-    with _get_db_engine().connect() as conn:
-        row = conn.execute(q, {"entity_id": entity_id}).fetchone()
-    return row[0] if row else None
-
-
-def _build_in_params(values, prefix):
-    params = {}
-    placeholders = []
-    for idx, value in enumerate(values):
-        key = f"{prefix}{idx}"
-        params[key] = value
-        placeholders.append(f":{key}")
-    return ", ".join(placeholders), params
-
-
-def _query_latest_states_sql(entity_ids):
-    if not entity_ids:
-        return {}
-    requested = list(entity_ids)
-    actual = [_entity_id(entity_id) for entity_id in requested]
-    in_sql, params = _build_in_params(actual, "eid")
-    q = text(
-        f"""
-        SELECT sm.entity_id, s.state
-        FROM states s
-        JOIN states_meta sm ON sm.metadata_id = s.metadata_id
-        JOIN (
-            SELECT sm2.entity_id, MAX(s2.state_id) AS max_state_id
-            FROM states s2
-            JOIN states_meta sm2 ON sm2.metadata_id = s2.metadata_id
-            WHERE sm2.entity_id IN ({in_sql})
-            GROUP BY sm2.entity_id
-        ) latest ON latest.max_state_id = s.state_id
-        """
-    )
-    with _get_db_engine().connect() as conn:
-        rows = conn.execute(q, params).fetchall()
-    by_actual = {row[0]: row[1] for row in rows}
-    return {key: by_actual.get(value) for key, value in zip(requested, actual) if value in by_actual}
-
-
-def _query_series_sql(entity_id, cutoff_ts):
-    entity_id = _entity_id(entity_id)
-    q = text(
-        """
-        SELECT s.last_updated_ts, s.state
-        FROM states s
-        JOIN states_meta sm ON sm.metadata_id = s.metadata_id
-        WHERE sm.entity_id = :entity_id AND s.last_updated_ts >= :cutoff_ts
-        ORDER BY s.last_updated_ts
-        """
-    )
-    with _get_db_engine().connect() as conn:
-        rows = conn.execute(q, {"entity_id": entity_id, "cutoff_ts": float(cutoff_ts)}).fetchall()
-    return rows
-
-
-def _query_series_many_sql(entity_ids, cutoff_ts):
-    if not entity_ids:
-        return {}
-    requested = list(entity_ids)
-    actual = [_entity_id(entity_id) for entity_id in requested]
-    in_sql, params = _build_in_params(actual, "eid")
-    params["cutoff_ts"] = float(cutoff_ts)
-    q = text(
-        f"""
-        SELECT sm.entity_id, s.last_updated_ts, s.state
-        FROM states s
-        JOIN states_meta sm ON sm.metadata_id = s.metadata_id
-        WHERE sm.entity_id IN ({in_sql}) AND s.last_updated_ts >= :cutoff_ts
-        ORDER BY sm.entity_id, s.last_updated_ts
-        """
-    )
-    with _get_db_engine().connect() as conn:
-        rows = conn.execute(q, params).fetchall()
-    grouped_actual = {eid: [] for eid in actual}
-    for entity_id, ts, state in rows:
-        grouped_actual.setdefault(entity_id, []).append((ts, state))
-    return {key: grouped_actual.get(value, []) for key, value in zip(requested, actual)}
-
-
 def get_latest_states(entity_ids):
-    out = {}
-    try:
-        out.update(_query_latest_states_sql(entity_ids))
-    except Exception:
-        pass
-    out.update({key: _RUNTIME_STATES[key] for key in entity_ids if key in _RUNTIME_STATES})
-    for eid in entity_ids:
-        if eid in out:
-            continue
-        try:
-            out[eid] = _query_latest_state_sql(eid)
-        except Exception:
-            out[eid] = None
-    return out
+    """Return only the immutable live-state snapshot captured by the adapter."""
+    return {entity_id: _RUNTIME_STATES.get(entity_id) for entity_id in entity_ids}
 
 
 def fetch_sensor_series_many(entity_ids, cutoff_ts):
-    parsed = {}
-    remaining = list(entity_ids)
-    try:
-        rows_map = _query_series_many_sql(entity_ids, cutoff_ts)
-        remaining = []
-        for entity_id in entity_ids:
-            out = []
-            for ts, st in rows_map.get(entity_id, []):
-                try:
-                    out.append((float(ts), float(st) * _ENTITY_SCALE.get(entity_id, 1.0)))
-                except Exception:
-                    continue
-            parsed[entity_id] = out
-    except Exception:
-        pass
-
-    for entity_id in remaining:
-        parsed[entity_id] = fetch_sensor_series(entity_id, cutoff_ts)
-    return parsed
+    """Return bounded Recorder history captured through the HA adapter."""
+    cutoff = float(cutoff_ts)
+    return {
+        entity_id: [
+            (float(timestamp), float(value))
+            for timestamp, value in _RUNTIME_HISTORY_SERIES.get(entity_id, ())
+            if float(timestamp) >= cutoff
+        ]
+        for entity_id in entity_ids
+    }
 
 
 def fetch_sensor_series(entity_id, cutoff_ts):
-    try:
-        rows = _query_series_sql(entity_id, cutoff_ts)
-    except Exception:
-        rows = []
-    out = []
-    for ts, st in rows:
-        try:
-            v = float(st) * _ENTITY_SCALE.get(entity_id, 1.0)
-            out.append((float(ts), v))
-        except Exception:
-            continue
-    return out
+    """Return one normalized series from the captured history snapshot."""
+    return fetch_sensor_series_many([entity_id], cutoff_ts)[entity_id]
 
 
 def fetch_net_actual_profile(hours=48):
@@ -853,77 +708,32 @@ def local_dt_from_ts(ts):
     return dt.datetime.fromtimestamp(float(ts), tz=dt.timezone.utc).astimezone(OPEN_METEO_TZ)
 
 
-def bootstrap_samples_from_db(now_ts, days=21):
-    cutoff = now_ts - days * 86400
-    series_map = fetch_sensor_series_many(
-        [
-            E_GRID_IMPORT,
-            E_GRID_EXPORT,
-            E_PV_POWER,
-            E_EV_POWER,
-            E_BATTERY_POWER,
-            E_HEAT_PUMP_POWER,
-            E_PRICE_CURRENT,
-        ],
-        cutoff,
-    )
-    grid_import = series_map[E_GRID_IMPORT]
-    grid_export = series_map[E_GRID_EXPORT]
-    pv = series_map[E_PV_POWER]
-    wallbox = series_map[E_EV_POWER]
-    bat = series_map[E_BATTERY_POWER]
-    hp = series_map[E_HEAT_PUMP_POWER]
-    price = series_map[E_PRICE_CURRENT]
-
-    buckets = {}
-    for ts, val in grid_import:
-        b = int(ts // 900) * 900
-        buckets.setdefault(b, {})["grid_import_w"] = val
-    for ts, val in grid_export:
-        b = int(ts // 900) * 900
-        buckets.setdefault(b, {})["grid_export_w"] = val
-    for ts, val in pv:
-        b = int(ts // 900) * 900
-        buckets.setdefault(b, {})["pv_w"] = val
-    for ts, val in wallbox:
-        b = int(ts // 900) * 900
-        buckets.setdefault(b, {})["wallbox_w"] = val
-    for ts, val in bat:
-        b = int(ts // 900) * 900
-        buckets.setdefault(b, {})["bat_in_out_w"] = val
-    for ts, val in hp:
-        b = int(ts // 900) * 900
-        buckets.setdefault(b, {})["hp_w"] = val
-    for ts, val in price:
-        b = int(ts // 900) * 900
-        buckets.setdefault(b, {})["price_ct"] = val
-
+def bootstrap_samples_from_features(now_ts, days=21):
+    """Build calibration samples from canonical finalized features."""
+    cutoff_ms = int((float(now_ts) - days * 86400) * 1000)
     samples = []
-    for b in sorted(buckets.keys()):
-        rec = buckets[b]
-        if "grid_import_w" not in rec and "pv_w" not in rec and "grid_export_w" not in rec:
+    for feature in _RUNTIME_FORECAST_HISTORY:
+        if feature.slot.start_ms < cutoff_ms:
             continue
-        gi = float(rec.get("grid_import_w", 0.0))
-        ge = float(rec.get("grid_export_w", 0.0))
-        pv_w = float(rec.get("pv_w", 0.0))
-        wallbox_w = max(0.0, float(rec.get("wallbox_w", 0.0)))
-        bat_w = float(rec.get("bat_in_out_w", 0.0))
-        # Reconstruct pre-battery house power from meter values.
-        house_w_total = max(0.0, gi + pv_w + bat_w - ge)
-        house_w = max(0.0, house_w_total - wallbox_w)
+        factor_w = 1000.0 / SLOT_H
+        battery_power_w = (
+            feature.battery_discharge_kwh - feature.battery_charge_kwh
+        ) * factor_w
+        ev_w = feature.ev_charge_kwh * factor_w
+        house_w = feature.house_load_no_ev_kwh * factor_w
         samples.append(
             {
-                "ts": float(b),
-                "load_w": house_w,  # backward compatible key: represents house load
+                "ts": feature.slot.start_ms / 1000.0,
+                "load_w": house_w,
                 "house_w": house_w,
-                "house_total_w": house_w_total,
-                "wallbox_w": wallbox_w,
-                "grid_import_w": gi,
-                "grid_export_w": ge,
-                "pv_w": pv_w,
-                "bat_in_out_w": bat_w,
-                "hp_w": float(rec.get("hp_w", 0.0)),
-                "price_ct": float(rec.get("price_ct", 0.0)),
+                "house_total_w": house_w + ev_w,
+                "wallbox_w": ev_w,
+                "grid_import_w": feature.grid_import_kwh * factor_w,
+                "grid_export_w": feature.grid_export_kwh * factor_w,
+                "pv_w": feature.pv_generation_kwh * factor_w,
+                "bat_in_out_w": battery_power_w,
+                "hp_w": 0.0,
+                "price_ct": float(feature.price_ct_per_kwh or 0.0),
                 "soc": -1,
             }
         )
@@ -1378,7 +1188,7 @@ def build_production_forecast(
         if component_specs is None
         else component_specs
     )
-    config = LegacyForecastConfig(
+    config = ForecastModelConfig(
         timezone=request.timezone,
         load_bias=float(load_bias),
         load_slot_biases=tuple(float(value) for value in load_bias_slots),
@@ -1440,773 +1250,210 @@ def build_forecast_targets(intervals, weather_factor, weather_hourly=None):
                 "weather_factor", weather_factor
             )
         )
-        targets.append(LegacyForecastTarget(item["dt"], slot_weather_factor))
+        targets.append(ForecastTargetInput(item["dt"], slot_weather_factor))
     return tuple(targets)
 
 
-def _future_higher_value_load_reserve_kwh(
-    slots,
-    points,
-    current_idx,
-    *,
-    pv_recovery_confidence=PV_RECOVERY_CONFIDENCE,
-    eta_rt=None,
-    min_margin_ct=None,
-    pv_export_opportunity_ct=None,
-):
-    """Return later high-value load not covered by planned recharge.
-
-    A future charge is replacement energy, not a binary reset of inventory
-    scarcity. Replacement is credited only when using it after discharging in
-    the current slot is economic after round-trip losses and minimum margin.
-    Forecast PV charge receives the same confidence discount as the existing
-    PV-recovery budget.
-    """
-    eta_rt = ETA_RT if eta_rt is None else max(1e-9, float(eta_rt))
-    min_margin_ct = (
-        MIN_MARGIN_CT if min_margin_ct is None else max(0.0, float(min_margin_ct))
-    )
-    pv_export_opportunity_ct = (
-        PV_EXPORT_OPPORTUNITY_CT
-        if pv_export_opportunity_ct is None
-        else max(0.0, float(pv_export_opportunity_ct))
-    )
-    current_price_ct = float(slots[current_idx]["price_ct"])
-    replacement_ac_kwh = 0.0
-    reserved_kwh = 0.0
-    for future_idx in range(current_idx + 1, len(slots)):
-        charge_kwh = max(
-            0.0,
-            float(points[future_idx].get("charge_fc_w", 0.0)) / 1000.0 * SLOT_H,
-        )
-        surplus_kwh = max(0.0, float(slots[future_idx].get("surplus_kwh", 0.0)))
-        pv_charge_kwh = min(charge_kwh, surplus_kwh)
-        grid_charge_kwh = max(0.0, charge_kwh - pv_charge_kwh)
-        future_price_ct = float(slots[future_idx]["price_ct"])
-        if _replacement_is_economic_for_current_discharge(
-            current_price_ct,
-            future_price_ct,
-            eta_rt=eta_rt,
-            min_margin_ct=min_margin_ct,
-        ):
-            replacement_ac_kwh += grid_charge_kwh * eta_rt
-        if _replacement_is_economic_for_current_discharge(
-            current_price_ct,
-            pv_export_opportunity_ct,
-            eta_rt=eta_rt,
-            min_margin_ct=min_margin_ct,
-        ):
-            replacement_ac_kwh += (
-                pv_charge_kwh * max(0.0, float(pv_recovery_confidence)) * eta_rt
-            )
-
-        if float(slots[future_idx]["price_ct"]) <= current_price_ct + 1e-9:
-            continue
-        future_load_kwh = min(
-            MAX_DISCHARGE_E_SLOT_KWH,
-            float(
-                slots[future_idx].get(
-                    "discharge_eligible_kwh",
-                    slots[future_idx]["net_pos_kwh"],
-                )
-            ),
-        )
-        replacement_used_kwh = min(replacement_ac_kwh, future_load_kwh)
-        replacement_ac_kwh -= replacement_used_kwh
-        reserved_kwh += future_load_kwh - replacement_used_kwh
-    return reserved_kwh
-
-
-def _replacement_is_economic_for_current_discharge(
-    current_price_ct,
-    replacement_input_price_ct,
-    *,
-    eta_rt=None,
-    min_margin_ct=None,
-):
-    """Return whether later input can economically replace current AC output."""
-    eta_rt = ETA_RT if eta_rt is None else max(1e-9, float(eta_rt))
-    min_margin_ct = (
-        MIN_MARGIN_CT if min_margin_ct is None else max(0.0, float(min_margin_ct))
-    )
-    replacement_break_even_ct = (
-        max(0.0, float(replacement_input_price_ct)) / eta_rt
-    ) + min_margin_ct
-    return float(current_price_ct) + 1e-9 >= replacement_break_even_ct
-
-
-def _economic_step_cost_eur(
-    *,
-    grid_import_kwh,
-    grid_export_kwh,
-    discharge_out_kwh,
-    import_price_ct,
-    export_price_ct=None,
-    min_margin_ct=None,
-):
-    """Return one slot's real energy cost plus the discharge policy margin."""
-    export_price_ct = (
-        PV_EXPORT_OPPORTUNITY_CT
-        if export_price_ct is None
-        else max(0.0, float(export_price_ct))
-    )
-    min_margin_ct = (
-        MIN_MARGIN_CT if min_margin_ct is None else max(0.0, float(min_margin_ct))
-    )
-    return (
-        max(0.0, float(grid_import_kwh)) * float(import_price_ct)
-        - max(0.0, float(grid_export_kwh)) * export_price_ct
-        + max(0.0, float(discharge_out_kwh)) * min_margin_ct
-    ) / 100.0
-
-
-def _economic_path_is_better(
-    candidate_cost_eur,
-    candidate_grid_charge_kwh,
-    candidate_grid_charge_time_score,
-    best_cost_eur,
-    best_grid_charge_kwh,
-    best_grid_charge_time_score,
-):
-    """Compare plans lexicographically without changing their monetary value."""
-    cost_delta = float(candidate_cost_eur) - float(best_cost_eur)
-    if cost_delta < -ECONOMIC_COST_TIE_EUR:
-        return True
-    if abs(cost_delta) > ECONOMIC_COST_TIE_EUR:
-        return False
-
-    grid_delta = float(candidate_grid_charge_kwh) - float(best_grid_charge_kwh)
-    if grid_delta < -1e-9:
-        return True
-    if abs(grid_delta) > 1e-9:
-        return False
-
-    return float(candidate_grid_charge_time_score) > (
-        float(best_grid_charge_time_score) + 1e-9
-    )
-
-
-def _minimum_grid_charge_commitment_kwh():
-    """Return one complete AC-side optimizer energy quantum."""
-    return ENERGY_STEP_KWH / ETA_C
-
-
-def _pv_spill_recovery_budget_ac_kwh(
-    future_surplus_kwh,
-    baseline_energy_kwh,
-    *,
-    confidence=PV_RECOVERY_CONFIDENCE,
-    reserve_kwh=PV_RECOVERY_RESERVE_KWH,
-):
-    """Return discharge energy backed by otherwise uncapturable PV.
-
-    Forecast export is not evidence of missing physical headroom: it can be a
-    plan-discretization artifact or an economic choice. Recovery is therefore
-    authorized only when confidence-weighted PV surplus exceeds the actual
-    storage headroom plus the configured uncertainty reserve.
-    """
-    recoverable_storage_kwh = max(0.0, float(future_surplus_kwh)) * ETA_C * max(
-        0.0, float(confidence)
-    )
-    baseline_energy_kwh = clamp(
-        float(baseline_energy_kwh), MIN_E_KWH, MAX_E_KWH
-    )
-    headroom_kwh = max(0.0, MAX_E_KWH - baseline_energy_kwh)
-    threatened_storage_kwh = max(
-        0.0,
-        recoverable_storage_kwh - headroom_kwh - max(0.0, float(reserve_kwh)),
-    )
-    return threatened_storage_kwh * ETA_D
-
-
-def build_virtual_plan(
+def build_commercial_plan_metadata(
     intervals,
     samples,
-    start_energy_kwh,
-    initial_mode=0,
-    eex_days=None,
     *,
-    forecast_bundle,
+    eex_days=None,
     forecast_diagnostics=None,
 ):
+    """Build horizon policy and publication metadata without optimizing twice."""
     if not intervals:
-        return {"points": [], "today": {}, "tomorrow": {}, "end_soc": 50.0, "price_stats": {}, "daily_costs": {}}
+        return {
+            "today": {},
+            "tomorrow": {},
+            "price_stats": {},
+            "forecast_diagnostics": dict(forecast_diagnostics or {}),
+        }
 
-    prices_ct = [x["price_eur"] * 100.0 for x in intervals]
-    p_sorted = sorted(prices_ct)
-    lo_idx = int(0.3 * (len(p_sorted) - 1))
-    hi_idx = int(0.7 * (len(p_sorted) - 1))
-    p_low = p_sorted[lo_idx]
-    p_high = p_sorted[hi_idx]
+    prices_ct = [float(item["price_eur"]) * 100.0 for item in intervals]
+    sorted_prices = sorted(prices_ct)
+    p_low = sorted_prices[int(0.3 * (len(sorted_prices) - 1))]
+    p_high = sorted_prices[int(0.7 * (len(sorted_prices) - 1))]
+    first_date = intervals[0]["dt"].date()
+    today = first_date.isoformat()
+    tomorrow_date = first_date + dt.timedelta(days=1)
+    tomorrow = tomorrow_date.isoformat()
 
-    today = intervals[0]["dt"].date().isoformat()
-    tomorrow = (intervals[0]["dt"].date() + dt.timedelta(days=1)).isoformat()
-
-    if not isinstance(forecast_bundle, ForecastBundle):
-        raise TypeError("build_virtual_plan requires a ForecastBundle")
-    requested_grid = tuple(
-        SlotKey(
-            int(item["dt"].timestamp() * 1000),
-            int(item["dt"].timestamp() * 1000) + int(SLOT_H * 3600 * 1000),
-        )
+    slots = [
+        {
+            "dt": item["dt"],
+            "date": item["dt"].date().isoformat(),
+            "price_ct": float(item["price_eur"]) * 100.0,
+            "weekday_rank": compute_weekday_price_rank(
+                samples,
+                item["dt"].date(),
+                float(item["price_eur"]) * 100.0,
+            ),
+        }
         for item in intervals
-    )
-    forecast_grid = tuple(item.slot for item in forecast_bundle.load.slots)
-    if forecast_grid != requested_grid:
-        raise ValueError("forecast bundle does not match optimizer slot grid")
-    forecast_load_w = [
-        item.energy.p50_kwh / SLOT_H * 1000.0
-        for item in forecast_bundle.load.slots
     ]
-    forecast_pv_w = [
-        item.energy.p50_kwh / SLOT_H * 1000.0
-        for item in forecast_bundle.pv.slots
-    ]
-    forecast_diagnostics = dict(forecast_diagnostics or {})
-    forecast_pre = [
-        (it, load_w, pv_w)
-        for it, load_w, pv_w in zip(
-            intervals,
-            forecast_load_w,
-            forecast_pv_w,
-            strict=True,
-        )
-    ]
-
-    slots = []
-    daily = {}
-    for it, load_w_slot, pv_w_slot in forecast_pre:
-        d = it["dt"].date().isoformat()
-        load_kwh = max(0.0, load_w_slot / 1000.0 * SLOT_H)
-        pv_kwh = max(0.0, pv_w_slot / 1000.0 * SLOT_H)
-        net_pos_kwh = max(0.0, load_kwh - pv_kwh)
-        surplus_kwh = max(0.0, pv_kwh - load_kwh)
-        price_eur = it["price_eur"]
-        slots.append(
-            {
-                "dt": it["dt"],
-                "date": d,
-                "price_eur": price_eur,
-                "price_ct": price_eur * 100.0,
-                "weekday_rank": compute_weekday_price_rank(samples, it["dt"].date(), price_eur * 100.0),
-                "load_kwh": load_kwh,
-                "pv_kwh": pv_kwh,
-                "net_pos_kwh": net_pos_kwh,
-                "surplus_kwh": surplus_kwh,
-            }
-        )
-        daily.setdefault(d, {"base": 0.0, "with_bat": 0.0})
-        daily[d]["base"] += (
-            net_pos_kwh * price_eur
-            - surplus_kwh * (PV_EXPORT_OPPORTUNITY_CT / 100.0)
-        )
-
-    tomorrow_date = intervals[0]["dt"].date() + dt.timedelta(days=1)
-    tomorrow_prices = [float(s["price_ct"]) for s in slots if s["date"] == tomorrow]
+    tomorrow_prices = [slot["price_ct"] for slot in slots if slot["date"] == tomorrow]
     tomorrow_min_ct = min(tomorrow_prices) if tomorrow_prices else None
-    tomorrow_min_rank = compute_weekday_price_rank(samples, tomorrow_date, tomorrow_min_ct)
+    tomorrow_min_rank = compute_weekday_price_rank(
+        samples, tomorrow_date, tomorrow_min_ct
+    )
     terminal_value_ct = 0.0
     discharge_floor_ct = None
-    cheap_window_end_dt = None
     cheap_anchor_ct = None
     cheap_anchor_rank = None
-    if tomorrow_min_ct is not None and tomorrow_min_rank is not None and tomorrow_min_rank <= TERMINAL_RANK_THRESHOLD:
-        cheapness = clamp((TERMINAL_RANK_THRESHOLD - tomorrow_min_rank) / TERMINAL_RANK_THRESHOLD, 0.0, 1.0)
-        spread_ct = max(0.0, p_high - tomorrow_min_ct)
-        terminal_value_ct = clamp(spread_ct * (0.5 + cheapness), 0.0, TERMINAL_VALUE_CAP_CT)
+    if (
+        tomorrow_min_ct is not None
+        and tomorrow_min_rank is not None
+        and tomorrow_min_rank <= TERMINAL_RANK_THRESHOLD
+    ):
+        cheapness = clamp(
+            (TERMINAL_RANK_THRESHOLD - tomorrow_min_rank)
+            / TERMINAL_RANK_THRESHOLD,
+            0.0,
+            1.0,
+        )
+        terminal_value_ct = clamp(
+            max(0.0, p_high - tomorrow_min_ct) * (0.5 + cheapness),
+            0.0,
+            TERMINAL_VALUE_CAP_CT,
+        )
         discharge_floor_ct = (tomorrow_min_ct / ETA_RT) + MIN_MARGIN_CT
-        cheap_slots = [s for s in slots if s["date"] == tomorrow and s["price_ct"] <= (tomorrow_min_ct + 0.25)]
-        if cheap_slots:
-            cheap_window_end_dt = max(s["dt"] for s in cheap_slots)
         cheap_anchor_ct = tomorrow_min_ct
         cheap_anchor_rank = tomorrow_min_rank
 
-    horizon_min_slot = min(slots, key=lambda s: float(s["price_ct"])) if slots else None
-    if horizon_min_slot is not None:
-        horizon_min_ct = float(horizon_min_slot["price_ct"])
-        horizon_min_rank = horizon_min_slot.get("weekday_rank")
-        if horizon_min_rank is not None:
-            cheapness = clamp((0.5 - horizon_min_rank) / 0.5, 0.0, 1.0)
-            if cheapness > 0.0:
-                tail_date = intervals[-1]["dt"].date() + dt.timedelta(days=1)
-                hist_tail_q80 = compute_weekday_price_quantile(samples, tail_date, 0.8)
-                tail_ref_ct = hist_tail_q80 or p_high
-                eex_days = eex_days or {}
-                tail_ctx = eex_days.get(tail_date.isoformat(), {}) if eex_days else {}
-                tail_eex_candidates = [
-                    tail_ctx.get("base", {}).get("settl_ct_kwh"),
-                    tail_ctx.get("peak", {}).get("settl_ct_kwh"),
-                ]
-                tail_eex_candidates = [float(v) for v in tail_eex_candidates if v is not None]
-                if tail_eex_candidates:
-                    tail_ref_ct = max([tail_ref_ct] + tail_eex_candidates)
-                inferred_tail_value_ct = clamp((max(p_high, tail_ref_ct) - horizon_min_ct) * cheapness, 0.0, TERMINAL_VALUE_CAP_CT)
-                if inferred_tail_value_ct > terminal_value_ct:
-                    terminal_value_ct = inferred_tail_value_ct
-                inferred_floor_ct = (horizon_min_ct / ETA_RT) + MIN_MARGIN_CT
-                if discharge_floor_ct is None or inferred_floor_ct < discharge_floor_ct:
-                    discharge_floor_ct = inferred_floor_ct
-                cheap_slots = [s for s in slots if s["price_ct"] <= (horizon_min_ct + 0.4)]
-                if cheap_slots:
-                    inferred_cheap_window_end = max(s["dt"] for s in cheap_slots)
-                    if cheap_window_end_dt is None or inferred_cheap_window_end > cheap_window_end_dt:
-                        cheap_window_end_dt = inferred_cheap_window_end
-                if cheap_anchor_ct is None or horizon_min_ct < cheap_anchor_ct:
-                    cheap_anchor_ct = horizon_min_ct
-                    cheap_anchor_rank = horizon_min_rank
-    for sl in slots:
-        # The automatic strategy only values serving forecast household load.
-        # Battery discharge must not create forecast export unless explicit
-        # battery export economics are added later.
-        sl["discharge_eligible_kwh"] = (
-            min(float(sl["net_pos_kwh"]), MAX_DISCHARGE_E_SLOT_KWH)
-            if DISCHARGE_ENABLED
-            else 0.0
-        )
-
-    # Cost-optimal plan over 48h via dynamic programming on discretized SoC states.
-    e_step = ENERGY_STEP_KWH
-    n_states = int(round((MAX_E_KWH - MIN_E_KWH) / e_step)) + 1
-    energies = [MIN_E_KWH + i * e_step for i in range(n_states)]
-
-    def idx_from_energy(e):
-        i = int(round((clamp(e, MIN_E_KWH, MAX_E_KWH) - MIN_E_KWH) / e_step))
-        return max(0, min(n_states - 1, i))
-
-    start_idx = idx_from_energy(start_energy_kwh)
-    n_slots = len(slots)
-    inf = 10**18
-    # mode idx: 0=discharge, 1=idle, 2=charge
-    mode_values = [-1, 0, 1]
-    mode_to_idx = {-1: 0, 0: 1, 1: 2}
-    dp = [[[inf] * 3 for _ in range(n_states)] for _ in range(n_slots + 1)]
-    dp_grid_charge_kwh = [
-        [[inf] * 3 for _ in range(n_states)] for _ in range(n_slots + 1)
-    ]
-    dp_grid_charge_time_score = [
-        [[-inf] * 3 for _ in range(n_states)] for _ in range(n_slots + 1)
-    ]
-    prev = [[[None] * 3 for _ in range(n_states)] for _ in range(n_slots + 1)]
-    initial_mode_idx = mode_to_idx.get(initial_mode, mode_to_idx[0])
-    dp[0][start_idx][initial_mode_idx] = 0.0
-    dp_grid_charge_kwh[0][start_idx][initial_mode_idx] = 0.0
-    dp_grid_charge_time_score[0][start_idx][initial_mode_idx] = 0.0
-
-    max_charge_delta_e = ETA_C * MAX_CHARGE_E_SLOT_KWH
-    max_discharge_delta_e = MAX_DISCHARGE_E_SLOT_KWH / ETA_D
-    future_peak_price_ct = [0.0] * (n_slots + 1)
-    for t in range(n_slots - 1, -1, -1):
-        future_peak_price_ct[t] = max(future_peak_price_ct[t + 1], float(slots[t]["price_ct"]))
-    future_pv_surplus_kwh = [0.0] * (n_slots + 1)
-    for t in range(n_slots - 1, -1, -1):
-        future_pv_surplus_kwh[t] = future_pv_surplus_kwh[t + 1] + float(slots[t]["surplus_kwh"])
-
-    def transition_candidate(t, e_now, prev_mode, e_next):
-        sl = slots[t]
-        price_ct = sl["price_ct"]
-        net_pos = sl["net_pos_kwh"]
-        surplus = sl["surplus_kwh"]
-        discharge_eligible = sl.get("discharge_eligible_kwh", net_pos)
-        delta = e_next - e_now
-        charge_in = 0.0
-        discharge_out = 0.0
-        if delta > 1e-9:
-            charge_in = delta / ETA_C
-            if charge_in > MAX_CHARGE_E_SLOT_KWH + 1e-9:
-                return None
-            if not PV_CHARGING_ENABLED and not GRID_CHARGING_ENABLED:
-                return None
-            if not GRID_CHARGING_ENABLED and charge_in > surplus + 1e-9:
-                return None
-            if not PV_CHARGING_ENABLED and surplus > 1e-9:
-                return None
-        elif delta < -1e-9:
-            if not DISCHARGE_ENABLED:
-                return None
-            discharge_out = (-delta) * ETA_D
-            if discharge_out > discharge_eligible + 1e-9:
-                return None
-            if discharge_out > MAX_DISCHARGE_E_SLOT_KWH + 1e-9:
-                return None
-            # Keep the conservative replacement-cost floor as a feasibility
-            # guard. The monetary objective below independently prices RTE and
-            # minimum margin; this guard prevents horizon-value heuristics from
-            # exposing inventory below its cheapest credible replacement cost.
-            if discharge_floor_ct is not None and price_ct < discharge_floor_ct:
-                return None
-        mode_now = 0
-        if charge_in > 1e-4:
-            mode_now = 1
-        elif discharge_out > 1e-4:
-            mode_now = -1
-
-        # Plan modes are economic intent, not actuator state: live PV surplus
-        # may turn a planned discharge slot into charge-follow. Artificial mode
-        # transition costs would therefore distort slot value. RTE, margin and
-        # micro-cycle suppression remain the economic cycle guards.
-        switch_cost = 0.0
-
-        charge_from_grid = max(0.0, charge_in - surplus)
-        if charge_from_grid > 1e-9:
-            future_value_ct = future_peak_price_ct[t + 1] * ETA_RT
-            if future_value_ct < (price_ct + MIN_MARGIN_CT):
-                return None
-            later_cheaper_charge_capacity_kwh = sum(
-                MAX_CHARGE_E_SLOT_KWH
-                for future_sl in slots[t + 1 :]
-                if float(future_sl["price_ct"]) + CHARGE_DEFERRAL_MARGIN_CT < price_ct
+    horizon_min_slot = min(slots, key=lambda slot: slot["price_ct"])
+    horizon_min_ct = float(horizon_min_slot["price_ct"])
+    horizon_min_rank = horizon_min_slot.get("weekday_rank")
+    if horizon_min_rank is not None:
+        cheapness = clamp((0.5 - horizon_min_rank) / 0.5, 0.0, 1.0)
+        if cheapness > 0.0:
+            tail_date = intervals[-1]["dt"].date() + dt.timedelta(days=1)
+            tail_ref_ct = compute_weekday_price_quantile(samples, tail_date, 0.8) or p_high
+            tail_context = (eex_days or {}).get(tail_date.isoformat(), {})
+            tail_eex_candidates = [
+                tail_context.get("base", {}).get("settl_ct_kwh"),
+                tail_context.get("peak", {}).get("settl_ct_kwh"),
+            ]
+            tail_eex_candidates = [
+                float(value) for value in tail_eex_candidates if value is not None
+            ]
+            if tail_eex_candidates:
+                tail_ref_ct = max([tail_ref_ct, *tail_eex_candidates])
+            terminal_value_ct = max(
+                terminal_value_ct,
+                clamp(
+                    (max(p_high, tail_ref_ct) - horizon_min_ct) * cheapness,
+                    0.0,
+                    TERMINAL_VALUE_CAP_CT,
+                ),
             )
-            if later_cheaper_charge_capacity_kwh > 1e-9:
-                profitable_discharge_need_ac_kwh = sum(
-                    min(MAX_DISCHARGE_E_SLOT_KWH, float(future_sl["net_pos_kwh"]))
-                    for future_sl in slots[t + 1 :]
-                    if float(future_sl["price_ct"]) >= ((price_ct / ETA_RT) + MIN_MARGIN_CT)
-                )
-                current_usable_ac_kwh = max(0.0, (e_now - MIN_E_KWH) * ETA_D)
-                additional_profitable_charge_in_kwh = max(
-                    0.0, (profitable_discharge_need_ac_kwh - current_usable_ac_kwh) / ETA_RT
-                )
-                if later_cheaper_charge_capacity_kwh >= (additional_profitable_charge_in_kwh - 1e-6):
-                    return None
-        grid_import = max(0.0, net_pos - min(discharge_out, net_pos)) + charge_from_grid
-        grid_export = max(0.0, surplus - charge_in) + max(
-            0.0, discharge_out - net_pos
-        )
-        step_cost = _economic_step_cost_eur(
-            grid_import_kwh=grid_import,
-            grid_export_kwh=grid_export,
-            discharge_out_kwh=discharge_out,
-            import_price_ct=price_ct,
-        )
-        step_cost += switch_cost
-        return (
-            step_cost,
-            charge_in,
-            discharge_out,
-            grid_import,
-            charge_from_grid,
-            mode_now,
-        )
-
-    for t in range(n_slots):
-        sl = slots[t]
-        net_pos = sl["net_pos_kwh"]
-        discharge_eligible = sl.get("discharge_eligible_kwh", net_pos)
-        for i, e_now in enumerate(energies):
-            min_e_next = max(MIN_E_KWH, e_now - min(max_discharge_delta_e, discharge_eligible / ETA_D))
-            max_e_next = min(MAX_E_KWH, e_now + max_charge_delta_e)
-            i_min = idx_from_energy(min_e_next)
-            i_max = idx_from_energy(max_e_next)
-            for prev_mode_idx, prev_mode in enumerate(mode_values):
-                base_cost = dp[t][i][prev_mode_idx]
-                if base_cost >= inf:
-                    continue
-                for j in range(i_min, i_max + 1):
-                    transition = transition_candidate(t, e_now, prev_mode, energies[j])
-                    if transition is None:
-                        continue
-                    (
-                        step_cost,
-                        charge_in,
-                        discharge_out,
-                        grid_import,
-                        charge_from_grid,
-                        mode_now,
-                    ) = transition
-                    mode_now_idx = mode_to_idx[mode_now]
-                    cand = base_cost + step_cost
-                    cand_grid_charge_kwh = (
-                        dp_grid_charge_kwh[t][i][prev_mode_idx] + charge_from_grid
-                    )
-                    cand_grid_charge_time_score = (
-                        dp_grid_charge_time_score[t][i][prev_mode_idx]
-                        + charge_from_grid * t
-                    )
-                    if _economic_path_is_better(
-                        cand,
-                        cand_grid_charge_kwh,
-                        cand_grid_charge_time_score,
-                        dp[t + 1][j][mode_now_idx],
-                        dp_grid_charge_kwh[t + 1][j][mode_now_idx],
-                        dp_grid_charge_time_score[t + 1][j][mode_now_idx],
-                    ):
-                        dp[t + 1][j][mode_now_idx] = cand
-                        dp_grid_charge_kwh[t + 1][j][mode_now_idx] = (
-                            cand_grid_charge_kwh
-                        )
-                        dp_grid_charge_time_score[t + 1][j][mode_now_idx] = (
-                            cand_grid_charge_time_score
-                        )
-                        prev[t + 1][j][mode_now_idx] = (
-                            i,
-                            prev_mode_idx,
-                            charge_in,
-                            discharge_out,
-                            grid_import,
-                            charge_from_grid,
-                            mode_now,
-                        )
-
-    def terminal_adjusted_cost(i, mi):
-        end_energy_above_min = max(0.0, energies[i] - MIN_E_KWH)
-        terminal_credit = (terminal_value_ct / 100.0) * end_energy_above_min
-        return dp[n_slots][i][mi] - terminal_credit
-
-    end_idx = 0
-    end_mode_idx = 0
-    best_terminal_cost = inf
-    best_terminal_grid_charge_kwh = inf
-    best_terminal_grid_charge_time_score = -inf
-    for i in range(n_states):
-        for mi in range(3):
-            candidate_terminal_cost = terminal_adjusted_cost(i, mi)
-            if _economic_path_is_better(
-                candidate_terminal_cost,
-                dp_grid_charge_kwh[n_slots][i][mi],
-                dp_grid_charge_time_score[n_slots][i][mi],
-                best_terminal_cost,
-                best_terminal_grid_charge_kwh,
-                best_terminal_grid_charge_time_score,
-            ):
-                end_idx = i
-                end_mode_idx = mi
-                best_terminal_cost = candidate_terminal_cost
-                best_terminal_grid_charge_kwh = dp_grid_charge_kwh[n_slots][i][mi]
-                best_terminal_grid_charge_time_score = (
-                    dp_grid_charge_time_score[n_slots][i][mi]
-                )
-
-    # Reconstruct optimized trajectory.
-    points = [None] * n_slots
-    path_before_idx = [start_idx] * n_slots
-    path_after_idx = [start_idx] * n_slots
-    path_discharge_out = [0.0] * n_slots
-    path_charge_in = [0.0] * n_slots
-    cur = end_idx
-    cur_mode_idx = end_mode_idx
-    for t in range(n_slots, 0, -1):
-        rec = prev[t][cur][cur_mode_idx]
-        if rec is None:
-            rec = (
-                cur,
-                mode_to_idx[0],
-                0.0,
-                0.0,
-                slots[t - 1]["net_pos_kwh"],
-                0.0,
-                0,
-            )
-        (
-            prev_idx,
-            prev_mode_idx,
-            charge_in,
-            discharge_out,
-            grid_import,
-            charge_from_grid,
-            mode_now,
-        ) = rec
-        sl = slots[t - 1]
-        idx = t - 1
-        path_before_idx[idx] = prev_idx
-        path_after_idx[idx] = cur
-        path_discharge_out[idx] = max(0.0, discharge_out)
-        path_charge_in[idx] = max(0.0, charge_in)
-        grid_export = max(0.0, sl["surplus_kwh"] - charge_in) + max(0.0, discharge_out - sl["net_pos_kwh"])
-        p_bat_w = ((charge_in - discharge_out) / SLOT_H) * 1000.0
-        mode = "idle"
-        if mode_now > 0:
-            mode = "charge"
-        elif mode_now < 0:
-            mode = "discharge"
-        daily[sl["date"]]["with_bat"] += grid_import * sl["price_eur"]
-        points[t - 1] = {
-            "ts_ms": int(sl["dt"].timestamp() * 1000),
-            "date": sl["date"],
-            "price_ct": round(sl["price_ct"], 3),
-            "soc_pct": round((energies[prev_idx] / CAP_KWH) * 100.0, 2),
-            "power_w": round(p_bat_w, 1),
-            "charge_fc_w": round(max(0.0, p_bat_w), 1),
-            "pv_charge_fc_w": round(
-                (max(0.0, charge_in - charge_from_grid) / SLOT_H) * 1000.0,
-                1,
-            ),
-            "grid_charge_fc_w": round(
-                (max(0.0, charge_from_grid) / SLOT_H) * 1000.0,
-                1,
-            ),
-            "required_charge_fc_w": round(
-                (charge_in / SLOT_H) * 1000.0 if charge_from_grid > 1e-9 else 0.0,
-                1,
-            ),
-            "discharge_fc_w": round(max(0.0, -p_bat_w), 1),
-            "mode": mode,
-            "load_fc_w": round((sl["load_kwh"] / SLOT_H) * 1000.0, 1),
-            "pv_fc_w": round((sl["pv_kwh"] / SLOT_H) * 1000.0, 1),
-            "discharge_eligible_fc_w": round((sl.get("discharge_eligible_kwh", sl["net_pos_kwh"]) / SLOT_H) * 1000.0, 1),
-            "grid_import_fc_w": round((grid_import / SLOT_H) * 1000.0, 1),
-            "grid_export_fc_w": round((grid_export / SLOT_H) * 1000.0, 1),
-            "grid_net_fc_w": round(((grid_import - grid_export) / SLOT_H) * 1000.0, 1),
-        }
-        cur = prev_idx
-        cur_mode_idx = prev_mode_idx
-
-    points = suppress_uneconomic_micro_cycles(points, start_energy_kwh)
-    points = defer_subquantum_grid_remainders(points, start_energy_kwh)
-
-    recovery_lookahead_slots = max(1, int(round(PV_RECOVERY_LOOKAHEAD_H / SLOT_H)))
-    def recovery_window_end_idx(t):
-        price_ct = float(slots[t]["price_ct"])
-        default_end = min(n_slots, t + 1 + recovery_lookahead_slots)
-        for idx in range(t + 1, default_end):
-            if float(slots[idx]["price_ct"]) > price_ct + SCARCE_VALUE_TIE_CT:
-                return idx
-        return default_end
-
-    def safe_pv_recovery_ac_kwh(t, baseline_after_e):
-        if not PV_CHARGING_ENABLED:
-            return 0.0
-        end_idx = recovery_window_end_idx(t)
-        future_surplus_kwh = max(0.0, future_pv_surplus_kwh[t + 1] - future_pv_surplus_kwh[end_idx])
-        return _pv_spill_recovery_budget_ac_kwh(
-            future_surplus_kwh,
-            baseline_after_e,
-        )
-
-    def pre_slot_energy_kwh(t):
-        return clamp(
-            (float(points[t].get("soc_pct", 0.0)) / 100.0) * CAP_KWH,
-            MIN_E_KWH,
-            MAX_E_KWH,
-        )
-
-    def point_charge_kwh(t):
-        return max(0.0, float(points[t].get("charge_fc_w", 0.0)) / 1000.0 * SLOT_H)
-
-    def point_discharge_kwh(t):
-        return max(0.0, float(points[t].get("discharge_fc_w", 0.0)) / 1000.0 * SLOT_H)
-
-    def post_slot_energy_kwh(t):
-        return clamp(
-            pre_slot_energy_kwh(t)
-            + point_charge_kwh(t) * ETA_C
-            - point_discharge_kwh(t) / ETA_D,
-            MIN_E_KWH,
-            MAX_E_KWH,
-        )
-
-    def point_grid_charge_kwh(t):
-        return max(0.0, point_charge_kwh(t) - float(slots[t]["surplus_kwh"]))
-
-    def future_higher_value_load_kwh(t):
-        """Return high-value forecast load not replaced by planned recharge."""
-        return _future_higher_value_load_reserve_kwh(slots, points, t)
-
-    def explicit_discharge_budget_kwh(t):
-        # A budget may coexist with free PV charging, but never with paid
-        # charging. Otherwise live discharge lowers SoC and the next optimizer
-        # run immediately buys the same energy back through must-charge.
-        if point_grid_charge_kwh(t) > 1e-6:
-            return 0.0
-
-        slot_energy_kwh = pre_slot_energy_kwh(t)
-        available_ac_kwh = max(0.0, (slot_energy_kwh - MIN_E_KWH) * ETA_D)
-        max_total_discharge_kwh = min(MAX_DISCHARGE_E_SLOT_KWH, available_ac_kwh)
-        if max_total_discharge_kwh <= 1e-6:
-            return 0.0
-
-        sl = slots[t]
-        price_ct = float(sl["price_ct"])
-        if price_ct < PV_EXPORT_OPPORTUNITY_CT + MIN_MARGIN_CT:
-            return 0.0
-
-        safe_recovery_kwh = safe_pv_recovery_ac_kwh(t, post_slot_energy_kwh(t))
-        # If live conditions turn a forecast PV-charge slot into discharge, the
-        # later free PV must first replace the missed planned charge. Only the
-        # remaining recovery energy is safe to expose as a discharge budget.
-        missed_plan_recovery_kwh = point_charge_kwh(t) * ETA_RT
-        pv_recovery_budget_kwh = min(
-            max_total_discharge_kwh,
-            max(0.0, safe_recovery_kwh - missed_plan_recovery_kwh),
-        )
-
-        scarce_budget_kwh = 0.0
-        scarce_floor_ct = float(discharge_floor_ct or 0.0)
-        if point_charge_kwh(t) <= 1e-6 and price_ct >= scarce_floor_ct:
-            higher_value_need_kwh = future_higher_value_load_kwh(t)
-            scarce_budget_kwh = max(
-                0.0,
-                available_ac_kwh + safe_recovery_kwh - higher_value_need_kwh,
-            )
-
-        # Expected dispatch is a subset of commercial permission. The live
-        # controller may use a larger budget for unexpected household load, but
-        # it must never be unable to execute an optimizer-planned discharge.
-        planned_discharge_kwh = point_discharge_kwh(t)
-        budget_kwh = max(
-            planned_discharge_kwh,
-            pv_recovery_budget_kwh,
-            min(max_total_discharge_kwh, scarce_budget_kwh),
-        )
-
-        return round(min(max_total_discharge_kwh, budget_kwh), 3)
-
-    for idx, point in enumerate(points):
-        point["discharge_budget_kwh"] = explicit_discharge_budget_kwh(idx)
-
-    daily_with_bat = {}
-    for p in points:
-        d = p.get("date")
-        daily_with_bat.setdefault(d, 0.0)
-        grid_import_kwh = max(0.0, float(p.get("grid_import_fc_w", 0.0)) / 1000.0 * SLOT_H)
-        grid_export_kwh = max(
-            0.0, float(p.get("grid_export_fc_w", 0.0)) / 1000.0 * SLOT_H
-        )
-        daily_with_bat[d] += (
-            grid_import_kwh * (float(p.get("price_ct", 0.0)) / 100.0)
-            - grid_export_kwh * (PV_EXPORT_OPPORTUNITY_CT / 100.0)
-        )
-
-    daily_costs = {}
-    for d, vals in daily.items():
-        daily_costs[d] = {
-            "base_eur": round(vals["base"], 3),
-            "with_bat_eur": round(daily_with_bat.get(d, vals["with_bat"]), 3),
-            "saving_eur": round(vals["base"] - daily_with_bat.get(d, vals["with_bat"]), 3),
-        }
+            inferred_floor_ct = (horizon_min_ct / ETA_RT) + MIN_MARGIN_CT
+            if discharge_floor_ct is None or inferred_floor_ct < discharge_floor_ct:
+                discharge_floor_ct = inferred_floor_ct
+            if cheap_anchor_ct is None or horizon_min_ct < cheap_anchor_ct:
+                cheap_anchor_ct = horizon_min_ct
+                cheap_anchor_rank = horizon_min_rank
 
     return {
-        "points": points,
-        "today": {
-            "date": today,
-            "saving_eur": daily_costs.get(today, {}).get("saving_eur", 0.0),
-        },
-        "tomorrow": {
-            "date": tomorrow,
-            "saving_eur": daily_costs.get(tomorrow, {}).get("saving_eur", 0.0),
-        },
-        "end_soc": round((energies[end_idx] / CAP_KWH) * 100.0, 2),
+        "today": {"date": today, "saving_eur": 0.0},
+        "tomorrow": {"date": tomorrow, "saving_eur": 0.0},
         "price_stats": {
             "p_low": round(p_low, 2),
             "p_high": round(p_high, 2),
             "avg": round(sum(prices_ct) / len(prices_ct), 2),
             "min": round(min(prices_ct), 2),
             "max": round(max(prices_ct), 2),
-            "tomorrow_min_rank": round(tomorrow_min_rank, 3) if tomorrow_min_rank is not None else None,
+            "tomorrow_min_rank": (
+                round(tomorrow_min_rank, 3)
+                if tomorrow_min_rank is not None
+                else None
+            ),
             "terminal_value_ct": round(terminal_value_ct, 3),
-            "discharge_floor_ct": round(discharge_floor_ct, 3) if discharge_floor_ct is not None else None,
-            "cheap_anchor_ct": round(cheap_anchor_ct, 3) if cheap_anchor_ct is not None else None,
-            "cheap_anchor_rank": round(cheap_anchor_rank, 3) if cheap_anchor_rank is not None else None,
+            "discharge_floor_ct": (
+                round(discharge_floor_ct, 3)
+                if discharge_floor_ct is not None
+                else None
+            ),
+            "cheap_anchor_ct": (
+                round(cheap_anchor_ct, 3) if cheap_anchor_ct is not None else None
+            ),
+            "cheap_anchor_rank": (
+                round(cheap_anchor_rank, 3)
+                if cheap_anchor_rank is not None
+                else None
+            ),
         },
-        "daily_costs": daily_costs,
-        "forecast_diagnostics": forecast_diagnostics,
+        "forecast_diagnostics": dict(forecast_diagnostics or {}),
     }
+
+
+def build_authoritative_plan(
+    intervals,
+    samples,
+    start_energy_kwh,
+    *,
+    eex_days=None,
+    forecast_bundle,
+    forecast_diagnostics=None,
+):
+    """Optimize one captured horizon and publish the downstream plan shape."""
+    metadata = build_commercial_plan_metadata(
+        intervals,
+        samples,
+        eex_days=eex_days,
+        forecast_diagnostics=forecast_diagnostics,
+    )
+    if not intervals:
+        return {
+            **metadata,
+            "points": [],
+            "end_soc": 0.0,
+            "daily_costs": {},
+            "optimizer_source": "economic-dp-v1",
+        }
+    price_stats = metadata["price_stats"]
+    constraints = BatteryConstraints(
+        CAP_KWH,
+        SOC_MIN,
+        SOC_MAX,
+        MAX_CHARGE_P_W,
+        MAX_DISCHARGE_P_W,
+        ETA_RT,
+    )
+    policy = CommercialPolicy(
+        min_margin_ct_per_kwh=MIN_MARGIN_CT,
+        terminal_value_ct_per_kwh=float(
+            price_stats.get("terminal_value_ct") or 0.0
+        ),
+        export_opportunity_ct_per_kwh=PV_EXPORT_OPPORTUNITY_CT,
+        discharge_floor_ct_per_kwh=price_stats.get("discharge_floor_ct"),
+        pv_charging_allowed=PV_CHARGING_ENABLED,
+        grid_charging_allowed=GRID_CHARGING_ENABLED,
+        discharge_allowed=DISCHARGE_ENABLED,
+        pv_recovery_confidence=PV_RECOVERY_CONFIDENCE,
+        pv_recovery_reserve_kwh=PV_RECOVERY_RESERVE_KWH,
+    )
+    _, candidate = optimize_snapshot(
+        intervals=intervals,
+        forecast=forecast_bundle,
+        start_energy_kwh=start_energy_kwh,
+        constraints=constraints,
+        policy=policy,
+        evaluated_at_ms=int(intervals[0]["dt"].timestamp() * 1000),
+    )
+    return adapt_pure_optimizer_plan(
+        candidate,
+        intervals,
+        forecast_bundle,
+        metadata,
+    )
 
 
 def adapt_pure_optimizer_plan(
     candidate: BatteryPlan,
     intervals,
     forecast_bundle: ForecastBundle,
-    legacy_metadata: dict,
+    publication_metadata: dict,
 ) -> dict:
     """Translate the pure plan into the existing downstream profile shape."""
     if not (
@@ -2300,9 +1547,9 @@ def adapt_pure_optimizer_plan(
         }
         for date, values in daily.items()
     }
-    today_date = (legacy_metadata.get("today") or {}).get("date")
-    tomorrow_date = (legacy_metadata.get("tomorrow") or {}).get("date")
-    result = dict(legacy_metadata)
+    today_date = (publication_metadata.get("today") or {}).get("date")
+    tomorrow_date = (publication_metadata.get("tomorrow") or {}).get("date")
+    result = dict(publication_metadata)
     result.update(
         {
             "points": points,
@@ -2384,180 +1631,6 @@ def compress_points_hourly(points):
             }
         )
     return out
-
-
-def suppress_uneconomic_micro_cycles(points, start_energy_kwh):
-    if not points:
-        return points
-
-    for idx, p in enumerate(points):
-        if float(p.get("discharge_fc_w", 0.0)) <= 1.0:
-            continue
-        recent_charge_cost_ct_kwh = 0.0
-        recent_charge_kwh = 0.0
-        for j in range(max(0, idx - MICROCYCLE_LOOKBACK_SLOTS), idx):
-            charge_kwh = max(0.0, float(points[j].get("charge_fc_w", 0.0)) / 1000.0 * SLOT_H)
-            if charge_kwh <= 1e-6:
-                continue
-            load_kwh = max(0.0, float(points[j].get("load_fc_w", 0.0)) / 1000.0 * SLOT_H)
-            pv_kwh = max(0.0, float(points[j].get("pv_fc_w", 0.0)) / 1000.0 * SLOT_H)
-            surplus_kwh = max(0.0, pv_kwh - load_kwh)
-            grid_charge_kwh = max(0.0, charge_kwh - surplus_kwh)
-            if grid_charge_kwh <= 1e-6:
-                continue
-            recent_charge_cost_ct_kwh += grid_charge_kwh * float(points[j].get("price_ct", 0.0))
-            recent_charge_kwh += grid_charge_kwh
-        if recent_charge_kwh <= 1e-6:
-            continue
-        recent_charge_avg_ct = recent_charge_cost_ct_kwh / recent_charge_kwh
-        min_viable_discharge_ct = (recent_charge_avg_ct / ETA_RT) + MIN_MARGIN_CT
-        if float(p.get("price_ct", 0.0)) <= min_viable_discharge_ct:
-            p["power_w"] = 0.0
-            p["charge_fc_w"] = 0.0
-            p["discharge_fc_w"] = 0.0
-            p["mode"] = "idle"
-
-    energy = clamp(float(start_energy_kwh), MIN_E_KWH, MAX_E_KWH)
-    for p in points:
-        load_kwh = max(0.0, float(p.get("load_fc_w", 0.0)) / 1000.0 * SLOT_H)
-        pv_kwh = max(0.0, float(p.get("pv_fc_w", 0.0)) / 1000.0 * SLOT_H)
-        net_pos_kwh = max(0.0, load_kwh - pv_kwh)
-        surplus_kwh = max(0.0, pv_kwh - load_kwh)
-        discharge_eligible_kwh = net_pos_kwh
-
-        req_charge_in = max(0.0, float(p.get("charge_fc_w", 0.0)) / 1000.0 * SLOT_H)
-        req_discharge_out = max(0.0, float(p.get("discharge_fc_w", 0.0)) / 1000.0 * SLOT_H)
-
-        max_charge_in = max(0.0, (MAX_E_KWH - energy) / ETA_C)
-        charge_in = min(req_charge_in, MAX_CHARGE_E_SLOT_KWH, max_charge_in)
-        if not GRID_CHARGING_ENABLED:
-            charge_in = min(charge_in, surplus_kwh if PV_CHARGING_ENABLED else 0.0)
-        elif not PV_CHARGING_ENABLED and charge_in <= surplus_kwh:
-            charge_in = 0.0
-
-        max_discharge_out = max(0.0, (energy - MIN_E_KWH) * ETA_D)
-        discharge_out = min(req_discharge_out, MAX_DISCHARGE_E_SLOT_KWH, discharge_eligible_kwh, max_discharge_out)
-        if not DISCHARGE_ENABLED:
-            discharge_out = 0.0
-
-        p["soc_pct"] = round((energy / CAP_KWH) * 100.0, 2)
-        p_bat_w = ((charge_in - discharge_out) / SLOT_H) * 1000.0
-        grid_import = max(0.0, net_pos_kwh - min(discharge_out, net_pos_kwh)) + max(0.0, charge_in - surplus_kwh)
-        grid_export = max(0.0, surplus_kwh - charge_in) + max(0.0, discharge_out - net_pos_kwh)
-
-        p["power_w"] = round(p_bat_w, 1)
-        p["charge_fc_w"] = round(max(0.0, p_bat_w), 1)
-        grid_charge_in = max(0.0, charge_in - surplus_kwh)
-        p["pv_charge_fc_w"] = round(
-            (max(0.0, charge_in - grid_charge_in) / SLOT_H) * 1000.0,
-            1,
-        )
-        p["grid_charge_fc_w"] = round(
-            (grid_charge_in / SLOT_H) * 1000.0,
-            1,
-        )
-        p["required_charge_fc_w"] = round(
-            (charge_in / SLOT_H) * 1000.0
-            if grid_charge_in > 1e-9
-            else 0.0,
-            1,
-        )
-        p["discharge_fc_w"] = round(max(0.0, -p_bat_w), 1)
-        p["mode"] = "charge" if p_bat_w > 1e-3 else ("discharge" if p_bat_w < -1e-3 else "idle")
-        p["grid_import_fc_w"] = round((grid_import / SLOT_H) * 1000.0, 1)
-        p["grid_export_fc_w"] = round((grid_export / SLOT_H) * 1000.0, 1)
-        p["grid_net_fc_w"] = round(((grid_import - grid_export) / SLOT_H) * 1000.0, 1)
-
-        energy = clamp(energy + charge_in * ETA_C - (discharge_out / ETA_D), MIN_E_KWH, MAX_E_KWH)
-
-    return points
-
-
-def defer_subquantum_grid_remainders(points, start_energy_kwh):
-    """Move PV lattice remainders into existing cheaper grid commitments."""
-    if not points or not GRID_CHARGING_ENABLED:
-        return points
-
-    grid_quantum_kwh = _minimum_grid_charge_commitment_kwh()
-
-    def charge_kwh(point):
-        return max(0.0, float(point.get("charge_fc_w", 0.0))) * SLOT_H / 1000.0
-
-    def surplus_kwh(point):
-        load = max(0.0, float(point.get("load_fc_w", 0.0))) * SLOT_H / 1000.0
-        pv = max(0.0, float(point.get("pv_fc_w", 0.0))) * SLOT_H / 1000.0
-        return max(0.0, pv - load)
-
-    def grid_charge_kwh(point):
-        return max(0.0, charge_kwh(point) - surplus_kwh(point))
-
-    for source_idx, source in enumerate(points):
-        source_charge_kwh = charge_kwh(source)
-        source_surplus_kwh = surplus_kwh(source)
-        source_grid_kwh = max(0.0, source_charge_kwh - source_surplus_kwh)
-        if (
-            source_surplus_kwh <= 1e-9
-            or source_grid_kwh <= 1e-9
-            or source_grid_kwh >= (grid_quantum_kwh - 1e-9)
-        ):
-            continue
-
-        deadline_idx = next(
-            (
-                idx
-                for idx in range(source_idx + 1, len(points))
-                if float(points[idx].get("discharge_fc_w", 0.0)) > 1e-6
-            ),
-            len(points),
-        )
-        candidates = []
-        for target_idx in range(source_idx + 1, deadline_idx):
-            target = points[target_idx]
-            target_grid_kwh = grid_charge_kwh(target)
-            if target_grid_kwh < (grid_quantum_kwh - 1e-9):
-                continue
-            if float(target.get("price_ct", 0.0)) >= (
-                float(source.get("price_ct", 0.0)) - 1e-9
-            ):
-                continue
-            capacity_kwh = max(0.0, MAX_CHARGE_E_SLOT_KWH - charge_kwh(target))
-            if capacity_kwh > 1e-9:
-                candidates.append(
-                    (
-                        float(target.get("price_ct", 0.0)),
-                        -target_idx,
-                        target_idx,
-                        capacity_kwh,
-                    )
-                )
-
-        if sum(item[3] for item in candidates) + 1e-9 < source_grid_kwh:
-            continue
-
-        source["charge_fc_w"] = round(
-            (source_surplus_kwh / SLOT_H) * 1000.0,
-            1,
-        )
-        source["power_w"] = source["charge_fc_w"]
-        remaining_kwh = source_grid_kwh
-        for _price, _late_order, target_idx, capacity_kwh in sorted(candidates):
-            moved_kwh = min(remaining_kwh, capacity_kwh)
-            if moved_kwh <= 1e-9:
-                continue
-            target = points[target_idx]
-            target["charge_fc_w"] = round(
-                float(target.get("charge_fc_w", 0.0))
-                + (moved_kwh / SLOT_H) * 1000.0,
-                1,
-            )
-            target["power_w"] = target["charge_fc_w"]
-            target["mode"] = "charge"
-            remaining_kwh -= moved_kwh
-            if remaining_kwh <= 1e-9:
-                break
-
-    # Rebuild SoC and every published flow from the final canonical actions.
-    return suppress_uneconomic_micro_cycles(points, start_energy_kwh)
 
 
 def build_anchored_hourly_series(hourly_points, key, now_ts_ms, anchor_w=None):
@@ -2733,15 +1806,6 @@ def derive_planned_dispatch(first_plan, discharge_ctx):
     if discharge_ctx.get("mode") == "discharge_blocked" and float(discharge_ctx.get("remaining_discharge_budget_kwh", 0.0) or 0.0) > 0.0:
         return "discharge_blocked", 0
     return "idle", 0
-
-
-def mode_to_plan_seed(mode_str):
-    mode_str = str(mode_str or "idle")
-    if mode_str in ("charge_grid", "charge_pv_surplus"):
-        return 1
-    if mode_str.startswith("discharge_"):
-        return -1
-    return 0
 
 
 def series_value_at_or_before(series, ts):
@@ -3112,7 +2176,7 @@ def main():
     rad = inputs["rad"]
 
     if len(data.get("samples", [])) < 120:
-        data["samples"] = bootstrap_samples_from_db(now_ts, days=21)
+        data["samples"] = bootstrap_samples_from_features(now_ts, days=21)
 
     data["pv_bias_slots"] = normalize_slot_biases(data.get("pv_bias_slots"), 0.5, 1.6)
     data["load_bias_slots"] = normalize_slot_biases(data.get("load_bias_slots"), 0.6, 1.6)
@@ -3240,10 +2304,8 @@ def main():
     intervals = intervals[: int(math.ceil(PLANNING_HORIZON_H / SLOT_H))]
     if soc is not None:
         start_e = clamp(CAP_KWH * soc / 100.0, MIN_E_KWH, MAX_E_KWH)
-        initial_plan_mode = 0
     else:
         start_e = advance_virtual_energy(data, now_ts)
-        initial_plan_mode = mode_to_plan_seed(data.get("virtual_last_mode"))
 
     load_bias_plan = clamp(float(data.get("load_bias", load_bias)), 0.6, 1.6)
     inventory_accounting_floor_ct = None
@@ -3275,82 +2337,13 @@ def main():
         pv_capacity_kwp=PV_CAPACITY_KWP,
         pv_inverter_kw=PV_INVERTER_KW,
     )
-    legacy_plan = build_virtual_plan(
-        intervals,
-        data["samples"],
-        start_e,
-        initial_plan_mode,
+    plan = build_authoritative_plan(
+        intervals=intervals,
+        samples=data["samples"],
+        start_energy_kwh=start_e,
         eex_days=eex_days,
         forecast_bundle=forecast_bundle,
         forecast_diagnostics=forecast_diagnostics,
-    )
-    price_stats = legacy_plan.get("price_stats") or {}
-    optimizer_constraints = BatteryConstraints(
-        CAP_KWH,
-        SOC_MIN,
-        SOC_MAX,
-        MAX_CHARGE_P_W,
-        MAX_DISCHARGE_P_W,
-        ETA_RT,
-    )
-    optimizer_policy = CommercialPolicy(
-        min_margin_ct_per_kwh=MIN_MARGIN_CT,
-        terminal_value_ct_per_kwh=float(
-            price_stats.get("terminal_value_ct") or 0.0
-        ),
-        export_opportunity_ct_per_kwh=PV_EXPORT_OPPORTUNITY_CT,
-        discharge_floor_ct_per_kwh=price_stats.get("discharge_floor_ct"),
-        pv_charging_allowed=PV_CHARGING_ENABLED,
-        grid_charging_allowed=GRID_CHARGING_ENABLED,
-        discharge_allowed=DISCHARGE_ENABLED,
-        pv_recovery_confidence=PV_RECOVERY_CONFIDENCE,
-        pv_recovery_reserve_kwh=PV_RECOVERY_RESERVE_KWH,
-    )
-    optimizer_problem, pure_plan = optimize_optimizer_snapshot(
-        intervals=intervals,
-        forecast=forecast_bundle,
-        start_energy_kwh=start_e,
-        constraints=optimizer_constraints,
-        policy=optimizer_policy,
-        evaluated_at_ms=now_ts_ms,
-    )
-    shadow_slot_ms = int(now_floor.timestamp() * 1000)
-    shadow_summary = data.get("optimizer_shadow_summary") or {
-        "status": "pending"
-    }
-    if int(data.get("optimizer_shadow_last_slot_ms") or 0) != shadow_slot_ms:
-        try:
-            shadow_summary = compare_optimizer_plan(
-                problem=optimizer_problem,
-                candidate=pure_plan,
-                legacy_plan=legacy_plan,
-                evaluated_at_ms=now_ts_ms,
-            )
-        except Exception as exc:  # noqa: BLE001 - comparison is non-authoritative.
-            shadow_summary = {
-                "ts_ms": now_ts_ms,
-                "status": "error",
-                "error": f"{type(exc).__name__}: {exc}",
-            }
-        shadow_path = os.path.join(
-            os.path.dirname(STATE_FILE),
-            "battery_strategy_optimizer_shadow.jsonl",
-        )
-        try:
-            append_shadow_record(shadow_path, shadow_summary, now_ms=now_ts_ms)
-        except OSError as exc:
-            shadow_summary = {
-                "ts_ms": now_ts_ms,
-                "status": "persistence_error",
-                "error": f"{type(exc).__name__}: {exc}",
-            }
-        data["optimizer_shadow_last_slot_ms"] = shadow_slot_ms
-        data["optimizer_shadow_summary"] = shadow_summary
-    plan = adapt_pure_optimizer_plan(
-        pure_plan,
-        intervals,
-        forecast_bundle,
-        legacy_plan,
     )
     forecast_diagnostics = plan.get("forecast_diagnostics", {})
     future_points = plan["points"]
@@ -3516,21 +2509,7 @@ def main():
         "backtest_hit_rate_24h_pct": round(hit24, 1) if hit24 is not None else None,
         "weather_factor": round(weather_factor, 3),
         "script_version": SCRIPT_VERSION,
-        "optimizer_source": plan.get("optimizer_source", "transitional"),
-        "optimizer_shadow_status": shadow_summary.get("status"),
-        "optimizer_shadow_mismatch_slots": shadow_summary.get("mismatch_slots"),
-        "optimizer_shadow_max_charge_delta_kwh": shadow_summary.get(
-            "max_charge_delta_kwh"
-        ),
-        "optimizer_shadow_max_discharge_delta_kwh": shadow_summary.get(
-            "max_discharge_delta_kwh"
-        ),
-        "optimizer_shadow_max_budget_delta_kwh": shadow_summary.get(
-            "max_budget_delta_kwh"
-        ),
-        "optimizer_shadow_max_soc_delta_pct": shadow_summary.get(
-            "max_soc_delta_pct"
-        ),
+        "optimizer_source": plan.get("optimizer_source", "unknown"),
         "forecast_source": forecast_diagnostics.get("source"),
         "forecast_slot_count": forecast_diagnostics.get("slot_count"),
         "forecast_runtime_ms": forecast_diagnostics.get("runtime_ms"),

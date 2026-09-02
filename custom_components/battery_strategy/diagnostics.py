@@ -68,11 +68,6 @@ async def async_get_config_entry_diagnostics(hass, entry) -> dict:
                 "forecast_model_version",
             }
         },
-        "optimizer_shadow": {
-            key.removeprefix("optimizer_shadow_"): value
-            for key, value in (data.get("optimizer_attrs") or {}).items()
-            if key.startswith("optimizer_shadow_")
-        },
         "feature_store": data.get("feature_store"),
         "forecast_environment": data.get("forecast_environment"),
         "strategy_enabled": data.get("strategy_enabled"),

@@ -499,10 +499,10 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
                     load_component_features=self._load_components.features,
                 )
             )
-        except Exception as err:  # noqa: BLE001 - shadow code must not stop control.
+        except Exception as err:  # noqa: BLE001 - collection must not stop control.
             finalized_features = ()
             self._feature_store.last_error = f"{type(err).__name__}: {err}"
-            LOGGER.warning("Feature-store shadow aggregation failed: %s", err)
+            LOGGER.warning("Feature-store aggregation failed: %s", err)
         self._account_actual_battery_power(now)
         force_optimizer = self._should_force_optimizer(now) or self._soc_recovered
         self._soc_recovered = False
@@ -651,7 +651,7 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         )
         self._weather_task = self.hass.async_create_task(
             self._async_refresh_weather(request),
-            name="battery_strategy_shadow_weather",
+            name="battery_strategy_weather",
         )
 
     async def _async_refresh_weather(self, request: ForecastRequest) -> None:

@@ -1,4 +1,4 @@
-"""Tests for the recorder-independent shadow feature store."""
+"""Tests for the recorder-independent production feature store."""
 
 from __future__ import annotations
 

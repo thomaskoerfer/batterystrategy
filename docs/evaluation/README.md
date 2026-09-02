@@ -49,7 +49,7 @@ tolerances before results are reviewed.
 
 ## Migration status
 
-Forecast and optimizer shadow traces are available during their respective
-migration phases. Transitional traces are removed after cutover and rollback
-windows unless they provide durable operational value with documented bounded
-retention.
+Forecast and optimizer shadow traces were available only during their migration
+windows. Their runners, stores and optimizer trace are removed in Phase 7.
+Durable evaluation now means explicit backtests, matured forecast metrics and
+bounded command traces, not a dormant second implementation.

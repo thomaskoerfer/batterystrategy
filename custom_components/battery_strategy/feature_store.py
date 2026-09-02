@@ -1,4 +1,4 @@
-"""Recorder-independent shadow feature aggregation and persistence."""
+"""Recorder-independent production feature aggregation and persistence."""
 
 from __future__ import annotations
 

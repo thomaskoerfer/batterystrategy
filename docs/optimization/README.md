@@ -78,6 +78,7 @@ replays assess economic quality but never participate in live actuation.
 ## Migration status
 
 The pure optimizer is authoritative after retained shadow results passed
-operational parity. Exact sub-resolution differences remain visible. The old
-kernel runs only as a temporary non-authoritative comparator and is removed
-after the verified rollback window rather than retained as a permanent selector.
+operational parity. The completed comparator and old kernel are removed in the
+Phase-7 preparation branch. Market-policy metadata is computed once and one
+explicit `OptimizationProblem` is optimized; there is no runtime optimizer
+selector or second economic plan.

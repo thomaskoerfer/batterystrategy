@@ -19,8 +19,8 @@ from ..contracts import (
     QuantileEnergy,
     WeatherSlot,
 )
-from .history import LegacyForecastSample, LegacyForecastTarget
-from .load import LegacyLoadForecastConfig, build_legacy_load_forecast
+from .history import ForecastHistorySample, ForecastTargetInput
+from .load import LoadForecastModelConfig, build_load_forecast
 
 SLOT_H = 0.25
 MIN_COMPONENT_HISTORY_SLOTS = 7 * 96
@@ -39,23 +39,23 @@ _PV_INVALID_FLAGS = frozenset({QualityFlag.MISSING_PV, QualityFlag.RESTART_GAP})
 def build_component_load_forecast(
     request: ForecastRequest,
     history: tuple[HistoricalFeatureSlot, ...],
-    targets: tuple[LegacyForecastTarget, ...],
+    targets: tuple[ForecastTargetInput, ...],
     context: LoadForecastContext,
     weather: tuple[WeatherSlot, ...],
     specs: tuple[LoadComponentSpec, ...],
-    config: LegacyLoadForecastConfig,
+    config: LoadForecastModelConfig,
 ) -> LoadForecast:
     """Compose independently trained component forecasts and residual load."""
     if not specs:
-        return build_legacy_load_forecast(
+        return build_load_forecast(
             request, _total_samples(history), targets, context, config
         )
     keys = tuple(spec.component_key for spec in specs)
     eligible = tuple(item for item in history if _has_components(item, keys))
     if len(eligible) < MIN_COMPONENT_HISTORY_SLOTS:
         # Do not add a partially learned component to a whole-house baseline: that
-        # would double count it. Collection warms up without changing shadow output.
-        fallback = build_legacy_load_forecast(
+        # would double count it. Collection warms up without changing the baseline output.
+        fallback = build_load_forecast(
             request, _total_samples(history), targets, context, config
         )
         quality = DataQuality(0.0, (QualityFlag.ESTIMATED,))
@@ -86,7 +86,7 @@ def build_component_load_forecast(
             ),
         )
 
-    residual = build_legacy_load_forecast(
+    residual = build_load_forecast(
         request,
         _residual_samples(eligible, keys),
         targets,
@@ -227,11 +227,11 @@ def _active_component_power(history, key: str) -> float:
     return float(statistics.median(values)) if values else 0.0
 
 
-def _total_samples(history) -> tuple[LegacyForecastSample, ...]:
+def _total_samples(history) -> tuple[ForecastHistorySample, ...]:
     return tuple(_sample(item, item.house_load_no_ev_kwh) for item in history)
 
 
-def _residual_samples(history, keys) -> tuple[LegacyForecastSample, ...]:
+def _residual_samples(history, keys) -> tuple[ForecastHistorySample, ...]:
     return tuple(
         _sample(
             item,
@@ -249,11 +249,11 @@ def _residual_samples(history, keys) -> tuple[LegacyForecastSample, ...]:
     )
 
 
-def _sample(item, load_kwh) -> LegacyForecastSample:
+def _sample(item, load_kwh) -> ForecastHistorySample:
     flags = frozenset(item.quality.flags)
     load_valid = item.quality.coverage >= 0.999 and not flags & _LOAD_INVALID_FLAGS
     pv_valid = item.quality.coverage >= 0.999 and not flags & _PV_INVALID_FLAGS
-    return LegacyForecastSample(
+    return ForecastHistorySample(
         item.slot.start_ms / 1000.0,
         load_kwh / SLOT_H * 1000.0,
         item.pv_generation_kwh / SLOT_H * 1000.0,

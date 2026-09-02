@@ -8,14 +8,14 @@ from dataclasses import dataclass
 from zoneinfo import ZoneInfo
 
 from ..contracts import ForecastRequest, ForecastSlot, PvForecast, QuantileEnergy
-from .history import LegacyForecastSample, LegacyForecastTarget
+from .history import ForecastHistorySample, ForecastTargetInput
 
 SLOT_H = 0.25
 PV_NOWCAST_BLEND_HOURS = 2.5
 
 
 @dataclass(frozen=True, slots=True)
-class LegacyPvForecastConfig:
+class PvForecastModelConfig:
     timezone: str
     pv_global_bias: float
     pv_slot_biases: tuple[float, ...]
@@ -33,11 +33,11 @@ class LegacyPvForecastConfig:
             raise ValueError("current PV and inverter capacity are required")
 
 
-def build_legacy_pv_forecast(
+def build_pv_forecast(
     request: ForecastRequest,
-    samples: tuple[LegacyForecastSample, ...],
-    targets: tuple[LegacyForecastTarget, ...],
-    config: LegacyPvForecastConfig,
+    samples: tuple[ForecastHistorySample, ...],
+    targets: tuple[ForecastTargetInput, ...],
+    config: PvForecastModelConfig,
 ) -> PvForecast:
     """Forecast PV without importing load context or load-model logic."""
     if len(request.slots) != len(targets):
@@ -102,7 +102,7 @@ def build_legacy_pv_forecast(
         int(max((sample.ts_s for sample in samples), default=0.0) * 1000),
     )
     return PvForecast(
-        f"legacy-{request.as_of_ms}-pv", request.as_of_ms, cutoff, "legacy-pv-v1", slots
+        f"slot-profile-{request.as_of_ms}-pv", request.as_of_ms, cutoff, "slot-profile-pv-v1", slots
     )
 
 

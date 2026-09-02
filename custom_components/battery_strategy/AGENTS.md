@@ -9,15 +9,16 @@ documented impact analysis and explicit owner approval.
 - Data and feature store: `feature_store.py`, `weather.py`,
   `load_components.py`, `component_config.py` and configuration adapters.
 - Forecasting: the `forecasting` package and forecast composition runners.
-- Optimization: `economic_optimizer.py`; remaining optimization code in
-  `optimizer_engine.py`, `optimizer_adapter.py`, `planner.py` and shadow modules
-  is transitional.
+- Optimization: `economic_optimizer.py` and `optimization_problem.py`;
+  orchestration and publication code remaining in `optimizer_engine.py`,
+  `optimizer_adapter.py` and `planner.py` is transitional.
 - Plan compiler: `plan_compiler.py`; compiler orchestration still present in
   coordinator/strategy code is transitional.
 - Live control: `live_control.py`, `strategy.py` and live orchestration in
   `coordinator.py`.
 - Actuation: `actuator.py` and actuator wiring only.
-- Evaluation: shadow runners/stores, diagnostics and measured-savings reporting.
+- Evaluation: diagnostics, bounded command traces, backtests and
+  measured-savings reporting.
 
 ## Boundary rules
 

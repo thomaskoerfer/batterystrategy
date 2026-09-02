@@ -75,6 +75,8 @@ approved downstream contract change is intended.
 
 ## Migration status
 
-The compressed feature store is the production forecast history source. Direct
-recorder-schema access that remains in transitional engine code must be removed
-in the final cleanup phase and must not spread to new modules.
+The compressed feature store is the production forecast history source and the
+bootstrap source for learned quarter-hour samples. Bounded dashboard and
+measured-savings history is obtained through Home Assistant's public history
+API in `history_adapter.py`; no recorder engine or table schema crosses into
+forecasting or optimization.

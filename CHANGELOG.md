@@ -13,23 +13,24 @@ All notable changes to Battery Strategy are documented here.
   while retaining its preceding paid charge; RTE and minimum margin remain
   enforced directly by the economic objective.
 
-### Added
+### Changed
 
-- Wired the deterministic Phase-6 plan compiler into a non-authoritative live
-  shadow using the same published plan, measured slot progress and SoC as the
-  established directive path.
-- Added bounded compiler-parity diagnostics and a dedicated Home Assistant
-  status sensor without exposing the shadow to live control or actuation.
-- Prepared the separate Phase-6 cutover in which the deterministic compiler is
-  the sole plan-directive authority while the established live controller and
-  actuator remain unchanged.
+- Made the deterministic Phase-6 plan compiler the sole plan-directive
+  authority after its separately gated shadow and cutover stages.
+- Prepared the final architecture-cleanup phase by removing completed forecast
+  and optimizer shadow implementations and the superseded economic kernel.
+- Replaced direct Recorder-table access with a bounded adapter using Home
+  Assistant's public history API; feature-store records now provide long-term
+  calibration bootstrap independently of the Recorder backend.
+- Added regression guards that prevent a second optimizer path, dormant shadow
+  runtime or direct SQL dependency from returning.
 
 ### Safety
 
-- The established directive remains solely authoritative in the shadow
-  release. Compiler errors and trace failures cannot alter battery commands.
-- The prepared cutover fails closed on missing or invalid plans and keeps the
-  old translator only as non-authoritative comparison code until Phase 7.
+- This stacked Phase-7 branch is local-only and remains blocked from deployment
+  until the Phase-6 compiler parity and command-trace gate has passed.
+- Existing live control and coordinator-owned actuation are unchanged in this
+  preparation branch.
 
 ## [0.2.0-rc.4] - 2026-09-01
 

@@ -38,10 +38,10 @@ from custom_components.battery_strategy.contracts import (
     SlotKey,
 )
 from custom_components.battery_strategy.forecasting import (
-    LegacyForecastConfig,
-    LegacyForecastSample,
-    LegacyForecastTarget,
-    build_legacy_forecast,
+    ForecastModelConfig,
+    ForecastHistorySample,
+    ForecastTargetInput,
+    build_forecast_bundle,
 )
 from custom_components.battery_strategy import optimizer_adapter
 from custom_components.battery_strategy import config_flow
@@ -104,17 +104,17 @@ class HacsStrategyTests(unittest.TestCase):
             timezone=str(optimizer_engine.OPEN_METEO_TZ),
             slots=slots,
         )
-        legacy_samples = tuple(
-            LegacyForecastSample.from_mapping(item) for item in samples
+        history_samples = tuple(
+            ForecastHistorySample.from_mapping(item) for item in samples
         )
         targets = tuple(
-            LegacyForecastTarget(item["dt"], weather_factor) for item in intervals
+            ForecastTargetInput(item["dt"], weather_factor) for item in intervals
         )
         current_load_w = max(
             0.0,
             float(samples[-1].get("load_w", 0.0)) if samples else 0.0,
         )
-        config = LegacyForecastConfig(
+        config = ForecastModelConfig(
             timezone=request.timezone,
             load_bias=1.0,
             load_slot_biases=(1.0,) * 96,
@@ -127,22 +127,19 @@ class HacsStrategyTests(unittest.TestCase):
             pv_capacity_kwp=optimizer_engine.PV_CAPACITY_KWP,
             pv_inverter_kw=optimizer_engine.PV_INVERTER_KW,
         )
-        return build_legacy_forecast(
+        return build_forecast_bundle(
             request,
-            legacy_samples,
+            history_samples,
             targets,
             LoadForecastContext(current_load_w),
             config,
         )
 
-    def _build_virtual_plan(self, *args, **kwargs):
+    def _build_authoritative_plan(self, *args, **kwargs):
         intervals = kwargs.get("intervals", args[0] if args else None)
         samples = kwargs.get("samples", args[1] if len(args) > 1 else None)
         start_energy_kwh = kwargs.get(
             "start_energy_kwh", args[2] if len(args) > 2 else None
-        )
-        initial_mode = kwargs.get(
-            "initial_mode", args[8] if len(args) > 8 else 0
         )
         eex_days = kwargs.get("eex_days", args[13] if len(args) > 13 else None)
         kwargs["forecast_bundle"] = self._forecast_bundle(
@@ -157,11 +154,10 @@ class HacsStrategyTests(unittest.TestCase):
             pv_global_bias=float(kwargs.get("pv_global_bias", 1.0)),
         )
         kwargs["forecast_diagnostics"] = {"source": "test_fixture"}
-        return optimizer_engine.build_virtual_plan(
+        return optimizer_engine.build_authoritative_plan(
             intervals=intervals,
             samples=samples,
             start_energy_kwh=start_energy_kwh,
-            initial_mode=initial_mode,
             eex_days=eex_days,
             forecast_bundle=kwargs["forecast_bundle"],
             forecast_diagnostics=kwargs["forecast_diagnostics"],
@@ -282,32 +278,29 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertEqual(context["entity_scale"]["ev_power"], 1000.0)
 
     def test_optimizer_history_normalizes_mapped_power_units(self):
-        original_scale = dict(optimizer_engine._ENTITY_SCALE)
-        original_query = optimizer_engine._query_series_many_sql
-        optimizer_engine._ENTITY_SCALE = {"pv_power": 1000.0}
-        optimizer_engine._query_series_many_sql = lambda _entities, _cutoff: {
-            "pv_power": [(100.0, "1.25")]
+        original_series = dict(optimizer_engine._RUNTIME_HISTORY_SERIES)
+        optimizer_engine._RUNTIME_HISTORY_SERIES = {
+            "pv_power": ((100.0, 1250.0),)
         }
         try:
             result = optimizer_engine.fetch_sensor_series_many(["pv_power"], 0.0)
         finally:
-            optimizer_engine._ENTITY_SCALE = original_scale
-            optimizer_engine._query_series_many_sql = original_query
+            optimizer_engine._RUNTIME_HISTORY_SERIES = original_series
         self.assertEqual(result["pv_power"], [(100.0, 1250.0)])
 
     def test_optimizer_history_does_not_fall_back_to_local_sqlite(self):
-        original_engine = optimizer_engine._DB_ENGINE
         original_states = dict(optimizer_engine._RUNTIME_STATES)
-        optimizer_engine._DB_ENGINE = None
+        original_series = dict(optimizer_engine._RUNTIME_HISTORY_SERIES)
         optimizer_engine._RUNTIME_STATES = {"grid_import": 123.0}
+        optimizer_engine._RUNTIME_HISTORY_SERIES = {}
         try:
             states = optimizer_engine.get_latest_states(
                 ["grid_import", "missing_sensor"]
             )
             series = optimizer_engine.fetch_sensor_series("grid_import", 0.0)
         finally:
-            optimizer_engine._DB_ENGINE = original_engine
             optimizer_engine._RUNTIME_STATES = original_states
+            optimizer_engine._RUNTIME_HISTORY_SERIES = original_series
         self.assertEqual(states["grid_import"], 123.0)
         self.assertIsNone(states["missing_sensor"])
         self.assertEqual(series, [])
@@ -647,7 +640,7 @@ class HacsStrategyTests(unittest.TestCase):
                 }
                 for i in range(8)
             ]
-            plan = self._build_virtual_plan(
+            plan = self._build_authoritative_plan(
                 intervals,
                 samples,
                 3.0,
@@ -710,6 +703,8 @@ class HacsStrategyTests(unittest.TestCase):
     def test_runtime_file_migration_compacts_legacy_trace(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            optimizer_shadow = root / "battery_strategy_optimizer_shadow.jsonl"
+            optimizer_shadow.write_text("{}\n")
             legacy = root / "battery_strategy_hacs_command_trace.json"
             legacy.write_text(
                 json.dumps([{"ts": 1, "mode": "idle"}, {"ts": 2, "mode": "input"}])
@@ -721,6 +716,7 @@ class HacsStrategyTests(unittest.TestCase):
                 lines, [{"ts": 1, "mode": "idle"}, {"ts": 2, "mode": "input"}]
             )
             self.assertFalse(legacy.exists())
+            self.assertFalse(optimizer_shadow.exists())
 
     def test_profile_attrs_prefer_raw_unfiltered_optimizer_profiles(self):
         today = dt.datetime.now().date().isoformat()
@@ -2804,7 +2800,7 @@ class HacsStrategyTests(unittest.TestCase):
             }
             for i in range(8)
         ]
-        plan = self._build_virtual_plan(
+        plan = self._build_authoritative_plan(
             intervals=intervals,
             samples=samples,
             start_energy_kwh=optimizer_engine.MAX_E_KWH,
@@ -2856,7 +2852,7 @@ class HacsStrategyTests(unittest.TestCase):
                     }
                 )
 
-        plan = self._build_virtual_plan(
+        plan = self._build_authoritative_plan(
             intervals=intervals,
             samples=samples,
             start_energy_kwh=0.9,
@@ -2917,7 +2913,7 @@ class HacsStrategyTests(unittest.TestCase):
                         "price_ct": 25.0,
                     }
                 )
-        plan = self._build_virtual_plan(
+        plan = self._build_authoritative_plan(
             intervals=intervals,
             samples=samples,
             start_energy_kwh=5.0,
@@ -2961,7 +2957,7 @@ class HacsStrategyTests(unittest.TestCase):
                         "price_ct": 30.0,
                     }
                 )
-        plan = self._build_virtual_plan(
+        plan = self._build_authoritative_plan(
             intervals=intervals,
             samples=samples,
             start_energy_kwh=3.0,
@@ -3010,7 +3006,7 @@ class HacsStrategyTests(unittest.TestCase):
                     }
                 )
 
-        plan = self._build_virtual_plan(
+        plan = self._build_authoritative_plan(
             intervals=intervals,
             samples=samples,
             start_energy_kwh=1.0,
@@ -3034,33 +3030,6 @@ class HacsStrategyTests(unittest.TestCase):
             sum(point["grid_export_fc_w"] for point in plan["points"][:4]),
             0.0,
         )
-
-    def test_pv_spill_recovery_requires_physical_headroom_shortage(self):
-        low_soc_budget = optimizer_engine._pv_spill_recovery_budget_ac_kwh(
-            future_surplus_kwh=0.5,
-            baseline_energy_kwh=optimizer_engine.MIN_E_KWH,
-        )
-        self.assertEqual(low_soc_budget, 0.0)
-
-        future_surplus_kwh = 1.0
-        baseline_energy_kwh = optimizer_engine.MAX_E_KWH - 0.1
-        expected_storage_kwh = max(
-            0.0,
-            future_surplus_kwh
-            * optimizer_engine.ETA_C
-            * optimizer_engine.PV_RECOVERY_CONFIDENCE
-            - 0.1
-            - optimizer_engine.PV_RECOVERY_RESERVE_KWH,
-        )
-        high_soc_budget = optimizer_engine._pv_spill_recovery_budget_ac_kwh(
-            future_surplus_kwh=future_surplus_kwh,
-            baseline_energy_kwh=baseline_energy_kwh,
-        )
-        self.assertAlmostEqual(
-            high_soc_budget,
-            expected_storage_kwh * optimizer_engine.ETA_D,
-        )
-        self.assertGreater(high_soc_budget, 0.0)
 
     def test_optimizer_never_combines_grid_charge_with_discharge_budget(self):
         start = dt.datetime(2026, 8, 13, 12, tzinfo=optimizer_engine.OPEN_METEO_TZ)
@@ -3089,7 +3058,7 @@ class HacsStrategyTests(unittest.TestCase):
                     }
                 )
 
-        plan = self._build_virtual_plan(
+        plan = self._build_authoritative_plan(
             intervals=intervals,
             samples=samples,
             start_energy_kwh=1.0,
@@ -3145,7 +3114,7 @@ class HacsStrategyTests(unittest.TestCase):
                     }
                 )
 
-        first_plan = self._build_virtual_plan(
+        first_plan = self._build_authoritative_plan(
             intervals=intervals,
             samples=samples,
             start_energy_kwh=5.9,
@@ -3168,7 +3137,7 @@ class HacsStrategyTests(unittest.TestCase):
             optimizer_engine.MIN_E_KWH,
             5.9 - budget_kwh / optimizer_engine.ETA_D,
         )
-        second_plan = self._build_virtual_plan(
+        second_plan = self._build_authoritative_plan(
             intervals=intervals[1:],
             samples=samples,
             start_energy_kwh=next_energy_kwh,
@@ -3232,7 +3201,7 @@ class HacsStrategyTests(unittest.TestCase):
         original = optimizer_engine.PV_CHARGING_ENABLED
         optimizer_engine.PV_CHARGING_ENABLED = False
         try:
-            plan = self._build_virtual_plan(
+            plan = self._build_authoritative_plan(
                 intervals=intervals,
                 samples=samples,
                 start_energy_kwh=1.0,
@@ -3286,7 +3255,7 @@ class HacsStrategyTests(unittest.TestCase):
                         "price_ct": 30.0,
                     }
                 )
-        plan = self._build_virtual_plan(
+        plan = self._build_authoritative_plan(
             intervals=intervals,
             samples=samples,
             start_energy_kwh=2.0,
@@ -3337,7 +3306,7 @@ class HacsStrategyTests(unittest.TestCase):
                     }
                 )
 
-        plan = self._build_virtual_plan(
+        plan = self._build_authoritative_plan(
             intervals=intervals,
             samples=samples,
             start_energy_kwh=2.0,
@@ -3357,278 +3326,6 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertEqual(plan["points"][0]["discharge_budget_kwh"], 0.0)
         self.assertEqual(plan["points"][1]["discharge_budget_kwh"], 0.0)
         self.assertGreater(plan["points"][6]["charge_fc_w"], 0.0)
-
-    def test_small_future_pv_charge_only_offsets_matching_evening_reserve(self):
-        slots = [
-            {
-                "price_ct": 36.0,
-                "surplus_kwh": 0.0,
-                "net_pos_kwh": 0.1,
-                "discharge_eligible_kwh": 0.1,
-            },
-            {
-                "price_ct": 20.0,
-                "surplus_kwh": 0.05,
-                "net_pos_kwh": 0.0,
-                "discharge_eligible_kwh": 0.0,
-            },
-            {
-                "price_ct": 43.0,
-                "surplus_kwh": 0.0,
-                "net_pos_kwh": 0.3,
-                "discharge_eligible_kwh": 0.3,
-            },
-            {
-                "price_ct": 42.0,
-                "surplus_kwh": 0.0,
-                "net_pos_kwh": 0.3,
-                "discharge_eligible_kwh": 0.3,
-            },
-        ]
-        points = [
-            {"charge_fc_w": 0.0},
-            {"charge_fc_w": 200.0},
-            {"charge_fc_w": 0.0},
-            {"charge_fc_w": 0.0},
-        ]
-
-        reserve_kwh = optimizer_engine._future_higher_value_load_reserve_kwh(
-            slots,
-            points,
-            0,
-            pv_recovery_confidence=0.75,
-        )
-
-        expected_replacement_kwh = 0.05 * optimizer_engine.ETA_RT * 0.75
-        self.assertAlmostEqual(reserve_kwh, 0.6 - expected_replacement_kwh)
-
-    def test_full_future_grid_recharge_can_cover_evening_reserve(self):
-        slots = [
-            {
-                "price_ct": 36.0,
-                "surplus_kwh": 0.0,
-                "net_pos_kwh": 0.1,
-                "discharge_eligible_kwh": 0.1,
-            },
-            {
-                "price_ct": 20.0,
-                "surplus_kwh": 0.0,
-                "net_pos_kwh": 0.0,
-                "discharge_eligible_kwh": 0.0,
-            },
-            {
-                "price_ct": 43.0,
-                "surplus_kwh": 0.0,
-                "net_pos_kwh": 0.3,
-                "discharge_eligible_kwh": 0.3,
-            },
-            {
-                "price_ct": 42.0,
-                "surplus_kwh": 0.0,
-                "net_pos_kwh": 0.3,
-                "discharge_eligible_kwh": 0.3,
-            },
-        ]
-        required_grid_charge_kwh = 0.6 / optimizer_engine.ETA_RT
-        points = [
-            {"charge_fc_w": 0.0},
-            {"charge_fc_w": required_grid_charge_kwh / optimizer_engine.SLOT_H * 1000.0},
-            {"charge_fc_w": 0.0},
-            {"charge_fc_w": 0.0},
-        ]
-
-        reserve_kwh = optimizer_engine._future_higher_value_load_reserve_kwh(
-            slots,
-            points,
-            0,
-        )
-
-        self.assertAlmostEqual(reserve_kwh, 0.0)
-
-    def test_future_grid_recharge_does_not_release_inventory_for_lower_value_load(
-        self,
-    ):
-        slots = [
-            {
-                "price_ct": 18.56,
-                "surplus_kwh": 0.0,
-                "net_pos_kwh": 0.1,
-                "discharge_eligible_kwh": 0.1,
-            },
-            {
-                "price_ct": 18.20,
-                "surplus_kwh": 0.0,
-                "net_pos_kwh": 0.0,
-                "discharge_eligible_kwh": 0.0,
-            },
-            {
-                "price_ct": 39.99,
-                "surplus_kwh": 0.0,
-                "net_pos_kwh": 0.3,
-                "discharge_eligible_kwh": 0.3,
-            },
-        ]
-        points = [
-            {"charge_fc_w": 0.0},
-            {"charge_fc_w": 0.3 / optimizer_engine.SLOT_H * 1000.0},
-            {"charge_fc_w": 0.0},
-        ]
-
-        reserve_kwh = optimizer_engine._future_higher_value_load_reserve_kwh(
-            slots,
-            points,
-            0,
-            eta_rt=0.85,
-            min_margin_ct=1.0,
-        )
-
-        self.assertAlmostEqual(reserve_kwh, 0.3)
-
-    def test_replacement_break_even_includes_round_trip_loss_and_margin(self):
-        self.assertFalse(
-            optimizer_engine._replacement_is_economic_for_current_discharge(
-                18.56,
-                18.20,
-                eta_rt=0.85,
-                min_margin_ct=1.0,
-            )
-        )
-        self.assertTrue(
-            optimizer_engine._replacement_is_economic_for_current_discharge(
-                22.42,
-                18.20,
-                eta_rt=0.85,
-                min_margin_ct=1.0,
-            )
-        )
-
-    def test_economic_step_cost_uses_real_flows_and_discharge_margin(self):
-        self.assertAlmostEqual(
-            optimizer_engine._economic_step_cost_eur(
-                grid_import_kwh=1.0,
-                grid_export_kwh=0.2,
-                discharge_out_kwh=0.5,
-                import_price_ct=30.0,
-                export_price_ct=8.0,
-                min_margin_ct=1.0,
-            ),
-            0.289,
-        )
-
-    def test_charge_deferral_is_only_a_secondary_economic_tie_break(self):
-        self.assertFalse(
-            optimizer_engine._economic_path_is_better(
-                1.001,
-                0.6,
-                6.0,
-                1.0,
-                0.6,
-                0.0,
-            )
-        )
-        self.assertTrue(
-            optimizer_engine._economic_path_is_better(
-                1.0,
-                0.6,
-                6.0,
-                1.0,
-                0.6,
-                0.0,
-            )
-        )
-
-    def test_subquantum_grid_remainder_moves_without_changing_total_energy(self):
-        points = [
-            {
-                "ts_ms": 0,
-                "date": "2026-08-23",
-                "price_ct": 18.08,
-                "soc_pct": 10.0,
-                "power_w": 434.0,
-                "charge_fc_w": 434.0,
-                "discharge_fc_w": 0.0,
-                "mode": "charge",
-                "load_fc_w": 413.0,
-                "pv_fc_w": 751.0,
-            },
-            {
-                "ts_ms": 900_000,
-                "date": "2026-08-23",
-                "price_ct": 17.55,
-                "soc_pct": 12.0,
-                "power_w": 1000.0,
-                "charge_fc_w": 1000.0,
-                "discharge_fc_w": 0.0,
-                "mode": "charge",
-                "load_fc_w": 500.0,
-                "pv_fc_w": 0.0,
-            },
-        ]
-        before_kwh = sum(point["charge_fc_w"] for point in points) * 0.25 / 1000.0
-
-        result = optimizer_engine.defer_subquantum_grid_remainders(points, 0.6)
-
-        after_kwh = sum(point["charge_fc_w"] for point in result) * 0.25 / 1000.0
-        self.assertAlmostEqual(after_kwh, before_kwh, places=5)
-        self.assertEqual(result[0]["grid_charge_fc_w"], 0.0)
-        self.assertEqual(result[0]["required_charge_fc_w"], 0.0)
-        self.assertGreater(result[1]["grid_charge_fc_w"], 1000.0)
-        self.assertEqual(result[1]["required_charge_fc_w"], result[1]["charge_fc_w"])
-
-    def test_subquantum_grid_remainder_stays_before_intervening_discharge(self):
-        points = [
-            {
-                "ts_ms": 0,
-                "date": "2026-08-23",
-                "price_ct": 18.08,
-                "soc_pct": 10.0,
-                "power_w": 434.0,
-                "charge_fc_w": 434.0,
-                "discharge_fc_w": 0.0,
-                "mode": "charge",
-                "load_fc_w": 413.0,
-                "pv_fc_w": 751.0,
-            },
-            {
-                "ts_ms": 900_000,
-                "date": "2026-08-23",
-                "price_ct": 40.0,
-                "soc_pct": 12.0,
-                "power_w": -400.0,
-                "charge_fc_w": 0.0,
-                "discharge_fc_w": 400.0,
-                "mode": "discharge",
-                "load_fc_w": 1000.0,
-                "pv_fc_w": 0.0,
-            },
-            {
-                "ts_ms": 1_800_000,
-                "date": "2026-08-23",
-                "price_ct": 17.55,
-                "soc_pct": 10.0,
-                "power_w": 1000.0,
-                "charge_fc_w": 1000.0,
-                "discharge_fc_w": 0.0,
-                "mode": "charge",
-                "load_fc_w": 500.0,
-                "pv_fc_w": 0.0,
-            },
-        ]
-
-        result = optimizer_engine.defer_subquantum_grid_remainders(points, 0.6)
-
-        self.assertGreater(result[0]["grid_charge_fc_w"], 0.0)
-        self.assertGreater(result[0]["required_charge_fc_w"], 0.0)
-        self.assertTrue(
-            optimizer_engine._economic_path_is_better(
-                1.0,
-                0.5,
-                0.0,
-                1.0,
-                0.6,
-                6.0,
-            )
-        )
 
     def test_optimizer_publishes_grid_charge_in_latest_equal_value_slot(self):
         tz = dt.timezone.utc
@@ -3695,7 +3392,7 @@ class HacsStrategyTests(unittest.TestCase):
             }
         )
         try:
-            plan = self._build_virtual_plan(
+            plan = self._build_authoritative_plan(
                 intervals=intervals,
                 samples=samples,
                 start_energy_kwh=0.3,
@@ -3751,7 +3448,7 @@ class HacsStrategyTests(unittest.TestCase):
         old_context = self._optimizer_runtime_context()
         self._configure_test_optimizer()
         try:
-            plan = self._build_virtual_plan(
+            plan = self._build_authoritative_plan(
                 intervals=intervals,
                 samples=samples,
                 start_energy_kwh=0.3,
@@ -3810,7 +3507,7 @@ class HacsStrategyTests(unittest.TestCase):
         old_context = self._optimizer_runtime_context()
         self._configure_test_optimizer()
         try:
-            plan = self._build_virtual_plan(
+            plan = self._build_authoritative_plan(
                 intervals=intervals,
                 samples=samples,
                 start_energy_kwh=0.3,
@@ -3899,7 +3596,7 @@ class HacsStrategyTests(unittest.TestCase):
             }
         )
         try:
-            plan = self._build_virtual_plan(
+            plan = self._build_authoritative_plan(
                 intervals=intervals,
                 samples=samples,
                 start_energy_kwh=0.9,
@@ -3976,7 +3673,7 @@ class HacsStrategyTests(unittest.TestCase):
                         "price_ct": 30.0,
                     }
                 )
-        plan = self._build_virtual_plan(
+        plan = self._build_authoritative_plan(
             intervals=intervals,
             samples=samples,
             start_energy_kwh=4.2,
@@ -4028,7 +3725,7 @@ class HacsStrategyTests(unittest.TestCase):
                         "price_ct": 30.0,
                     }
                 )
-        plan = self._build_virtual_plan(
+        plan = self._build_authoritative_plan(
             intervals=intervals,
             samples=samples,
             start_energy_kwh=1.0,
@@ -4078,7 +3775,7 @@ class HacsStrategyTests(unittest.TestCase):
                         "price_ct": 30.0,
                     }
                 )
-        plan = self._build_virtual_plan(
+        plan = self._build_authoritative_plan(
             intervals=intervals,
             samples=samples,
             start_energy_kwh=1.0,
@@ -4126,7 +3823,7 @@ class HacsStrategyTests(unittest.TestCase):
                         "price_ct": 40.0,
                     }
                 )
-        plan = self._build_virtual_plan(
+        plan = self._build_authoritative_plan(
             intervals=intervals,
             samples=samples,
             start_energy_kwh=3.0,
