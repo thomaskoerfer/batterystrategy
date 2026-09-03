@@ -77,11 +77,18 @@ def _migrate_runtime_files(config_dir: str) -> None:
     root = Path(config_dir)
     # Completed parity windows are not runtime dependencies. Remove their
     # bounded traces during upgrade instead of retaining permanent dead state.
-    (root / "battery_strategy_optimizer_shadow.jsonl").unlink(missing_ok=True)
+    for obsolete_name in (
+        "battery_strategy_optimizer_shadow.jsonl",
+        "battery_strategy_compiler_shadow.jsonl",
+        "battery_strategy_forecast_shadow.json.gz",
+    ):
+        (root / obsolete_name).unlink(missing_ok=True)
     current = root / OPTIMIZER_STATE_FILE
     legacy = root / "battery_strategy_hacs_optimizer_state.json"
     if not current.exists() and legacy.exists():
         current.write_bytes(legacy.read_bytes())
+    if current.exists():
+        legacy.unlink(missing_ok=True)
 
     trace = root / COMMAND_TRACE_FILE
     if trace.exists():

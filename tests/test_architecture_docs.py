@@ -10,10 +10,13 @@ ROOT = Path(__file__).parents[1]
 LAYERS = (
     "data-feature-store",
     "forecasting",
+    "market-context",
     "optimization",
+    "planning-service",
     "plan-compiler",
     "live-control",
     "actuation",
+    "savings",
     "evaluation",
 )
 

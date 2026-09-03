@@ -48,6 +48,12 @@ def test_runtime_facade_delegates_coarse_application_boundaries():
     assert "SavingsLedger(" in source
 
 
+def test_planning_service_does_not_duplicate_optimizer_version():
+    source = (PACKAGE / "planning_service.py").read_text(encoding="utf-8")
+    assert '"economic-dp-v1"' not in source
+    assert '"optimizer_source": OPTIMIZER_VERSION' in source
+
+
 def test_coordinator_has_one_authoritative_plan_compiler_path():
     source = (PACKAGE / "coordinator.py").read_text(encoding="utf-8")
     forbidden = (

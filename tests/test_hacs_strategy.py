@@ -664,8 +664,15 @@ class HacsStrategyTests(unittest.TestCase):
     def test_runtime_file_migration_compacts_legacy_trace(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            optimizer_shadow = root / "battery_strategy_optimizer_shadow.jsonl"
-            optimizer_shadow.write_text("{}\n")
+            obsolete_runtime_files = (
+                root / "battery_strategy_optimizer_shadow.jsonl",
+                root / "battery_strategy_compiler_shadow.jsonl",
+                root / "battery_strategy_forecast_shadow.json.gz",
+            )
+            for path in obsolete_runtime_files:
+                path.write_text("{}\n")
+            legacy_state = root / "battery_strategy_hacs_optimizer_state.json"
+            legacy_state.write_bytes(b"learned-state")
             legacy = root / "battery_strategy_hacs_command_trace.json"
             legacy.write_text(
                 json.dumps([{"ts": 1, "mode": "idle"}, {"ts": 2, "mode": "input"}])
@@ -677,7 +684,12 @@ class HacsStrategyTests(unittest.TestCase):
                 lines, [{"ts": 1, "mode": "idle"}, {"ts": 2, "mode": "input"}]
             )
             self.assertFalse(legacy.exists())
-            self.assertFalse(optimizer_shadow.exists())
+            self.assertTrue(all(not path.exists() for path in obsolete_runtime_files))
+            self.assertEqual(
+                (root / "battery_strategy_optimizer_state.json").read_bytes(),
+                b"learned-state",
+            )
+            self.assertFalse(legacy_state.exists())
 
     def test_profile_attrs_prefer_raw_unfiltered_optimizer_profiles(self):
         today = dt.datetime.now().date().isoformat()

@@ -63,10 +63,13 @@ The maintained layer guides are:
 
 - [data adapters and feature store](docs/data-feature-store/README.md);
 - [forecasting](docs/forecasting/README.md);
+- [market context](docs/market-context/README.md);
 - [optimization](docs/optimization/README.md);
+- [planning service](docs/planning-service/README.md);
 - [plan compiler](docs/plan-compiler/README.md);
 - [live control](docs/live-control/README.md);
 - [actuation](docs/actuation/README.md);
+- [measured savings](docs/savings/README.md);
 - [evaluation and diagnostics](docs/evaluation/README.md).
 
 Public documentation and committed agent guidance must describe normalized
@@ -172,34 +175,31 @@ choice must not affect forecasting or optimization semantics. Bounded history
 is read through Home Assistant's public history API in the data adapter; no
 downstream layer receives a recorder engine or depends on recorder tables.
 
-## Current implementation debt
+## Current implementation
 
-The existing live boundary is partly separated across `coordinator.py`,
-`strategy.py` and `actuator.py`. Forecast composition, market enrichment,
-planning orchestration and measured savings now have separate implementation
-boundaries. `optimizer_engine.py` remains a runtime compatibility facade around
-those components, with normalized runtime data supplied by
-`optimizer_adapter.py`. Hardware service calls also remain coordinator-owned.
-Those remaining facade and actuation dependencies are migration sources, not
-the desired permanent boundaries.
+Forecast composition, market enrichment, optimization, planning orchestration,
+plan compilation, live policy, actuation and measured savings have explicit
+implementation owners. `optimizer_engine.py` remains a compatibility facade
+for established runtime callers, but delegates market, planning and savings
+work to their documented coarse components. The coordinator orchestrates these
+boundaries and never writes hardware directly; `actuator.py` is the sole Home
+Assistant battery-service writer.
+
+The compatibility facade is intentional while the public entity and service
+surface remains stable. New behavior must be implemented in its owning layer,
+not added back to the facade. There are no retained alternative optimizers,
+compilers, forecast runners or hardware writers.
 
 ## Migration plan and gates
 
-Current status: `0.2.0-rc.4` is deployed. The finalized feature store is the
-sole production forecast source and the Phase-5 pure optimizer is authoritative
-on one explicit `ForecastBundle`. Its retained shadow gate passed operational
-parity before cutover; exact sub-resolution deltas remain diagnostic. The old
-kernel is non-authoritative during the short rollback window.
-Phase 6 has a non-production preparation branch containing the pure compiler,
-approved contract extensions, documentation and boundary tests. It includes
-the Phase-5 cutover and bounded weather-cache patch, but compiler production
-integration has not started. A stacked Phase-7 preparation removes completed
-forecast/optimizer shadow paths, the old optimizer kernel and direct recorder
-schema access. It also separates market context, one-shot planning orchestration
-and measured savings behind unchanged contracts. It is not deployable until
-the Phase-6 compiler gate has passed; coordinator-owned compilation/actuation
-and the remaining runtime facade are explicit blockers to declaring the
-transformation complete.
+Current status: `0.2.0-rc.5` is deployed. The finalized feature store, pure
+optimizer and deterministic plan compiler are authoritative. Their retained
+shadow gates passed before each cutover. The `0.2.0-rc.6` Phase-7 candidate
+removes those completed comparison paths, the superseded optimizer kernel and
+direct recorder-schema access. It also completes the market-context, planning,
+savings and actuator boundaries without changing the approved contracts.
+Deployment remains subject only to candidate validation and explicit owner
+approval, not another behavioral shadow phase.
 
 ### Phase 0: Baseline and contracts
 

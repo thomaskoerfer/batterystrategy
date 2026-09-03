@@ -10,6 +10,7 @@ from .contracts import (
     CommercialPolicy,
     ForecastBundle,
 )
+from .economic_optimizer import OPTIMIZER_VERSION
 from .market_context import MarketContextService
 from .optimization_problem import optimize_snapshot
 
@@ -69,7 +70,7 @@ class PlanningService:
                 "points": [],
                 "end_soc": 0.0,
                 "daily_costs": {},
-                "optimizer_source": "economic-dp-v1",
+                "optimizer_source": OPTIMIZER_VERSION,
             }
 
         price_stats = metadata["price_stats"]

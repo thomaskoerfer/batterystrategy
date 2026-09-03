@@ -2,16 +2,7 @@
 
 All notable changes to Battery Strategy are documented here.
 
-## [0.2.0-rc.5] - 2026-09-03
-
-### Fixed
-
-- Prevented grid charging from being deferred past the expensive demand it is
-  intended to serve merely because cheaper charging capacity exists later in
-  the planning horizon.
-- Removed post-optimization micro-cycle filtering that could delete discharge
-  while retaining its preceding paid charge; RTE and minimum margin remain
-  enforced directly by the economic objective.
+## [0.2.0-rc.6] - 2026-09-03
 
 ### Changed
 
@@ -33,13 +24,27 @@ All notable changes to Battery Strategy are documented here.
   and measured-savings components without changing approved contracts.
 - Kept missing-price savings events pending instead of advancing their energy
   counter baseline without a usable tariff.
+- Removed completed forecast, optimizer and compiler comparison files after
+  preserving the authoritative learned optimizer state.
 
 ### Safety
 
-- This stacked Phase-7 branch is local-only and remains blocked from deployment
-  until the Phase-6 compiler parity and command-trace gate has passed.
-- Existing live control and coordinator-owned actuation are unchanged in this
-  preparation branch.
+- Phase-6 slot-boundary parity and command-trace gates passed before this
+  cleanup removed the non-authoritative comparison paths.
+- Forecast, optimizer, plan and live-control contracts are unchanged. Battery
+  service calls retain their established order and safe-zero behavior behind
+  the single actuator boundary.
+
+## [0.2.0-rc.5] - 2026-09-03
+
+### Fixed
+
+- Prevented grid charging from being deferred past the expensive demand it is
+  intended to serve merely because cheaper charging capacity exists later in
+  the planning horizon.
+- Removed post-optimization micro-cycle filtering that could delete discharge
+  while retaining its preceding paid charge; RTE and minimum margin remain
+  enforced directly by the economic objective.
 
 ## [0.2.0-rc.4] - 2026-09-01
 

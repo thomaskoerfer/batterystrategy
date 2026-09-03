@@ -2,18 +2,19 @@
 
 ## Decision
 
-Phase 7 is the final phase of the documented architecture transformation. This
-stacked local branch prepares that cleanup, but it is deliberately not a
-deployment candidate. The Phase-6 pure compiler has not yet completed its live
-shadow and command-trace gate, so deleting the coordinator-owned compiler would
-violate the migration order and remove the proven rollback point.
+Phase 7 is the final phase of the documented architecture transformation. The
+Phase-6 pure compiler completed its slot-boundary parity and command-trace gate
+before this candidate was rebuilt on the tagged Phase-6 release. The completed
+comparison implementations can therefore be removed without changing the
+authoritative optimizer, compiler or live behavior.
 
 ## Removed transitional paths
 
 - The old dynamic-programming kernel is deleted. Production and regression
   scenarios now exercise the single authoritative pure optimizer.
-- The completed forecast and optimizer shadow runners, stores, diagnostics and
-  tests are deleted. Their one-time optimizer trace is removed during upgrade.
+- The completed forecast, optimizer and compiler shadow runners, stores,
+  diagnostics and tests are deleted. Their bounded runtime files are removed
+  during upgrade after the authoritative learned state is preserved.
 - Commercial horizon metadata is computed without running a second plan.
 - Market context, one-shot planning orchestration and measured savings are
   extracted into three cohesive components rather than speculative
@@ -79,5 +80,6 @@ the removed modules and SQL tokens. Before deployment it additionally requires:
 - a short live health and command-trace review after each separately approved
   deployment stage.
 
-Rollback before deployment is branch deletion. A later deployment must be
-based on a tagged Phase-6 release and retain its documented server rollback.
+The candidate is based on tagged Phase 6 and retains the documented server
+rollback. Deployment still requires explicit owner approval and the normal
+post-restart health and command-trace review.
