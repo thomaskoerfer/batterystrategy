@@ -140,15 +140,6 @@ zero component contributions, preventing double counting. Missing component
 measurements remain in whole-house load and carry missing-component quality;
 they are never silently treated as measured zero.
 
-### Forecasting to evaluation
-
-Production and shadow forecasters both return `ForecastBundle`. Evaluation
-receives aligned bundles and later finalized actual slots through typed
-`ForecastEvaluationRun` and `ForecastEvaluationPoint` values. These values contain
-only forecast, actual, timestamp, lead-time and quality data. They contain no
-price, battery, plan, live-command or actuator reference. Evaluation is always
-non-authoritative and persists compact lead-time samples outside HA Recorder.
-
 ### Forecasting and market data to optimization
 
 `OptimizationProblem` is a complete deterministic optimizer input. Market and

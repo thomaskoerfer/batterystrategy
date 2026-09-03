@@ -6,8 +6,8 @@ import asyncio
 import logging
 
 from .models import StrategyInputs, StrategyOptions
-from .optimizer_adapter import OptimizerEngineAdapter
 from .plan_models import StrategyPlan
+from .planning_adapter import PlanningPipelineAdapter
 
 LOGGER = logging.getLogger(__name__)
 
@@ -15,7 +15,7 @@ LOGGER = logging.getLogger(__name__)
 class BackgroundPlanner:
     """Keep one optimizer run in flight while serving the last valid plan."""
 
-    def __init__(self, hass, adapter: OptimizerEngineAdapter) -> None:
+    def __init__(self, hass, adapter: PlanningPipelineAdapter) -> None:
         self._hass = hass
         self._adapter = adapter
         self._task: asyncio.Future | None = None

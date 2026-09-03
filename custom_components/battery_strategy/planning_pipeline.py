@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Transitional runtime facade; see ARCHITECTURE.md before changing layers."""
+"""Home Assistant-facing orchestration for one planning pipeline run."""
 
 import bisect
 import datetime as dt
@@ -7,9 +7,7 @@ import json
 import math
 import os
 import time
-import urllib.parse
 from functools import lru_cache
-from urllib.request import urlopen
 from zoneinfo import ZoneInfo
 
 from .contracts import (
@@ -30,7 +28,6 @@ from .planning_service import PlanningService, PlanningSettings
 from .savings import SavingsConfig, SavingsEntities, SavingsLedger
 
 STATE_FILE = "/config/battery_strategy_optimizer_state.json"
-SCRIPT_VERSION = "1.8.15"
 _RUNTIME_STATES = {}
 _RUNTIME_HISTORY_SERIES = {}
 _RUNTIME_PRICE_INTERVALS = []
@@ -87,8 +84,6 @@ ACTUAL_SAVINGS_DAYS = 21
 BIAS_ALPHA = 0.12
 SLOT_BIAS_ALPHA = 0.08
 SLOTS_PER_DAY = 96
-SWITCH_PENALTY_MIN = 5.0
-SWITCH_PENALTY_REF_W = 500.0
 TRACE_MIN_INTERVAL_S = 240
 TRACE_RETENTION_DAYS = 14
 TRACE_MAX_POINTS = 8000
@@ -118,16 +113,7 @@ PV_SURPLUS_MIN_SAMPLE_W = 40.0
 PV_SURPLUS_REQUIRED_COUNT = 1
 PV_SURPLUS_WINDOW_SAMPLES = 1
 
-OPEN_METEO_URL = (
-    "https://api.open-meteo.com/v1/forecast"
-    "?latitude=0&longitude=0"
-    "&current=cloud_cover,shortwave_radiation"
-    "&hourly=cloud_cover,shortwave_radiation"
-    "&forecast_days=3&timezone=Europe%2FBerlin"
-)
-
-
-def configure_runtime(context):
+def _configure(context):
     """Apply one config-entry runtime context before an optimizer run."""
     global STATE_FILE
     global _RUNTIME_STATES, _RUNTIME_HISTORY_SERIES, _RUNTIME_PRICE_INTERVALS
@@ -145,7 +131,7 @@ def configure_runtime(context):
         DISCHARGE_ENABLED, \
         PLANNING_HORIZON_H
     global ETA_RT, ETA_C, ETA_D, MIN_MARGIN_CT, PV_EXPORT_OPPORTUNITY_CT
-    global OPEN_METEO_TZ, OPEN_METEO_URL, PV_CAPACITY_KWP, PV_INVERTER_KW
+    global OPEN_METEO_TZ, PV_CAPACITY_KWP, PV_INVERTER_KW
 
     config_dir = str(context.get("config_dir") or "/config")
     STATE_FILE = os.path.join(config_dir, "battery_strategy_optimizer_state.json")
@@ -197,15 +183,6 @@ def configure_runtime(context):
 
     timezone = str(context.get("timezone") or "UTC")
     OPEN_METEO_TZ = ZoneInfo(timezone)
-    latitude = float(context.get("latitude") or 0.0)
-    longitude = float(context.get("longitude") or 0.0)
-    OPEN_METEO_URL = (
-        "https://api.open-meteo.com/v1/forecast"
-        f"?latitude={latitude}&longitude={longitude}"
-        "&current=cloud_cover,shortwave_radiation"
-        "&hourly=cloud_cover,shortwave_radiation"
-        f"&forecast_days=3&timezone={urllib.parse.quote(timezone)}"
-    )
     PV_CAPACITY_KWP = max(0.1, float(context.get("pv_capacity_kwp") or 1.0))
     PV_INVERTER_KW = max(
         0.1, float(context.get("pv_inverter_power_kw") or PV_CAPACITY_KWP)
@@ -236,41 +213,6 @@ def _market_context_service() -> MarketContextService:
     )
 
 
-def get_eex_day_context(data, local_now):
-    """Compatibility facade for the extracted market-context service."""
-    return _market_context_service().get_eex_day_context(data, local_now)
-
-
-def apply_eex_proxy_prices(intervals, eex_days, today_date, tomorrow_date):
-    """Compatibility facade for EEX-backed missing-price enrichment."""
-    return _market_context_service().apply_eex_proxy_prices(
-        intervals, eex_days, today_date, tomorrow_date
-    )
-
-
-def compute_price_quantiles(samples, local_now, current_price_ct, tomorrow_prices):
-    """Compatibility facade for market diagnostics."""
-    return _market_context_service().compute_price_quantiles(
-        samples, local_now, current_price_ct, tomorrow_prices
-    )
-
-
-def build_commercial_plan_metadata(
-    intervals,
-    samples,
-    *,
-    eex_days=None,
-    forecast_diagnostics=None,
-):
-    """Compatibility facade for commercial planning metadata."""
-    return _market_context_service().build_plan_metadata(
-        intervals,
-        samples,
-        eex_days=eex_days,
-        forecast_diagnostics=forecast_diagnostics,
-    )
-
-
 def _planning_service() -> PlanningService:
     return PlanningService(
         market_context=_market_context_service(),
@@ -293,28 +235,8 @@ def _planning_service() -> PlanningService:
     )
 
 
-def build_authoritative_plan(
-    intervals,
-    samples,
-    start_energy_kwh,
-    *,
-    eex_days=None,
-    forecast_bundle,
-    forecast_diagnostics=None,
-):
-    """Plan one snapshot through the extracted application service."""
-    return _planning_service().plan(
-        intervals=intervals,
-        samples=samples,
-        start_energy_kwh=start_energy_kwh,
-        eex_days=eex_days,
-        forecast_bundle=forecast_bundle,
-        forecast_diagnostics=forecast_diagnostics,
-    )
-
-
-def update_actual_savings_incremental(data, now_ts):
-    """Update measured savings through the independent accounting boundary."""
+def _update_actual_savings(data, now_ts):
+    """Update measured savings through its independent accounting boundary."""
     return SavingsLedger(
         config=SavingsConfig(
             timezone=OPEN_METEO_TZ,
@@ -594,7 +516,6 @@ def fallback_output(mode, reason, data, now_iso):
     out = dict(last)
     out["mode"] = mode
     out["reason"] = reason
-    out["script_version"] = SCRIPT_VERSION
     out["timestamp"] = now_iso
     return out
 
@@ -698,46 +619,39 @@ def weather_factor_from_cloud_rad(cloud_cover, shortwave_radiation):
     return 0.6 * cloud_factor + 0.4 * rad_factor
 
 
-def open_meteo_weather():
-    try:
-        with urlopen(OPEN_METEO_URL, timeout=8) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
-        cur = payload.get("current", {})
-        hourly = payload.get("hourly", {})
-        hourly_map = {}
-        times = hourly.get("time", []) or []
-        clouds = hourly.get("cloud_cover", []) or []
-        radiation = hourly.get("shortwave_radiation", []) or []
-        for ts, cloud, rad in zip(times, clouds, radiation):
-            try:
-                dt_obj = dt.datetime.fromisoformat(ts)
-                if dt_obj.tzinfo is None:
-                    dt_obj = dt_obj.replace(tzinfo=OPEN_METEO_TZ)
-                else:
-                    dt_obj = dt_obj.astimezone(OPEN_METEO_TZ)
-                hour_key = dt_obj.replace(minute=0, second=0, microsecond=0).isoformat()
-                hourly_map[hour_key] = {
-                    "cloud_cover": float(cloud),
-                    "shortwave_radiation": float(rad),
-                    "weather_factor": round(
-                        weather_factor_from_cloud_rad(cloud, rad), 4
-                    ),
-                }
-            except Exception:
-                continue
-        return {
-            "cloud_cover": float(cur.get("cloud_cover", 50.0)),
-            "shortwave_radiation": float(cur.get("shortwave_radiation", 0.0)),
-            "weather_factor": round(
-                weather_factor_from_cloud_rad(
-                    cur.get("cloud_cover", 50.0), cur.get("shortwave_radiation", 0.0)
-                ),
-                4,
-            ),
-            "hourly": hourly_map,
-        }
-    except Exception:
+def weather_snapshot(now_ts_ms):
+    """Project the canonical slot weather into the published runtime shape."""
+    slots = tuple(_RUNTIME_FORECAST_WEATHER)
+    if not slots:
         return None
+    current = next(
+        (item for item in slots if item.slot.start_ms <= now_ts_ms < item.slot.end_ms),
+        slots[0],
+    )
+    hourly = {}
+    for item in slots:
+        local = dt.datetime.fromtimestamp(
+            item.slot.start_ms / 1000.0, dt.timezone.utc
+        ).astimezone(OPEN_METEO_TZ)
+        key = local.replace(minute=0, second=0, microsecond=0).isoformat()
+        cloud = item.cloud_cover_pct
+        radiation = item.shortwave_radiation_w_m2
+        hourly[key] = {
+            "cloud_cover": cloud,
+            "shortwave_radiation": radiation,
+            "weather_factor": round(weather_factor_from_cloud_rad(cloud, radiation), 4),
+        }
+    return {
+        "cloud_cover": current.cloud_cover_pct,
+        "shortwave_radiation": current.shortwave_radiation_w_m2,
+        "weather_factor": round(
+            weather_factor_from_cloud_rad(
+                current.cloud_cover_pct, current.shortwave_radiation_w_m2
+            ),
+            4,
+        ),
+        "hourly": hourly,
+    }
 
 
 def read_tibber_future_price_stats(now_local):
@@ -905,7 +819,7 @@ def collect_inputs():
 
     cloud = as_float(s[E_WEATHER_CLOUD], None)
     rad = as_float(s[E_WEATHER_RADIATION], None)
-    weather = open_meteo_weather()
+    weather = weather_snapshot(int(dt.datetime.now(dt.timezone.utc).timestamp() * 1000))
     if weather:
         cloud = weather["cloud_cover"]
         rad = weather["shortwave_radiation"]
@@ -1186,153 +1100,6 @@ def build_anchored_hourly_series(hourly_points, key, now_ts_ms, anchor_w=None):
     return out
 
 
-def classify_discharge_mode(future_points, current_price_ct, usable_energy_ac_kwh):
-    if not future_points:
-        return {
-            "mode": "idle",
-            "next_charge_window_start": None,
-            "remaining_discharge_budget_kwh": 0.0,
-            "expected_net_load_until_charge_kwh": 0.0,
-            "required_discharge_power_w": 0.0,
-            "slot_value_score": 0.0,
-            "coverage_ratio": 0.0,
-            "current_allocated_power_w": 0.0,
-            "valuable_load_kwh": 0.0,
-            "current_is_local_peak": False,
-        }
-
-    current = future_points[0]
-    charge_idx = next(
-        (
-            i
-            for i, p in enumerate(future_points[1:], start=1)
-            if p.get("mode") == "charge"
-        ),
-        None,
-    )
-    horizon = future_points if charge_idx is None else future_points[:charge_idx]
-    if not horizon:
-        horizon = [current]
-
-    price_window = [float(p.get("price_ct", current_price_ct or 0.0)) for p in horizon]
-    p_min = min(price_window) if price_window else (current_price_ct or 0.0)
-    p_max = max(price_window) if price_window else (current_price_ct or 0.0)
-    current_is_local_peak = (
-        bool(price_window)
-        and abs(float(current.get("price_ct", current_price_ct or 0.0)) - p_max) < 0.05
-    )
-    if p_max - p_min < 0.1:
-        slot_value_score = 0.0
-    else:
-        slot_value_score = clamp(
-            ((current_price_ct or p_min) - p_min) / (p_max - p_min), 0.0, 1.0
-        )
-
-    next_charge_window_start = None
-    if charge_idx is not None:
-        next_charge_window_start = future_points[charge_idx].get("ts_ms")
-
-    slots = []
-    expected_net_load_until_charge_kwh = 0.0
-    for idx, p in enumerate(horizon):
-        absorbable_kwh = min(
-            MAX_DISCHARGE_E_SLOT_KWH,
-            max(
-                0.0,
-                float(p.get("grid_import_fc_w", 0.0))
-                + float(p.get("discharge_fc_w", 0.0)),
-            )
-            / 1000.0
-            * SLOT_H,
-        )
-        expected_net_load_until_charge_kwh += absorbable_kwh
-        slots.append(
-            {
-                "idx": idx,
-                "price_ct": float(p.get("price_ct", current_price_ct or 0.0)),
-                "absorbable_kwh": absorbable_kwh,
-                "allocated_kwh": 0.0,
-            }
-        )
-
-    remaining = max(0.0, float(usable_energy_ac_kwh))
-    current_price_ref = max(0.0, float(current_price_ct or p_max or 0.0))
-    if remaining > 1e-6:
-        switch_energy_kwh = (SWITCH_PENALTY_MIN / 60.0) * (
-            SWITCH_PENALTY_REF_W / 1000.0
-        )
-        deferral_penalty_ct = (switch_energy_kwh * current_price_ref) / remaining
-    else:
-        deferral_penalty_ct = 0.0
-
-    def slot_priority(slot):
-        near_peak = (p_max - slot["price_ct"]) <= deferral_penalty_ct
-        return (-(p_max if near_peak else slot["price_ct"]), slot["idx"])
-
-    for slot in sorted(slots, key=slot_priority):
-        alloc = min(slot["absorbable_kwh"], remaining)
-        slot["allocated_kwh"] = alloc
-        remaining -= alloc
-        if remaining <= 1e-6:
-            break
-
-    current_slot = next(
-        (s for s in slots if s["idx"] == 0),
-        {"allocated_kwh": 0.0, "absorbable_kwh": 0.0},
-    )
-    current_allocated_power_w = (current_slot["allocated_kwh"] / SLOT_H) * 1000.0
-    valuable_load_kwh = sum(
-        s["absorbable_kwh"] for s in slots if s["allocated_kwh"] > 1e-6
-    )
-    allocated_total_kwh = sum(s["allocated_kwh"] for s in slots)
-    remaining_discharge_budget_kwh = max(
-        0.0, allocated_total_kwh - current_slot["allocated_kwh"]
-    )
-    slots_left = max(1, len(slots))
-    required_discharge_power_w = (allocated_total_kwh / (slots_left * SLOT_H)) * 1000.0
-    coverage_ratio = (
-        0.0
-        if valuable_load_kwh <= 1e-6
-        else min(1.5, usable_energy_ac_kwh / valuable_load_kwh)
-    )
-    current_fill_ratio = (
-        0.0
-        if current_slot["absorbable_kwh"] <= 1e-6
-        else current_slot["allocated_kwh"] / current_slot["absorbable_kwh"]
-    )
-
-    if current_allocated_power_w <= 1.0:
-        mode = (
-            "discharge_blocked"
-            if any(s["allocated_kwh"] > 1e-6 for s in slots[1:])
-            else "idle"
-        )
-    elif (
-        current_is_local_peak
-        or (slot_value_score >= 0.85 and coverage_ratio < 0.95)
-        or current_fill_ratio >= 0.98
-    ):
-        mode = "discharge_push"
-    else:
-        mode = "discharge_limited"
-
-    return {
-        "mode": mode,
-        "next_charge_window_start": next_charge_window_start,
-        "remaining_discharge_budget_kwh": round(remaining_discharge_budget_kwh, 3),
-        "expected_net_load_until_charge_kwh": round(
-            expected_net_load_until_charge_kwh, 3
-        ),
-        "required_discharge_power_w": round(required_discharge_power_w, 1),
-        "slot_value_score": round(slot_value_score, 3),
-        "current_is_local_peak": current_is_local_peak,
-        "coverage_ratio": round(coverage_ratio, 3),
-        "current_allocated_power_w": round(current_allocated_power_w, 1),
-        "valuable_load_kwh": round(valuable_load_kwh, 3),
-        "deferral_penalty_ct": round(deferral_penalty_ct, 3),
-    }
-
-
 def split_profile(points, date_str):
     arr = [p for p in points if p.get("date") == date_str]
     return {
@@ -1378,7 +1145,7 @@ def build_published_plan_profiles(
     return forecast_today, forecast_tomorrow, profile_today, profile_tomorrow
 
 
-def derive_planned_dispatch(first_plan, discharge_ctx):
+def derive_planned_dispatch(first_plan):
     if not first_plan:
         return "idle", 0
 
@@ -1393,16 +1160,14 @@ def derive_planned_dispatch(first_plan, discharge_ctx):
         )
         return charge_mode, plan_power
     if plan_mode == "discharge":
-        return discharge_ctx.get("mode", "discharge_limited"), plan_power
-    if (
-        discharge_ctx.get("mode") == "discharge_blocked"
-        and float(discharge_ctx.get("remaining_discharge_budget_kwh", 0.0) or 0.0) > 0.0
-    ):
-        return "discharge_blocked", 0
+        return "discharge_planned", plan_power
     return "idle", 0
 
 
-def main():
+def run(runtime_context=None):
+    """Execute one planning refresh from an explicitly captured snapshot."""
+    if runtime_context is not None:
+        _configure(runtime_context)
     global SOC_MIN, MIN_E_KWH
     now = dt.datetime.now(dt.timezone.utc)
     now_ts = now.timestamp()
@@ -1414,8 +1179,7 @@ def main():
     inputs = collect_inputs()
     if inputs.get("error"):
         out = fallback_output("no_price", inputs["error"], data, now.isoformat())
-        print(json.dumps(out, ensure_ascii=False))
-        return
+        return out
 
     p_now = inputs["p_now"]
     p_future_max = inputs["p_future_max"]
@@ -1492,9 +1256,9 @@ def main():
         actual_daily_savings,
         actual_today_saving,
         actual_savings_lifetime_eur,
-    ) = update_actual_savings_incremental(data, now_ts)
+    ) = _update_actual_savings(data, now_ts)
 
-    # actual_daily_savings is maintained inside update_actual_savings_incremental
+    # actual_daily_savings is maintained inside the savings ledger
     # via data["actual_daily_savings"] directly; retrieve for output helpers.
     actual_daily_savings = data["actual_daily_savings"]
     actual_inventory_deliverable_kwh = None
@@ -1514,7 +1278,6 @@ def main():
     net_no_battery_with_ev_now_w = net_no_battery_with_ev_w(
         grid_import_w, grid_export_w, bat_in_out_w
     )
-    net_now_w = max(0.0, net_no_battery_no_ev_now_w)
     pv_surplus_stable, pv_surplus_avg = recent_surplus_stable(data["samples"])
     rte_break_even_ct = (p_now / ETA_RT) + MIN_MARGIN_CT if p_now is not None else None
     expected_spread_ct = (p_future_max * ETA_RT) - p_now if p_now is not None else None
@@ -1606,9 +1369,10 @@ def main():
         (100.0 * sum(1 for x in bt24 if x.get("success")) / len(bt24)) if bt24 else None
     )
 
-    eex_days = get_eex_day_context(data, local_now)
+    market_context = _market_context_service()
+    eex_days = market_context.get_eex_day_context(data, local_now)
     intervals_all = read_tibber_intervals_for_dates({today, tomorrow})
-    intervals_all, tomorrow_price_source = apply_eex_proxy_prices(
+    intervals_all, tomorrow_price_source = market_context.apply_eex_proxy_prices(
         intervals_all,
         eex_days,
         local_now.date(),
@@ -1658,7 +1422,7 @@ def main():
         pv_capacity_kwp=PV_CAPACITY_KWP,
         pv_inverter_kw=PV_INVERTER_KW,
     )
-    plan = build_authoritative_plan(
+    plan = _planning_service().plan(
         intervals=intervals,
         samples=data["samples"],
         start_energy_kwh=start_e,
@@ -1680,59 +1444,12 @@ def main():
         * SLOT_H
     )
     net_kwh = max(0.0, load_fc_kwh - pv_corr_kwh)
-    usable_energy_ac_kwh = max(0.0, start_e - MIN_E_KWH) * ETA_D
-    discharge_ctx = classify_discharge_mode(future_points, p_now, usable_energy_ac_kwh)
-    planned_mode = mode
-    planned_power_w = rec_w
+    planned_mode = "idle"
+    planned_power_w = 0
     if future_points:
-        planned_mode, planned_power_w = derive_planned_dispatch(
-            future_points[0], discharge_ctx
-        )
-
+        planned_mode, planned_power_w = derive_planned_dispatch(future_points[0])
     mode = planned_mode
     rec_w = planned_power_w
-    if mode == "discharge_push":
-        rec_w = int(clamp(max(0.0, net_now_w), 0.0, MAX_DISCHARGE_P_W))
-        if rec_w <= 0:
-            mode = "discharge_blocked"
-            rec_w = 0
-            reason = "push window but no live net load"
-        elif rec_w != planned_power_w:
-            reason = "push window against live net load"
-    elif mode == "discharge_limited":
-        rec_w = int(
-            clamp(
-                min(float(planned_power_w), max(0.0, net_now_w)), 0.0, MAX_DISCHARGE_P_W
-            )
-        )
-        if rec_w <= 0:
-            mode = "discharge_blocked"
-            rec_w = 0
-            reason = "limited discharge blocked by live net load"
-        elif rec_w < planned_power_w:
-            reason = "limited discharge capped by live net load"
-    elif mode == "discharge_blocked":
-        rec_w = 0
-        reason = "battery reserved for later higher-value slots"
-    elif mode in ("charge_grid", "charge_pv_surplus"):
-        rec_w = int(clamp(float(planned_power_w), 0.0, MAX_CHARGE_P_W))
-        if pv_surplus_stable and pv_surplus_w > 0 and start_e < (MAX_E_KWH - 0.05):
-            mode = "charge_follow"
-            rec_w = int(clamp(float(pv_surplus_w), 0.0, MAX_CHARGE_P_W))
-            reason = "price plan + pv surplus follow"
-
-    if (
-        mode in ("idle", "discharge_blocked")
-        and pv_surplus_stable
-        and pv_surplus_w >= PV_SURPLUS_MIN_SAMPLE_W
-        and start_e < (MAX_E_KWH - 0.05)
-    ):
-        mode = "charge_follow"
-        rec_w = int(clamp(float(pv_surplus_w), 0.0, MAX_CHARGE_P_W))
-        reason = "stable pv surplus follow"
-
-    if soc is None:
-        reason = reason + " (virtual battery mode)"
     data["predictions"].append(
         {
             "target_ts": now_ts + 3600,
@@ -1769,7 +1486,7 @@ def main():
     )
     profile_today["price"] = build_price_profile(intervals_all, today)
     profile_tomorrow["price"] = build_price_profile(intervals_all, tomorrow)
-    price_obs = compute_price_quantiles(
+    price_obs = market_context.compute_price_quantiles(
         data["samples"], local_now, p_now, profile_tomorrow["price"]
     )
     for k in (
@@ -1820,20 +1537,6 @@ def main():
         "recommended_discharge_power_w": int(
             rec_w if mode.startswith("discharge_") else 0
         ),
-        "discharge_mode_detail": discharge_ctx["mode"],
-        "next_charge_window_start_ts": discharge_ctx["next_charge_window_start"],
-        "remaining_discharge_budget_kwh": discharge_ctx[
-            "remaining_discharge_budget_kwh"
-        ],
-        "expected_net_load_until_charge_kwh": discharge_ctx[
-            "expected_net_load_until_charge_kwh"
-        ],
-        "required_discharge_power_w": discharge_ctx["required_discharge_power_w"],
-        "slot_value_score": discharge_ctx["slot_value_score"],
-        "current_is_local_peak": discharge_ctx["current_is_local_peak"],
-        "coverage_ratio": discharge_ctx["coverage_ratio"],
-        "current_allocated_power_w": discharge_ctx["current_allocated_power_w"],
-        "valuable_load_kwh": discharge_ctx["valuable_load_kwh"],
         "reason": reason,
         "expected_spread_ct": round(expected_spread_ct, 2)
         if expected_spread_ct is not None
@@ -1868,7 +1571,6 @@ def main():
         "backtest_mae_load_7d_kwh": round(mae(bt7d, "load_mae"), 3) if bt7d else None,
         "backtest_hit_rate_24h_pct": round(hit24, 1) if hit24 is not None else None,
         "weather_factor": round(weather_factor, 3),
-        "script_version": SCRIPT_VERSION,
         "optimizer_source": plan.get("optimizer_source", "unknown"),
         "forecast_source": forecast_diagnostics.get("source"),
         "forecast_slot_count": forecast_diagnostics.get("slot_count"),
@@ -2026,17 +1728,4 @@ def main():
 
     data["last_output"] = out
     save_state(data)
-    print(json.dumps(out, ensure_ascii=False))
-
-
-if __name__ == "__main__":
-    try:
-        main()
-    except Exception as exc:
-        try:
-            now_iso = dt.datetime.now(dt.timezone.utc).isoformat()
-            data = load_state()
-            out = fallback_output("error", str(exc), data, now_iso)
-            print(json.dumps(out, ensure_ascii=False))
-        except Exception:
-            print(json.dumps({"mode": "error", "reason": str(exc)}))
+    return out

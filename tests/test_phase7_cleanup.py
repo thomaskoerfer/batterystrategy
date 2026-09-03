@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-
 ROOT = Path(__file__).parents[1]
 PACKAGE = ROOT / "custom_components" / "battery_strategy"
 
@@ -16,12 +15,13 @@ def test_completed_shadow_and_legacy_optimizer_modules_are_absent():
         "forecast_shadow_store.py",
         "forecasting/shadow.py",
         "compiler_evaluation.py",
+        "optimizer_engine.py",
     )
     assert all(not (PACKAGE / name).exists() for name in obsolete)
 
 
 def test_optimizer_orchestration_has_no_recorder_schema_dependency():
-    source = (PACKAGE / "optimizer_engine.py").read_text(encoding="utf-8").lower()
+    source = (PACKAGE / "planning_pipeline.py").read_text(encoding="utf-8").lower()
     forbidden = (
         "sqlalchemy",
         "states_meta",
@@ -29,13 +29,20 @@ def test_optimizer_orchestration_has_no_recorder_schema_dependency():
         "db_engine",
         "build_virtual_plan",
         "optimizer_shadow",
+        "urlopen",
+        "open_meteo_url",
     )
     assert all(token not in source for token in forbidden)
 
 
-def test_runtime_facade_delegates_coarse_application_boundaries():
-    source = (PACKAGE / "optimizer_engine.py").read_text(encoding="utf-8")
+def test_planning_pipeline_uses_owned_application_boundaries_without_facades():
+    source = (PACKAGE / "planning_pipeline.py").read_text(encoding="utf-8")
     forbidden_definitions = (
+        "def build_authoritative_plan(",
+        "def build_commercial_plan_metadata(",
+        "def apply_eex_proxy_prices(",
+        "def compute_price_quantiles(",
+        "def classify_discharge_mode(",
         "def adapt_pure_optimizer_plan(",
         "def eex_filter_rows(",
         "def eex_fetch_settlement(",
@@ -43,9 +50,9 @@ def test_runtime_facade_delegates_coarse_application_boundaries():
         "def indexed_value_at_or_before(",
     )
     assert all(token not in source for token in forbidden_definitions)
-    assert "PlanningService(" in source
-    assert "MarketContextService(" in source
-    assert "SavingsLedger(" in source
+    assert "_planning_service().plan(" in source
+    assert "market_context.apply_eex_proxy_prices(" in source
+    assert "_update_actual_savings(" in source
 
 
 def test_planning_service_does_not_duplicate_optimizer_version():

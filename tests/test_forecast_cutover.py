@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
-from custom_components.battery_strategy import optimizer_engine
+from custom_components.battery_strategy import planning_pipeline
 from custom_components.battery_strategy.contracts import (
     DataQuality,
     HistoricalFeatureSlot,
@@ -43,13 +43,13 @@ class ForecastProductionTests(unittest.TestCase):
             for index in range(16)
         ]
         self.history = self._history(8)
-        self.old_timezone = optimizer_engine.OPEN_METEO_TZ
-        optimizer_engine.OPEN_METEO_TZ = self.timezone
-        optimizer_engine.local_dt_from_ts.cache_clear()
+        self.old_timezone = planning_pipeline.OPEN_METEO_TZ
+        planning_pipeline.OPEN_METEO_TZ = self.timezone
+        planning_pipeline.local_dt_from_ts.cache_clear()
 
     def tearDown(self) -> None:
-        optimizer_engine.OPEN_METEO_TZ = self.old_timezone
-        optimizer_engine.local_dt_from_ts.cache_clear()
+        planning_pipeline.OPEN_METEO_TZ = self.old_timezone
+        planning_pipeline.local_dt_from_ts.cache_clear()
 
     def _history(self, days: int):
         first = self.start.astimezone(dt.timezone.utc) - dt.timedelta(days=days)
@@ -76,8 +76,8 @@ class ForecastProductionTests(unittest.TestCase):
         return tuple(slots)
 
     def _forecast(self, history=None):
-        targets = optimizer_engine.build_forecast_targets(self.intervals, 0.8)
-        return optimizer_engine.build_production_forecast(
+        targets = planning_pipeline.build_forecast_targets(self.intervals, 0.8)
+        return planning_pipeline.build_production_forecast(
             self.intervals,
             targets,
             now_local=self.start,
@@ -127,30 +127,30 @@ class ForecastProductionTests(unittest.TestCase):
 
     def test_optimizer_requires_explicit_forecast_bundle(self):
         with self.assertRaisesRegex(TypeError, "forecast_bundle"):
-            optimizer_engine.build_authoritative_plan(
-                self.intervals, [], 3.0
+            planning_pipeline._planning_service().plan(
+                intervals=self.intervals, samples=[], start_energy_kwh=3.0
             )
 
     def test_optimizer_does_not_construct_forecasts(self):
-        source = inspect.getsource(optimizer_engine.build_authoritative_plan)
+        source = inspect.getsource(planning_pipeline._planning_service().plan)
         self.assertNotIn("build_production_forecast", source)
         self.assertNotIn("build_feature_store_forecast", source)
 
     def test_optimizer_has_no_shadow_evaluation_dependency(self):
-        source = Path(optimizer_engine.__file__).read_text(encoding="utf-8")
+        source = Path(planning_pipeline.__file__).read_text(encoding="utf-8")
         self.assertNotIn("shadow_history", source)
         self.assertNotIn("evaluate_feature_store_shadow", source)
 
     def test_load_state_removes_obsolete_comparison_traces(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             state_path = Path(temp_dir) / "optimizer_state.json"
-            optimizer_engine.save_state_document(state_path, {
+            planning_pipeline.save_state_document(state_path, {
                 "forecast_shadow_trace": [{"slot_start_ts": 1234}],
                 "forecast_parity_trace": [{"slot_start_ts": 5678}],
                 "state_schema": 7,
             })
-            with patch.object(optimizer_engine, "STATE_FILE", str(state_path)):
-                data = optimizer_engine.load_state()
+            with patch.object(planning_pipeline, "STATE_FILE", str(state_path)):
+                data = planning_pipeline.load_state()
         self.assertNotIn("forecast_shadow_trace", data)
         self.assertNotIn("forecast_parity_trace", data)
         self.assertEqual(data["state_schema"], 8)

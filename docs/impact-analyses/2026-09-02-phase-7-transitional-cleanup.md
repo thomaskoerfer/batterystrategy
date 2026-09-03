@@ -1,4 +1,4 @@
-# Impact analysis: Phase-7 transitional cleanup preparation
+# Impact analysis: Phase-7 final architecture cleanup
 
 ## Decision
 
@@ -13,19 +13,21 @@ authoritative optimizer, compiler or live behavior.
 - The old dynamic-programming kernel is deleted. Production and regression
   scenarios now exercise the single authoritative pure optimizer.
 - The completed forecast, optimizer and compiler shadow runners, stores,
-  diagnostics and tests are deleted. Their bounded runtime files are removed
+  diagnostics, comparison contracts and tests are deleted. Their bounded runtime files are removed
   during upgrade after the authoritative learned state is preserved.
 - Commercial horizon metadata is computed without running a second plan.
 - Market context, one-shot planning orchestration and measured savings are
   extracted into three cohesive components rather than speculative
-  micro-services. `optimizer_engine.py` delegates through compatibility
-  facades while existing callers migrate.
+  micro-services. The former compatibility engine is removed; the HA adapter
+  invokes the explicit planning pipeline and receives a typed Python result.
 - Direct SQLAlchemy and Recorder-table access is deleted. Bounded numeric
   history is captured through Home Assistant's public history API by the data
   adapter, while calibration bootstrap uses canonical finalized feature slots.
 
-No interface contract changes. Units, signs, slot alignment, plan semantics,
-live commands and actuator targets are intended to remain unchanged.
+The owner explicitly approved removal of the unused shadow-evaluation contract
+on 2026-09-03 as part of the complete legacy cleanup. No active producer or
+consumer used it. Units, signs, slot alignment, plan semantics, live commands
+and actuator targets remain unchanged.
 
 ## Dependency and decision impact
 
@@ -50,7 +52,7 @@ live policy and one actuator boundary. Contracts prohibit the important failure
 modes: hidden I/O in forecasting/optimization, economics in live control and
 multiple hardware writers.
 
-The stacked ready branch closes the high-priority structural findings without
+The final candidate closes the high-priority structural findings without
 changing the approved contracts:
 
 1. The pure Phase-6 compiler is the sole directive authority. Coordinator
@@ -58,10 +60,10 @@ changing the approved contracts:
 2. Home Assistant battery service calls are owned exclusively by
    `HomeAssistantZendureActuator`; the coordinator only orchestrates safety and
    enable/disable transitions.
-3. Forecasting, market context, optimization, planning and savings are
-   delegated to documented coarse components. `optimizer_engine.py` remains a
-   deliberately thin runtime compatibility facade rather than being split into
-   installation-specific micro-layers.
+3. Forecasting, market context, optimization, planning and savings are owned by
+   documented coarse components. The planning pipeline only sequences them and
+   publishes the established entity payload; it is not a compatibility facade
+   and owns no duplicate domain implementation.
 
 Static architecture tests prevent the old compiler path, shadow modules,
 direct database access and coordinator hardware writes from returning.

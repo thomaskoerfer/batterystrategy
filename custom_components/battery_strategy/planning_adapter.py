@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-import contextlib
 import datetime as dt
-import io
-import json
 import logging
 import threading
 import time
@@ -42,8 +39,8 @@ _ENGINE_RUN_LOCK = threading.Lock()
 LOGGER = logging.getLogger(__name__)
 
 
-class OptimizerEngineAdapter:
-    """Run the high-quality optimizer inside the HACS integration."""
+class PlanningPipelineAdapter:
+    """Adapt Home Assistant snapshots to the planning application pipeline."""
 
     def __init__(self, hass=None, entry=None) -> None:
         """Initialize adapter cache."""
@@ -112,7 +109,7 @@ class OptimizerEngineAdapter:
                 self._last_output, inputs, options, self._timezone
             ), self._last_output
 
-        from . import optimizer_engine as engine
+        from . import planning_pipeline
 
         # Reloading a config entry cannot cancel Python code already running in an
         # executor thread. Serialize engine runs so an old and a new coordinator
@@ -132,12 +129,7 @@ class OptimizerEngineAdapter:
                     except Exception as err:  # Recorder failure must not stop control.
                         LOGGER.warning("Recorder history snapshot failed: %s", err)
                         runtime_context["history_series"] = {}
-                engine.configure_runtime(runtime_context)
-            buf = io.StringIO()
-            with contextlib.redirect_stdout(buf):
-                engine.main()
-        raw = buf.getvalue().strip().splitlines()
-        output = json.loads(raw[-1]) if raw else {}
+            output = planning_pipeline.run(runtime_context)
         self._last_output = output
         self._last_options = options
         self._last_run_ts = now
@@ -289,7 +281,7 @@ def _plan_from_output(
                 )
             )
         ),
-        reason=str(output.get("reason") or "optimizer_engine"),
+        reason=str(output.get("reason") or "planning_pipeline"),
         daily_costs=daily_costs,
         price_stats={
             "min": _maybe_float(output.get("price_min_ct")),

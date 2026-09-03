@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
-from custom_components.battery_strategy import optimizer_engine
+from custom_components.battery_strategy import planning_pipeline
 from custom_components.battery_strategy.contracts import (
     BatteryConstraints,
     BatteryState,
@@ -266,7 +266,7 @@ def test_pure_optimizer_matches_current_economic_kernel(
         start_ms=int(start.timestamp() * 1000),
     )
     with patch.multiple(
-        optimizer_engine,
+        planning_pipeline,
         CAP_KWH=6.0,
         SOC_MIN=10.0,
         SOC_MAX=100.0,
@@ -285,10 +285,10 @@ def test_pure_optimizer_matches_current_economic_kernel(
         DISCHARGE_ENABLED=True,
         PV_EXPORT_OPPORTUNITY_CT=0.0,
     ):
-        current = optimizer_engine.build_authoritative_plan(
-            intervals,
-            [],
-            6.0 * soc / 100.0,
+        current = planning_pipeline._planning_service().plan(
+            intervals=intervals,
+            samples=[],
+            start_energy_kwh=6.0 * soc / 100.0,
             forecast_bundle=candidate.forecast,
         )
     pure = DynamicProgrammingOptimizer().optimize(candidate)

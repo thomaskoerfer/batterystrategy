@@ -26,6 +26,8 @@ All notable changes to Battery Strategy are documented here.
   counter baseline without a usable tariff.
 - Removed completed forecast, optimizer and compiler comparison files after
   preserving the authoritative learned optimizer state.
+- Removed the final compatibility engine and CLI/stdout protocol. Home
+  Assistant now invokes the planning pipeline directly through its adapter.
 
 ### Safety
 

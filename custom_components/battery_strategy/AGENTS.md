@@ -16,8 +16,10 @@ documented impact analysis and explicit owner approval.
   publish its plan without constructing forecasts.
 - Measured savings: `savings.py`; actual accounting is observational and must
   not influence planning or live control.
-- Runtime compatibility facade: `optimizer_engine.py`; do not add new market,
-  planning or savings logic to it.
+- Home Assistant planning boundary: `planning_adapter.py` captures normalized
+  runtime inputs and `planning_pipeline.py` coordinates the owned forecasting,
+  market, planning, savings and presentation components. Neither may own their
+  domain rules.
 - Plan compiler: `plan_compiler.py`; the coordinator supplies explicit plan and
   progress state but may not recreate compiler semantics.
 - Live control: `live_control.py`, `strategy.py` and live orchestration in

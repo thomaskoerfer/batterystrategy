@@ -13,9 +13,8 @@ are not an acceptable form of contract evolution.
 
 ## Safety invariant
 
-There is exactly one battery actuation path. Shadow implementations may produce
-diagnostics and comparison results, but they must never write battery mode or
-power limits. Only the live controller may call the actuator.
+There is exactly one battery actuation path. Evaluation and diagnostics never
+receive an actuator reference. Only the live controller may call the actuator.
 
 ## Target data flow
 
@@ -66,6 +65,7 @@ The maintained layer guides are:
 - [market context](docs/market-context/README.md);
 - [optimization](docs/optimization/README.md);
 - [planning service](docs/planning-service/README.md);
+- [planning runtime](docs/planning-runtime/README.md);
 - [plan compiler](docs/plan-compiler/README.md);
 - [live control](docs/live-control/README.md);
 - [actuation](docs/actuation/README.md);
@@ -179,16 +179,12 @@ downstream layer receives a recorder engine or depends on recorder tables.
 
 Forecast composition, market enrichment, optimization, planning orchestration,
 plan compilation, live policy, actuation and measured savings have explicit
-implementation owners. `optimizer_engine.py` remains a compatibility facade
-for established runtime callers, but delegates market, planning and savings
-work to their documented coarse components. The coordinator orchestrates these
-boundaries and never writes hardware directly; `actuator.py` is the sole Home
-Assistant battery-service writer.
-
-The compatibility facade is intentional while the public entity and service
-surface remains stable. New behavior must be implemented in its owning layer,
-not added back to the facade. There are no retained alternative optimizers,
-compilers, forecast runners or hardware writers.
+implementation owners. `planning_adapter.py` captures Home Assistant data and
+`planning_pipeline.py` coordinates one run through those owners without
+reimplementing their rules. The coordinator never writes hardware directly;
+`actuator.py` is the sole Home Assistant battery-service writer. There are no
+compatibility facades, alternative optimizers, compilers, forecast runners or
+hardware writers.
 
 ## Migration plan and gates
 

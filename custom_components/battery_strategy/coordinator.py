@@ -73,7 +73,6 @@ from .load_components import (
     collect_load_components,
 )
 from .models import StrategyCommand, StrategyInputs, StrategyOptions
-from .optimizer_adapter import OptimizerEngineAdapter
 from .optimizer_state import last_known_soc_pct
 from .plan_compiler import DeterministicPlanCompiler
 from .plan_compiler_adapter import (
@@ -83,6 +82,7 @@ from .plan_compiler_adapter import (
 )
 from .plan_models import PlanLiveDirective
 from .planner import BackgroundPlanner
+from .planning_adapter import PlanningPipelineAdapter
 from .strategy import calculate_command, live_command_from_directive
 from .weather import OpenMeteoWeatherProvider
 
@@ -129,9 +129,9 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         self._manual_power_w = 0.0
         self._manual_until: dt.datetime | None = None
         self._feature_history = tuple(feature_history)
-        self._optimizer_engine = OptimizerEngineAdapter(hass, entry)
-        self._optimizer_engine.hydrate_output(last_optimizer_output)
-        self._planner = BackgroundPlanner(hass, self._optimizer_engine)
+        self._planning_pipeline = PlanningPipelineAdapter(hass, entry)
+        self._planning_pipeline.hydrate_output(last_optimizer_output)
+        self._planner = BackgroundPlanner(hass, self._planning_pipeline)
         self._optimizer_attrs: dict = {}
         self.last_actuation: dict[str, object] = {"status": "not_started"}
         self._active_directive_slot_id: str | None = None
@@ -347,7 +347,7 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         self._load_components = add_central_weather(
             self._load_components, current_weather
         )
-        self._optimizer_engine.set_forecast_environment(
+        self._planning_pipeline.set_forecast_environment(
             self._feature_history,
             self._weather,
             self._load_components.drivers,
@@ -379,7 +379,7 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         simple_command = calculate_command(inputs, options)
         optimizer_scheduled = False
         if self._soc_control_ready:
-            runtime_context = self._optimizer_engine.runtime_context(inputs, options)
+            runtime_context = self._planning_pipeline.runtime_context(inputs, options)
             optimizer_scheduled = self._planner.maybe_schedule(
                 inputs, options, runtime_context, force=force_optimizer
             )
@@ -421,7 +421,7 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             "send_commands": strategy_enabled,
             "strategy_enabled": strategy_enabled,
             "actuation": self.last_actuation,
-            "optimizer_age_s": self._optimizer_engine.age_s(),
+            "optimizer_age_s": self._planning_pipeline.age_s(),
             "optimizer_forced": force_optimizer,
             "optimizer_scheduled": optimizer_scheduled,
             "optimizer_running": self._planner.running,
@@ -453,7 +453,7 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
                 self._feature_history = await self._feature_store.load(
                     0, int(now.timestamp() * 1000) + 1
                 )
-                self._optimizer_engine.set_forecast_environment(
+                self._planning_pipeline.set_forecast_environment(
                     self._feature_history,
                     self._weather,
                     self._load_components.drivers,
@@ -509,7 +509,7 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         try:
             self._weather = await self._weather_provider.load(request)
             self._weather_error = self._weather_provider.last_error
-            self._optimizer_engine.set_forecast_environment(
+            self._planning_pipeline.set_forecast_environment(
                 self._feature_history,
                 self._weather,
                 self._load_components.drivers,
@@ -523,7 +523,7 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         except Exception as err:  # noqa: BLE001 - weather is optional input.
             self._weather = ()
             self._weather_error = f"{type(err).__name__}: {err}"
-            self._optimizer_engine.set_forecast_environment(
+            self._planning_pipeline.set_forecast_environment(
                 self._feature_history,
                 (),
                 self._load_components.drivers,

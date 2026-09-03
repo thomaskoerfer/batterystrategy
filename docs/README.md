@@ -11,6 +11,7 @@ describing how coding agents must work in that boundary.
 | Market context | [README](market-context/README.md) |
 | Optimization | [README](optimization/README.md) |
 | Planning service | [README](planning-service/README.md) |
+| Planning runtime | [README](planning-runtime/README.md) |
 | Plan compiler | [README](plan-compiler/README.md) |
 | Live control | [README](live-control/README.md) |
 | Actuation | [README](actuation/README.md) |
