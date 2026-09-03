@@ -8,7 +8,6 @@ import statistics
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
-
 Series = list[tuple[float, float]]
 HistoryReader = Callable[[Iterable[str], float], dict[str, Series]]
 PriceReader = Callable[[set[str]], list[dict]]

@@ -9,12 +9,10 @@ model versions, readiness and failures without exposing private configuration.
 ## Non-authoritative boundary
 
 Evaluation consumes immutable outputs and later matured actual slots. It may
-write bounded comparison traces, reports and backtest results. It cannot feed a
-live command, change a plan, retrain during a backtest window or obtain an
-actuator reference.
-
-Shadow implementations always set `authoritative = false`. A shadow error is
-contained and cannot fail the production optimizer or live controller.
+write bounded reports, forecast observations, backtest results and command
+traces. It cannot feed a live command, change a plan, retrain during a backtest
+window or obtain an actuator reference. No duplicate forecast, optimizer or
+compiler implementation remains at runtime.
 
 ## Metrics
 
@@ -30,8 +28,10 @@ Their units, price source and PV/export valuation must be explicit.
 
 Evaluation stores compact bounded traces outside Home Assistant Recorder where
 large attributes would harm recorder performance. Retention and file growth are
-bounded. Public diagnostics redact configured entities, locations, credentials,
-device identifiers and provider payloads.
+bounded. `command_trace.py` owns command-trace serialization and retention; the
+live coordinator only schedules that observational write in the executor.
+Public diagnostics redact configured entities, locations, credentials, device
+identifiers and provider payloads.
 
 ## Setup independence
 

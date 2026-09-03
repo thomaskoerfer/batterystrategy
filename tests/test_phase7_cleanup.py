@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
+from custom_components.battery_strategy.planning_runtime import PlanningRuntime
+
 ROOT = Path(__file__).parents[1]
 PACKAGE = ROOT / "custom_components" / "battery_strategy"
 
@@ -50,9 +54,38 @@ def test_planning_pipeline_uses_owned_application_boundaries_without_facades():
         "def indexed_value_at_or_before(",
     )
     assert all(token not in source for token in forbidden_definitions)
-    assert "_planning_service().plan(" in source
+    assert "_planning_service(settings).plan(" in source
+    assert "global " not in source
+    assert "_RUNTIME_" not in source
+    assert "def _configure(" not in source
     assert "market_context.apply_eex_proxy_prices(" in source
     assert "_update_actual_savings(" in source
+    assert "startsAt" not in source
+    assert "state_schema" not in source
+
+
+def test_planning_runtime_snapshots_are_immutable_and_isolated():
+    first = PlanningRuntime.from_mapping(
+        {
+            "timezone": "Europe/Berlin",
+            "battery_capacity_kwh": 6.0,
+            "states": {"battery_soc": 42.0},
+        }
+    )
+    second = PlanningRuntime.from_mapping(
+        {
+            "timezone": "UTC",
+            "battery_capacity_kwh": 10.0,
+            "states": {"battery_soc": 81.0},
+        }
+    )
+
+    assert first.settings.battery_capacity_kwh == 6.0
+    assert second.settings.battery_capacity_kwh == 10.0
+    assert first.states["battery_soc"] == 42.0
+    assert second.states["battery_soc"] == 81.0
+    with pytest.raises(TypeError):
+        first.states["battery_soc"] = 50.0
 
 
 def test_planning_service_does_not_duplicate_optimizer_version():

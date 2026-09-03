@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
-import json
 import logging
 import time
-from dataclasses import asdict, replace
+from dataclasses import replace
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -16,6 +15,7 @@ from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from .actuator import HomeAssistantZendureActuator
+from .command_trace import COMMAND_TRACE_FILE, append_command_trace
 from .const import (
     BATTERY_PROFILE_ZENDURE,
     COMMAND_IDLE,
@@ -93,9 +93,6 @@ SOC_COLD_START_PLACEHOLDER_PCT = 50.0
 EV_POWER_BRIDGE_MAX_AGE_S = 180
 OPTIMIZER_STATE_FILE = "battery_strategy_optimizer_state.json"
 FEATURE_STORE_FILE = "battery_strategy_features.json.gz"
-COMMAND_TRACE_FILE = "battery_strategy_command_trace.jsonl"
-COMMAND_TRACE_MAX_BYTES = 64 * 1024 * 1024
-COMMAND_TRACE_RETAIN_LINES = 50000
 GRID_INPUT_MAX_AGE_S = 30
 
 
@@ -446,7 +443,11 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             }
             data["actuation"] = self.last_actuation
         if bool(self.entry.options.get("trace_enabled", False)):
-            await self.hass.async_add_executor_job(self._append_command_trace, data)
+            await self.hass.async_add_executor_job(
+                append_command_trace,
+                Path(self.hass.config.path(COMMAND_TRACE_FILE)),
+                data,
+            )
         if finalized_features:
             try:
                 await self._feature_store.upsert(finalized_features)
@@ -949,55 +950,3 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             reason="strategy_disabled_external_control",
             allowed_discharge_load_w=0,
         )
-
-    def _append_command_trace(self, data: dict) -> None:
-        """Append a compact command trace for later 12h/48h analysis."""
-        path = Path(self.hass.config.path(COMMAND_TRACE_FILE))
-        now = dt.datetime.now(dt.timezone.utc)
-        command = data["command"]
-        calculated_command = data["calculated_command"]
-        plan = data["plan"]
-        inputs = data["inputs"]
-        directive = data["plan_to_live"]
-        item = {
-            "ts": now.timestamp(),
-            "iso": now.isoformat(),
-            "mode": command.mode,
-            "power_w": command.power_w,
-            "reason": command.reason,
-            "calculated_mode": calculated_command.mode,
-            "calculated_power_w": calculated_command.power_w,
-            "calculated_reason": calculated_command.reason,
-            "send_commands": data["send_commands"],
-            "strategy_enabled": data["strategy_enabled"],
-            "grid_import_w": round(inputs.grid_import_w),
-            "grid_export_w": round(inputs.grid_export_w),
-            "pv_w": round(inputs.pv_w),
-            "battery_power_w": round(inputs.battery_power_w),
-            "ev_power_w": round(inputs.ev_power_w),
-            "soc_pct": round(inputs.soc_pct, 1),
-            "soc_control_ready": data.get("soc_control_ready"),
-            "soc_estimate_stale": data.get("soc_estimate_stale"),
-            "current_plan_points": len(plan.points),
-            "optimizer_age_s": data.get("optimizer_age_s"),
-            "plan_mode": plan.current_mode,
-            "plan_power_w": plan.current_power_w,
-            "plan_to_live": asdict(directive),
-        }
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(item, separators=(",", ":")) + "\n")
-        if path.stat().st_size > COMMAND_TRACE_MAX_BYTES:
-            self._trim_command_trace(path)
-
-    @staticmethod
-    def _trim_command_trace(path: Path) -> None:
-        """Bound trace disk usage without rewriting it during normal updates."""
-        from collections import deque
-
-        with path.open("r", encoding="utf-8") as handle:
-            retained = deque(handle, maxlen=COMMAND_TRACE_RETAIN_LINES)
-        tmp = path.with_suffix(f"{path.suffix}.tmp")
-        with tmp.open("w", encoding="utf-8") as handle:
-            handle.writelines(retained)
-        tmp.replace(path)

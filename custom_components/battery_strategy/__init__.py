@@ -6,42 +6,23 @@ import json
 from datetime import timedelta
 from pathlib import Path
 
-try:
-    from homeassistant.const import Platform
-    from homeassistant.helpers import entity_registry as er
-except ImportError:  # pragma: no cover - unit tests run without Home Assistant.
-    Platform = None
-    er = None
+from homeassistant.const import Platform
+from homeassistant.helpers import entity_registry as er
 
+from .command_trace import COMMAND_TRACE_FILE
 from .const import CONFIG_ENTRY_VERSION, DOMAIN
+from .coordinator import (
+    FEATURE_STORE_FILE,
+    OPTIMIZER_STATE_FILE,
+    BatteryStrategyCoordinator,
+)
 from .optimizer_state import runtime_snapshot
 
-try:
-    from .coordinator import (
-        COMMAND_TRACE_FILE,
-        FEATURE_STORE_FILE,
-        OPTIMIZER_STATE_FILE,
-        BatteryStrategyCoordinator,
-        _load_last_known_soc_pct,
-    )
-except ImportError:  # pragma: no cover - unit tests run without Home Assistant.
-    BatteryStrategyCoordinator = None
-    COMMAND_TRACE_FILE = "battery_strategy_command_trace.jsonl"
-    FEATURE_STORE_FILE = "battery_strategy_features.json.gz"
-    OPTIMIZER_STATE_FILE = "battery_strategy_optimizer_state.json"
-    _load_last_known_soc_pct = None
-
-PLATFORMS = (
-    []
-    if Platform is None
-    else [Platform.SENSOR, Platform.SELECT, Platform.SWITCH, Platform.NUMBER]
-)
+PLATFORMS = [Platform.SENSOR, Platform.SELECT, Platform.SWITCH, Platform.NUMBER]
 
 
 async def async_setup_entry(hass, entry) -> bool:
     """Set up Battery Strategy from a config entry."""
-    if BatteryStrategyCoordinator is None:
-        return False
     _async_remove_deprecated_entities(hass, entry)
     await hass.async_add_executor_job(_migrate_runtime_files, hass.config.config_dir)
     last_known_soc_pct, last_optimizer_output = await hass.async_add_executor_job(
@@ -183,8 +164,6 @@ def _async_register_services(hass) -> None:
 
 def _async_remove_deprecated_entities(hass, entry) -> None:
     """Remove public controls that are no longer part of the integration."""
-    if er is None:
-        return
     registry = er.async_get(hass)
     deprecated = {
         f"{entry.entry_id}_control_send_commands",

@@ -23,6 +23,17 @@ authoritative optimizer, compiler or live behavior.
 - Direct SQLAlchemy and Recorder-table access is deleted. Bounded numeric
   history is captured through Home Assistant's public history API by the data
   adapter, while calibration bootstrap uses canonical finalized feature slots.
+- The mutable module-global planning context is deleted. Every refresh now
+  validates and freezes its own runtime snapshot and passes that snapshot or its
+  immutable settings explicitly to persistence, forecasting, market, savings
+  and presentation boundaries.
+- Runtime measurement views, tariff normalization, state handling, forecast
+  invocation/evaluation and Home Assistant presentation are separate cohesive
+  modules. This keeps the coordinating pipeline from becoming a replacement
+  domain layer.
+- Bounded command-trace serialization is moved out of the live coordinator and
+  remains executor-backed and observational. The trace schema, size cap and
+  retention count are unchanged.
 
 The owner explicitly approved removal of the unused shadow-evaluation contract
 on 2026-09-03 as part of the complete legacy cleanup. No active producer or
@@ -64,9 +75,13 @@ changing the approved contracts:
    documented coarse components. The planning pipeline only sequences them and
    publishes the established entity payload; it is not a compatibility facade
    and owns no duplicate domain implementation.
+4. Config-entry reloads cannot cross-contaminate planning inputs. The adapter
+   lock now protects only the shared persisted state file; correctness no longer
+   depends on serializing writes to module-global configuration.
 
 Static architecture tests prevent the old compiler path, shadow modules,
-direct database access and coordinator hardware writes from returning.
+mutable planning runtime globals, direct database access and coordinator
+hardware writes from returning.
 
 ## Verification and gate
 

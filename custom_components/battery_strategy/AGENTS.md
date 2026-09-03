@@ -17,17 +17,20 @@ documented impact analysis and explicit owner approval.
 - Measured savings: `savings.py`; actual accounting is observational and must
   not influence planning or live control.
 - Home Assistant planning boundary: `planning_adapter.py` captures normalized
-  runtime inputs and `planning_pipeline.py` coordinates the owned forecasting,
-  market, planning, savings and presentation components. Neither may own their
-  domain rules.
+  runtime inputs; `planning_runtime.py` freezes one run snapshot;
+  `runtime_measurements.py` and `runtime_market_data.py` normalize captured
+  input; `planning_state.py` owns persisted application state;
+  `forecast_application.py` and `forecast_evaluation.py` call forecast-owned
+  APIs; `planning_pipeline.py` only coordinates; and `plan_presentation.py`
+  publishes the stable entity payload. None may own another layer's rules.
 - Plan compiler: `plan_compiler.py`; the coordinator supplies explicit plan and
   progress state but may not recreate compiler semantics.
 - Live control: `live_control.py`, `strategy.py` and live orchestration in
   `coordinator.py`.
 - Actuation: `actuator.py`; it is the only module allowed to call Home
   Assistant services for battery hardware.
-- Evaluation: diagnostics, bounded command traces, backtests and
-  measured-savings reporting.
+- Evaluation: `forecast_evaluation.py`, `command_trace.py`, diagnostics,
+  backtests and measured-savings reporting.
 
 ## Boundary rules
 

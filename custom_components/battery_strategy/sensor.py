@@ -2,30 +2,22 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import datetime as dt
+from dataclasses import dataclass
 from typing import Callable
 
-from homeassistant.components.sensor import SensorEntity, SensorEntityDescription
-
-try:
-    from homeassistant.components.sensor import SensorStateClass
-except ImportError:  # pragma: no cover - compatibility with older HA versions.
-    SensorStateClass = None
-from homeassistant.const import UnitOfPower
+from homeassistant.components.sensor import (
+    SensorEntity,
+    SensorEntityDescription,
+    SensorStateClass,
+)
+from homeassistant.const import PERCENTAGE, UnitOfPower
 from homeassistant.util import dt as dt_util
-
-try:
-    from homeassistant.const import PERCENTAGE
-except ImportError:  # pragma: no cover - compatibility with older HA versions.
-    from homeassistant.const import PERCENT as PERCENTAGE
 
 from .const import DOMAIN
 from .entity import BatteryStrategyEntity
 
-STATE_CLASS_MEASUREMENT = (
-    SensorStateClass.MEASUREMENT if SensorStateClass is not None else "measurement"
-)
+STATE_CLASS_MEASUREMENT = SensorStateClass.MEASUREMENT
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -208,17 +200,17 @@ SENSORS: tuple[BatteryStrategySensorDescription, ...] = (
     BatteryStrategySensorDescription(
         key="planned_charge_power",
         name="Planned Charge Power",
-        value_fn=lambda data: _plan(data).current_power_w
-        if _plan(data).current_mode == "input"
-        else 0,
+        value_fn=lambda data: (
+            _plan(data).current_power_w if _plan(data).current_mode == "input" else 0
+        ),
         native_unit_of_measurement=UnitOfPower.WATT,
     ),
     BatteryStrategySensorDescription(
         key="planned_discharge_power",
         name="Planned Discharge Power",
-        value_fn=lambda data: _plan(data).current_power_w
-        if _plan(data).current_mode == "output"
-        else 0,
+        value_fn=lambda data: (
+            _plan(data).current_power_w if _plan(data).current_mode == "output" else 0
+        ),
         native_unit_of_measurement=UnitOfPower.WATT,
     ),
     BatteryStrategySensorDescription(
@@ -251,9 +243,9 @@ SENSORS: tuple[BatteryStrategySensorDescription, ...] = (
     BatteryStrategySensorDescription(
         key="plan_live_grid_charge_allowed",
         name="Grid Charge Allowed",
-        value_fn=lambda data: "on"
-        if _plan_to_live(data).grid_charge_allowed
-        else "off",
+        value_fn=lambda data: (
+            "on" if _plan_to_live(data).grid_charge_allowed else "off"
+        ),
     ),
     BatteryStrategySensorDescription(
         key="plan_live_discharge_budget",

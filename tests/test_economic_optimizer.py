@@ -5,7 +5,6 @@ from __future__ import annotations
 import ast
 import datetime as dt
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -247,9 +246,7 @@ def test_disabled_discharge_never_creates_plan_or_budget():
         ([35.0, 35.0, 35.0, 35.0], [0.4] * 4, [0.0] * 4, 80.0),
     ],
 )
-def test_pure_optimizer_matches_current_economic_kernel(
-    prices, loads, pv, soc
-):
+def test_pure_optimizer_matches_current_economic_kernel(prices, loads, pv, soc):
     start = dt.datetime(2026, 8, 30, tzinfo=dt.timezone.utc)
     intervals = [
         {
@@ -265,32 +262,27 @@ def test_pure_optimizer_matches_current_economic_kernel(
         soc=soc,
         start_ms=int(start.timestamp() * 1000),
     )
-    with patch.multiple(
-        planning_pipeline,
-        CAP_KWH=6.0,
-        SOC_MIN=10.0,
-        SOC_MAX=100.0,
-        MIN_E_KWH=0.6,
-        MAX_E_KWH=6.0,
-        MAX_CHARGE_P_W=2400.0,
-        MAX_DISCHARGE_P_W=2400.0,
-        MAX_CHARGE_E_SLOT_KWH=0.6,
-        MAX_DISCHARGE_E_SLOT_KWH=0.6,
-        ETA_RT=0.8,
-        ETA_C=0.8**0.5,
-        ETA_D=0.8**0.5,
-        MIN_MARGIN_CT=2.0,
-        PV_CHARGING_ENABLED=True,
-        GRID_CHARGING_ENABLED=True,
-        DISCHARGE_ENABLED=True,
-        PV_EXPORT_OPPORTUNITY_CT=0.0,
-    ):
-        current = planning_pipeline._planning_service().plan(
-            intervals=intervals,
-            samples=[],
-            start_energy_kwh=6.0 * soc / 100.0,
-            forecast_bundle=candidate.forecast,
-        )
+    settings = planning_pipeline.PlanningRuntime.from_mapping(
+        {
+            "battery_capacity_kwh": 6.0,
+            "min_soc_pct": 10.0,
+            "max_soc_pct": 100.0,
+            "max_charge_power_w": 2400.0,
+            "max_discharge_power_w": 2400.0,
+            "round_trip_efficiency": 0.8,
+            "min_margin_ct_per_kwh": 2.0,
+            "pv_charging": "on",
+            "grid_charging": "price_sensitive",
+            "discharge": "price_sensitive",
+            "feed_in_tariff_ct_per_kwh": 0.0,
+        }
+    ).settings
+    current = planning_pipeline._planning_service(settings).plan(
+        intervals=intervals,
+        samples=[],
+        start_energy_kwh=6.0 * soc / 100.0,
+        forecast_bundle=candidate.forecast,
+    )
     pure = DynamicProgrammingOptimizer().optimize(candidate)
     for point, slot in zip(current["points"], pure.slots, strict=True):
         assert slot.planned_charge_kwh == pytest.approx(
@@ -302,9 +294,7 @@ def test_pure_optimizer_matches_current_economic_kernel(
         assert slot.discharge_budget_kwh == pytest.approx(
             point["discharge_budget_kwh"], abs=5e-4
         )
-        assert slot.expected_soc_start_pct == pytest.approx(
-            point["soc_pct"], abs=0.01
-        )
+        assert slot.expected_soc_start_pct == pytest.approx(point["soc_pct"], abs=0.01)
     assert pure.baseline_cost_eur == pytest.approx(
         sum(item["base_eur"] for item in current["daily_costs"].values()),
         abs=5e-4,

@@ -19,7 +19,6 @@ from .const import (
 )
 from .entity import BatteryStrategyEntity
 
-
 SELECTS = (
     (
         "pv_charging",

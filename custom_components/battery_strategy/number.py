@@ -5,12 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from homeassistant.components.number import NumberEntity
-from homeassistant.const import UnitOfPower
-
-try:
-    from homeassistant.const import PERCENTAGE
-except ImportError:  # pragma: no cover - compatibility with older HA versions.
-    from homeassistant.const import PERCENT as PERCENTAGE
+from homeassistant.const import PERCENTAGE, UnitOfPower
 
 from .const import DOMAIN
 from .entity import BatteryStrategyEntity

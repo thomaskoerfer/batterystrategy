@@ -123,19 +123,12 @@ PV-follow, required charge, both automatic discharge modes, manual override,
 stale inputs, command smoothing and one-shot disabled control. Trace comparison
 must separate economic permission from live meter-following behavior.
 
-## Transitional implementation
+## Current implementation
 
-The current production behavior already implements the precedence, EV policy,
-manual override, one-shot disabled zero and price-sensitive slot-budget latch.
-Before the Phase-6 cutover, some ownership remains transitional:
-
-- operator modes are supplied through `StrategyOptions` instead of the target
-  `LivePolicy` contract;
-- load-following uses a synthetic maximum slot budget internally even though
-  its observable behavior is budget-independent;
-- required charge is not yet latched through the same explicit compiler state;
-- slot commitment state is coordinator-owned rather than a pure compiler input
-  and output.
-
-Phase 6 removes these structural differences under shadow parity. It is not an
-authorization to alter the behavior documented above.
+The deterministic plan compiler is the sole owner of slot commitment state and
+the sole producer of the live directive. Operator modes enter through
+`StrategyOptions`; the compiler maps them to the approved contract semantics.
+Load-following remains budget-independent, while price-sensitive discharge uses
+the slot budget and consumed-energy progress. Required charging and within-slot
+replanning use the same explicit compiler state. No coordinator-owned latch or
+alternative compiler remains.

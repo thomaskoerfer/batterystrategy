@@ -78,10 +78,21 @@ from custom_components.battery_strategy.plan_models import (
     StrategyPlan,
 )
 from custom_components.battery_strategy.planner import BackgroundPlanner
+from custom_components.battery_strategy.runtime_measurements import fetch_sensor_series
 from custom_components.battery_strategy.strategy import (
     calculate_command,
     live_command_from_directive,
 )
+
+TEST_TIMEZONE = ZoneInfo("Europe/Berlin")
+TEST_CAPACITY_KWH = 6.0
+TEST_MIN_SOC_PCT = 10.0
+TEST_MAX_SOC_PCT = 100.0
+TEST_MAX_POWER_W = 2400.0
+TEST_RTE = 0.8
+TEST_MIN_MARGIN_CT = 2.0
+TEST_PV_CAPACITY_KWP = 1.0
+TEST_PV_INVERTER_KW = 1.0
 
 
 def plan_live_directive_from_plan(plan, options, current_soc_pct=None):
@@ -114,8 +125,14 @@ def live_command_from_plan(plan, live_command, inputs, options):
 
 
 class HacsStrategyTests(unittest.TestCase):
-    @staticmethod
+    def _planning_settings(self, overrides=None):
+        context = self._optimizer_runtime_context()
+        context.update(getattr(self, "_planning_settings_override", {}))
+        context.update(overrides or {})
+        return planning_pipeline.PlanningRuntime.from_mapping(context).settings
+
     def _forecast_bundle(
+        self,
         intervals,
         samples,
         *,
@@ -131,9 +148,10 @@ class HacsStrategyTests(unittest.TestCase):
             )
             for item in intervals
         )
+        settings = self._planning_settings()
         request = ForecastRequest(
             as_of_ms=slots[0].start_ms,
-            timezone=str(planning_pipeline.OPEN_METEO_TZ),
+            timezone=str(settings.timezone),
             slots=slots,
         )
         history_samples = tuple(
@@ -158,8 +176,8 @@ class HacsStrategyTests(unittest.TestCase):
                 intervals[0]["dt"].date() + dt.timedelta(days=1)
             ).isoformat(),
             tomorrow_energy_kwh=None,
-            pv_capacity_kwp=planning_pipeline.PV_CAPACITY_KWP,
-            pv_inverter_kw=planning_pipeline.PV_INVERTER_KW,
+            pv_capacity_kwp=settings.pv_capacity_kwp,
+            pv_inverter_kw=settings.pv_inverter_kw,
         )
         return build_forecast_bundle(
             request,
@@ -188,7 +206,7 @@ class HacsStrategyTests(unittest.TestCase):
             pv_global_bias=float(kwargs.get("pv_global_bias", 1.0)),
         )
         kwargs["forecast_diagnostics"] = {"source": "test_fixture"}
-        return planning_pipeline._planning_service().plan(
+        return planning_pipeline._planning_service(self._planning_settings()).plan(
             intervals=intervals,
             samples=samples,
             start_energy_kwh=start_energy_kwh,
@@ -199,44 +217,37 @@ class HacsStrategyTests(unittest.TestCase):
 
     def _optimizer_runtime_context(self):
         return {
-            "battery_capacity_kwh": planning_pipeline.CAP_KWH,
-            "min_soc_pct": planning_pipeline.SOC_MIN,
-            "max_soc_pct": planning_pipeline.SOC_MAX,
-            "max_charge_power_w": planning_pipeline.MAX_CHARGE_P_W,
-            "max_discharge_power_w": planning_pipeline.MAX_DISCHARGE_P_W,
-            "pv_charging": "on" if planning_pipeline.PV_CHARGING_ENABLED else "off",
-            "grid_charging": (
-                "price_sensitive" if planning_pipeline.GRID_CHARGING_ENABLED else "off"
-            ),
-            "discharge": (
-                "price_sensitive" if planning_pipeline.DISCHARGE_ENABLED else "off"
-            ),
-            "planning_horizon_h": planning_pipeline.PLANNING_HORIZON_H,
-            "round_trip_efficiency": planning_pipeline.ETA_RT,
-            "min_margin_ct_per_kwh": planning_pipeline.MIN_MARGIN_CT,
-            "feed_in_tariff_ct_per_kwh": planning_pipeline.PV_EXPORT_OPPORTUNITY_CT,
-            "timezone": str(planning_pipeline.OPEN_METEO_TZ),
-            "pv_capacity_kwp": planning_pipeline.PV_CAPACITY_KWP,
-            "pv_inverter_power_kw": planning_pipeline.PV_INVERTER_KW,
+            "battery_capacity_kwh": TEST_CAPACITY_KWH,
+            "min_soc_pct": TEST_MIN_SOC_PCT,
+            "max_soc_pct": TEST_MAX_SOC_PCT,
+            "max_charge_power_w": TEST_MAX_POWER_W,
+            "max_discharge_power_w": TEST_MAX_POWER_W,
+            "pv_charging": "on" if True else "off",
+            "grid_charging": ("price_sensitive" if True else "off"),
+            "discharge": ("price_sensitive" if True else "off"),
+            "planning_horizon_h": 48,
+            "round_trip_efficiency": TEST_RTE,
+            "min_margin_ct_per_kwh": TEST_MIN_MARGIN_CT,
+            "feed_in_tariff_ct_per_kwh": 0.0,
+            "timezone": str(TEST_TIMEZONE),
+            "pv_capacity_kwp": TEST_PV_CAPACITY_KWP,
+            "pv_inverter_power_kw": TEST_PV_INVERTER_KW,
         }
 
-    @staticmethod
-    def _configure_test_optimizer():
-        planning_pipeline._configure(
-            {
-                "battery_capacity_kwh": 6.0,
-                "min_soc_pct": 5.0,
-                "max_soc_pct": 100.0,
-                "max_charge_power_w": 2400.0,
-                "max_discharge_power_w": 2400.0,
-                "pv_charging": "on",
-                "grid_charging": "price_sensitive",
-                "discharge": "price_sensitive",
-                "round_trip_efficiency": 0.85,
-                "min_margin_ct_per_kwh": 1.0,
-                "timezone": "UTC",
-            }
-        )
+    def _configure_test_optimizer(self):
+        self._planning_settings_override = {
+            "battery_capacity_kwh": 6.0,
+            "min_soc_pct": 5.0,
+            "max_soc_pct": 100.0,
+            "max_charge_power_w": 2400.0,
+            "max_discharge_power_w": 2400.0,
+            "pv_charging": "on",
+            "grid_charging": "price_sensitive",
+            "discharge": "price_sensitive",
+            "round_trip_efficiency": 0.85,
+            "min_margin_ct_per_kwh": 1.0,
+            "timezone": "UTC",
+        }
 
     def test_optimizer_runtime_maps_recorded_battery_power_sensor(self):
         class Registry:
@@ -312,27 +323,20 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertEqual(context["entity_scale"]["ev_power"], 1000.0)
 
     def test_optimizer_history_normalizes_mapped_power_units(self):
-        original_series = dict(planning_pipeline._RUNTIME_HISTORY_SERIES)
-        planning_pipeline._RUNTIME_HISTORY_SERIES = {"pv_power": ((100.0, 1250.0),)}
-        try:
-            result = planning_pipeline.fetch_sensor_series_many(["pv_power"], 0.0)
-        finally:
-            planning_pipeline._RUNTIME_HISTORY_SERIES = original_series
+        runtime = planning_pipeline.PlanningRuntime.from_mapping(
+            {"history_series": {"pv_power": ((100.0, 1250.0),)}}
+        )
+        result = planning_pipeline.fetch_sensor_series_many(runtime, ["pv_power"], 0.0)
         self.assertEqual(result["pv_power"], [(100.0, 1250.0)])
 
     def test_optimizer_history_does_not_fall_back_to_local_sqlite(self):
-        original_states = dict(planning_pipeline._RUNTIME_STATES)
-        original_series = dict(planning_pipeline._RUNTIME_HISTORY_SERIES)
-        planning_pipeline._RUNTIME_STATES = {"grid_import": 123.0}
-        planning_pipeline._RUNTIME_HISTORY_SERIES = {}
-        try:
-            states = planning_pipeline.get_latest_states(
-                ["grid_import", "missing_sensor"]
-            )
-            series = planning_pipeline.fetch_sensor_series("grid_import", 0.0)
-        finally:
-            planning_pipeline._RUNTIME_STATES = original_states
-            planning_pipeline._RUNTIME_HISTORY_SERIES = original_series
+        runtime = planning_pipeline.PlanningRuntime.from_mapping(
+            {"states": {"grid_import": 123.0}, "history_series": {}}
+        )
+        states = planning_pipeline.get_latest_states(
+            runtime, ["grid_import", "missing_sensor"]
+        )
+        series = fetch_sensor_series(runtime, "grid_import", 0.0)
         self.assertEqual(states["grid_import"], 123.0)
         self.assertIsNone(states["missing_sensor"])
         self.assertEqual(series, [])
@@ -573,14 +577,12 @@ class HacsStrategyTests(unittest.TestCase):
             self.assertEqual(load_state_document(path), original)
 
     def test_full_optimizer_honors_disabled_action_policies(self):
-        original = (
-            planning_pipeline.PV_CHARGING_ENABLED,
-            planning_pipeline.GRID_CHARGING_ENABLED,
-            planning_pipeline.DISCHARGE_ENABLED,
-        )
-        planning_pipeline.PV_CHARGING_ENABLED = False
-        planning_pipeline.GRID_CHARGING_ENABLED = False
-        planning_pipeline.DISCHARGE_ENABLED = False
+        original = getattr(self, "_planning_settings_override", None)
+        self._planning_settings_override = {
+            "pv_charging": "off",
+            "grid_charging": "off",
+            "discharge": "off",
+        }
         try:
             start = dt.datetime(2026, 7, 1, tzinfo=dt.timezone.utc)
             intervals = [
@@ -617,11 +619,10 @@ class HacsStrategyTests(unittest.TestCase):
                 all(point["discharge_fc_w"] == 0 for point in plan["points"])
             )
         finally:
-            (
-                planning_pipeline.PV_CHARGING_ENABLED,
-                planning_pipeline.GRID_CHARGING_ENABLED,
-                planning_pipeline.DISCHARGE_ENABLED,
-            ) = original
+            if original is None:
+                del self._planning_settings_override
+            else:
+                self._planning_settings_override = original
 
     def test_background_planner_serves_cached_plan_without_waiting(self):
         class Adapter:
@@ -2335,9 +2336,9 @@ class HacsStrategyTests(unittest.TestCase):
             },
         }
 
-        filled, source = planning_pipeline._market_context_service().apply_eex_proxy_prices(
-            intervals, eex_days, today, tomorrow
-        )
+        filled, source = planning_pipeline._market_context_service(
+            self._planning_settings()
+        ).apply_eex_proxy_prices(intervals, eex_days, today, tomorrow)
 
         tomorrow_prices = [it for it in filled if it["dt"].date() == tomorrow]
         self.assertEqual(source, "eex_proxy")
@@ -2364,9 +2365,9 @@ class HacsStrategyTests(unittest.TestCase):
                 {"dt": ts, "ts": ts.isoformat(), "price_eur": 0.25, "source": "tibber"}
             )
 
-        filled, source = planning_pipeline._market_context_service().apply_eex_proxy_prices(
-            intervals, {}, today, tomorrow
-        )
+        filled, source = planning_pipeline._market_context_service(
+            self._planning_settings()
+        ).apply_eex_proxy_prices(intervals, {}, today, tomorrow)
 
         self.assertEqual(source, "tibber")
         self.assertEqual(len([it for it in filled if it["dt"].date() == tomorrow]), 96)
@@ -2402,7 +2403,7 @@ class HacsStrategyTests(unittest.TestCase):
         plan = self._build_authoritative_plan(
             intervals=intervals,
             samples=samples,
-            start_energy_kwh=planning_pipeline.MAX_E_KWH,
+            start_energy_kwh=TEST_CAPACITY_KWH,
             weather_factor=1.0,
             forecast_tomorrow_kwh=None,
             load_bias=1.0,
@@ -2529,7 +2530,7 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertGreater(plan["points"][0]["discharge_budget_kwh"], 0.0)
 
     def test_optimizer_planned_export_does_not_create_recovery_budget(self):
-        tz = planning_pipeline.OPEN_METEO_TZ
+        tz = TEST_TIMEZONE
         start = dt.datetime(2026, 6, 23, 12, tzinfo=tz)
         prices = [27.0, 26.0, 25.5, 25.0, 28.0, 35.0]
         intervals = [
@@ -2576,7 +2577,7 @@ class HacsStrategyTests(unittest.TestCase):
 
     def test_optimizer_pv_charge_with_headroom_has_no_recovery_budget(self):
         """Plan rounding must not turn forecast export into discharge permission."""
-        start = dt.datetime(2026, 8, 13, 12, tzinfo=planning_pipeline.OPEN_METEO_TZ)
+        start = dt.datetime(2026, 8, 13, 12, tzinfo=TEST_TIMEZONE)
         prices = [20.0] * 4 + [50.0] * 4
         intervals = [
             {"dt": start + dt.timedelta(minutes=15 * i), "price_eur": price / 100.0}
@@ -2629,7 +2630,7 @@ class HacsStrategyTests(unittest.TestCase):
         )
 
     def test_optimizer_never_combines_grid_charge_with_discharge_budget(self):
-        start = dt.datetime(2026, 8, 13, 12, tzinfo=planning_pipeline.OPEN_METEO_TZ)
+        start = dt.datetime(2026, 8, 13, 12, tzinfo=TEST_TIMEZONE)
         prices = [18.0] * 4 + [45.0] * 8
         intervals = [
             {"dt": start + dt.timedelta(minutes=15 * i), "price_eur": price / 100.0}
@@ -2686,7 +2687,7 @@ class HacsStrategyTests(unittest.TestCase):
         )
 
     def test_headroom_budget_use_does_not_trigger_meaningful_grid_repurchase(self):
-        start = dt.datetime(2026, 8, 13, 12, tzinfo=planning_pipeline.OPEN_METEO_TZ)
+        start = dt.datetime(2026, 8, 13, 12, tzinfo=TEST_TIMEZONE)
         prices = [20.0] * 4 + [50.0] * 4
         intervals = [
             {"dt": start + dt.timedelta(minutes=15 * i), "price_eur": price / 100.0}
@@ -2733,8 +2734,8 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertGreater(budget_kwh, 0.0)
 
         next_energy_kwh = max(
-            planning_pipeline.MIN_E_KWH,
-            5.9 - budget_kwh / planning_pipeline.ETA_D,
+            TEST_CAPACITY_KWH * TEST_MIN_SOC_PCT / 100.0,
+            5.9 - budget_kwh / TEST_RTE**0.5,
         )
         second_plan = self._build_authoritative_plan(
             intervals=intervals[1:],
@@ -2768,7 +2769,7 @@ class HacsStrategyTests(unittest.TestCase):
         )
 
     def test_optimizer_headroom_credit_is_disabled_when_pv_charging_is_off(self):
-        start = dt.datetime(2026, 8, 13, 12, tzinfo=planning_pipeline.OPEN_METEO_TZ)
+        start = dt.datetime(2026, 8, 13, 12, tzinfo=TEST_TIMEZONE)
         intervals = [
             {
                 "dt": start + dt.timedelta(minutes=15 * i),
@@ -2797,8 +2798,8 @@ class HacsStrategyTests(unittest.TestCase):
                     }
                 )
 
-        original = planning_pipeline.PV_CHARGING_ENABLED
-        planning_pipeline.PV_CHARGING_ENABLED = False
+        original = getattr(self, "_planning_settings_override", None)
+        self._planning_settings_override = {"pv_charging": "off"}
         try:
             plan = self._build_authoritative_plan(
                 intervals=intervals,
@@ -2817,7 +2818,10 @@ class HacsStrategyTests(unittest.TestCase):
                 eex_days={},
             )
         finally:
-            planning_pipeline.PV_CHARGING_ENABLED = original
+            if original is None:
+                del self._planning_settings_override
+            else:
+                self._planning_settings_override = original
 
         self.assertTrue(
             all(point["discharge_budget_kwh"] == 0.0 for point in plan["points"][:4])
@@ -2955,41 +2959,35 @@ class HacsStrategyTests(unittest.TestCase):
                 )
 
         old_context = {
-            "battery_capacity_kwh": planning_pipeline.CAP_KWH,
-            "min_soc_pct": planning_pipeline.SOC_MIN,
-            "max_soc_pct": planning_pipeline.SOC_MAX,
-            "max_charge_power_w": planning_pipeline.MAX_CHARGE_P_W,
-            "max_discharge_power_w": planning_pipeline.MAX_DISCHARGE_P_W,
-            "pv_charging": "on" if planning_pipeline.PV_CHARGING_ENABLED else "off",
-            "grid_charging": (
-                "price_sensitive" if planning_pipeline.GRID_CHARGING_ENABLED else "off"
-            ),
-            "discharge": (
-                "price_sensitive" if planning_pipeline.DISCHARGE_ENABLED else "off"
-            ),
-            "planning_horizon_h": planning_pipeline.PLANNING_HORIZON_H,
-            "round_trip_efficiency": planning_pipeline.ETA_RT,
-            "min_margin_ct_per_kwh": planning_pipeline.MIN_MARGIN_CT,
-            "feed_in_tariff_ct_per_kwh": planning_pipeline.PV_EXPORT_OPPORTUNITY_CT,
-            "timezone": str(planning_pipeline.OPEN_METEO_TZ),
-            "pv_capacity_kwp": planning_pipeline.PV_CAPACITY_KWP,
-            "pv_inverter_power_kw": planning_pipeline.PV_INVERTER_KW,
+            "battery_capacity_kwh": TEST_CAPACITY_KWH,
+            "min_soc_pct": TEST_MIN_SOC_PCT,
+            "max_soc_pct": TEST_MAX_SOC_PCT,
+            "max_charge_power_w": TEST_MAX_POWER_W,
+            "max_discharge_power_w": TEST_MAX_POWER_W,
+            "pv_charging": "on" if True else "off",
+            "grid_charging": ("price_sensitive" if True else "off"),
+            "discharge": ("price_sensitive" if True else "off"),
+            "planning_horizon_h": 48,
+            "round_trip_efficiency": TEST_RTE,
+            "min_margin_ct_per_kwh": TEST_MIN_MARGIN_CT,
+            "feed_in_tariff_ct_per_kwh": 0.0,
+            "timezone": str(TEST_TIMEZONE),
+            "pv_capacity_kwp": TEST_PV_CAPACITY_KWP,
+            "pv_inverter_power_kw": TEST_PV_INVERTER_KW,
         }
-        planning_pipeline._configure(
-            {
-                "battery_capacity_kwh": 6.0,
-                "min_soc_pct": 5.0,
-                "max_soc_pct": 100.0,
-                "max_charge_power_w": 2400.0,
-                "max_discharge_power_w": 2400.0,
-                "pv_charging": "on",
-                "grid_charging": "price_sensitive",
-                "discharge": "price_sensitive",
-                "round_trip_efficiency": 0.85,
-                "min_margin_ct_per_kwh": 1.0,
-                "timezone": "UTC",
-            }
-        )
+        self._planning_settings_override = {
+            "battery_capacity_kwh": 6.0,
+            "min_soc_pct": 5.0,
+            "max_soc_pct": 100.0,
+            "max_charge_power_w": 2400.0,
+            "max_discharge_power_w": 2400.0,
+            "pv_charging": "on",
+            "grid_charging": "price_sensitive",
+            "discharge": "price_sensitive",
+            "round_trip_efficiency": 0.85,
+            "min_margin_ct_per_kwh": 1.0,
+            "timezone": "UTC",
+        }
         try:
             plan = self._build_authoritative_plan(
                 intervals=intervals,
@@ -3008,7 +3006,7 @@ class HacsStrategyTests(unittest.TestCase):
                 eex_days={},
             )
         finally:
-            planning_pipeline._configure(old_context)
+            self._planning_settings_override = old_context
 
         early_charge = [point["charge_fc_w"] for point in plan["points"][:3]]
         self.assertEqual(early_charge, [0.0, 0.0, 0.0])
@@ -3064,7 +3062,7 @@ class HacsStrategyTests(unittest.TestCase):
                 eex_days={},
             )
         finally:
-            planning_pipeline._configure(old_context)
+            self._planning_settings_override = old_context
 
         first = plan["points"][0]
         self.assertGreater(first["pv_charge_fc_w"], 0.0)
@@ -3123,7 +3121,7 @@ class HacsStrategyTests(unittest.TestCase):
                 eex_days={},
             )
         finally:
-            planning_pipeline._configure(old_context)
+            self._planning_settings_override = old_context
 
         self.assertGreater(plan["points"][0]["required_charge_fc_w"], 0.0)
         self.assertGreater(plan["points"][1]["required_charge_fc_w"], 0.0)
@@ -3159,41 +3157,35 @@ class HacsStrategyTests(unittest.TestCase):
                 )
 
         old_context = {
-            "battery_capacity_kwh": planning_pipeline.CAP_KWH,
-            "min_soc_pct": planning_pipeline.SOC_MIN,
-            "max_soc_pct": planning_pipeline.SOC_MAX,
-            "max_charge_power_w": planning_pipeline.MAX_CHARGE_P_W,
-            "max_discharge_power_w": planning_pipeline.MAX_DISCHARGE_P_W,
-            "pv_charging": "on" if planning_pipeline.PV_CHARGING_ENABLED else "off",
-            "grid_charging": (
-                "price_sensitive" if planning_pipeline.GRID_CHARGING_ENABLED else "off"
-            ),
-            "discharge": (
-                "price_sensitive" if planning_pipeline.DISCHARGE_ENABLED else "off"
-            ),
-            "planning_horizon_h": planning_pipeline.PLANNING_HORIZON_H,
-            "round_trip_efficiency": planning_pipeline.ETA_RT,
-            "min_margin_ct_per_kwh": planning_pipeline.MIN_MARGIN_CT,
-            "feed_in_tariff_ct_per_kwh": planning_pipeline.PV_EXPORT_OPPORTUNITY_CT,
-            "timezone": str(planning_pipeline.OPEN_METEO_TZ),
-            "pv_capacity_kwp": planning_pipeline.PV_CAPACITY_KWP,
-            "pv_inverter_power_kw": planning_pipeline.PV_INVERTER_KW,
+            "battery_capacity_kwh": TEST_CAPACITY_KWH,
+            "min_soc_pct": TEST_MIN_SOC_PCT,
+            "max_soc_pct": TEST_MAX_SOC_PCT,
+            "max_charge_power_w": TEST_MAX_POWER_W,
+            "max_discharge_power_w": TEST_MAX_POWER_W,
+            "pv_charging": "on" if True else "off",
+            "grid_charging": ("price_sensitive" if True else "off"),
+            "discharge": ("price_sensitive" if True else "off"),
+            "planning_horizon_h": 48,
+            "round_trip_efficiency": TEST_RTE,
+            "min_margin_ct_per_kwh": TEST_MIN_MARGIN_CT,
+            "feed_in_tariff_ct_per_kwh": 0.0,
+            "timezone": str(TEST_TIMEZONE),
+            "pv_capacity_kwp": TEST_PV_CAPACITY_KWP,
+            "pv_inverter_power_kw": TEST_PV_INVERTER_KW,
         }
-        planning_pipeline._configure(
-            {
-                "round_trip_efficiency": 0.85,
-                "min_margin_ct_per_kwh": 1.0,
-                "battery_capacity_kwh": 6.0,
-                "min_soc_pct": 5.0,
-                "max_soc_pct": 100.0,
-                "max_charge_power_w": 2400.0,
-                "max_discharge_power_w": 2400.0,
-                "pv_charging": "on",
-                "grid_charging": "price_sensitive",
-                "discharge": "price_sensitive",
-                "timezone": "UTC",
-            }
-        )
+        self._planning_settings_override = {
+            "round_trip_efficiency": 0.85,
+            "min_margin_ct_per_kwh": 1.0,
+            "battery_capacity_kwh": 6.0,
+            "min_soc_pct": 5.0,
+            "max_soc_pct": 100.0,
+            "max_charge_power_w": 2400.0,
+            "max_discharge_power_w": 2400.0,
+            "pv_charging": "on",
+            "grid_charging": "price_sensitive",
+            "discharge": "price_sensitive",
+            "timezone": "UTC",
+        }
         try:
             plan = self._build_authoritative_plan(
                 intervals=intervals,
@@ -3212,7 +3204,7 @@ class HacsStrategyTests(unittest.TestCase):
                 eex_days={},
             )
         finally:
-            planning_pipeline._configure(old_context)
+            self._planning_settings_override = old_context
 
         self.assertEqual(plan["points"][0]["discharge_fc_w"], 0.0)
         self.assertEqual(plan["points"][0]["discharge_budget_kwh"], 0.0)
@@ -3291,7 +3283,7 @@ class HacsStrategyTests(unittest.TestCase):
 
         self.assertAlmostEqual(
             plan["price_stats"]["discharge_floor_ct"],
-            (18.2 / planning_pipeline.ETA_RT) + planning_pipeline.MIN_MARGIN_CT,
+            (18.2 / TEST_RTE) + TEST_MIN_MARGIN_CT,
             places=3,
         )
         self.assertGreater(plan["points"][3]["discharge_budget_kwh"], 0.0)
@@ -3441,7 +3433,7 @@ class HacsStrategyTests(unittest.TestCase):
 
         self.assertEqual(
             plan["points"][0]["discharge_budget_kwh"],
-            round(planning_pipeline.MAX_E_SLOT_KWH, 3),
+            round(TEST_MAX_POWER_W / 1000.0 * planning_pipeline.SLOT_H, 3),
         )
 
     def test_planning_adapter_filters_expired_cached_slots(self):

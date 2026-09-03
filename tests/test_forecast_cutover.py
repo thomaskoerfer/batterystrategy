@@ -8,7 +8,6 @@ import inspect
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 from custom_components.battery_strategy import planning_pipeline
@@ -19,12 +18,25 @@ from custom_components.battery_strategy.contracts import (
     SlotKey,
 )
 from custom_components.battery_strategy.forecasting import FeatureStoreForecastNotReady
+from custom_components.battery_strategy.optimizer_state import save_state_document
 
 
 class ForecastProductionTests(unittest.TestCase):
     def test_forecasting_package_has_no_runtime_or_actuator_dependency(self):
-        package_dir = Path(__file__).parents[1] / "custom_components" / "battery_strategy" / "forecasting"
-        allowed_absolute = {"__future__", "dataclasses", "datetime", "math", "statistics", "zoneinfo"}
+        package_dir = (
+            Path(__file__).parents[1]
+            / "custom_components"
+            / "battery_strategy"
+            / "forecasting"
+        )
+        allowed_absolute = {
+            "__future__",
+            "dataclasses",
+            "datetime",
+            "math",
+            "statistics",
+            "zoneinfo",
+        }
         for path in package_dir.glob("*.py"):
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
             for node in ast.walk(tree):
@@ -39,17 +51,16 @@ class ForecastProductionTests(unittest.TestCase):
         self.timezone = ZoneInfo("Europe/Berlin")
         self.start = dt.datetime(2026, 8, 16, 10, 0, tzinfo=self.timezone)
         self.intervals = [
-            {"dt": self.start + dt.timedelta(minutes=15 * index), "price_eur": 0.20 + 0.001 * index}
+            {
+                "dt": self.start + dt.timedelta(minutes=15 * index),
+                "price_eur": 0.20 + 0.001 * index,
+            }
             for index in range(16)
         ]
         self.history = self._history(8)
-        self.old_timezone = planning_pipeline.OPEN_METEO_TZ
-        planning_pipeline.OPEN_METEO_TZ = self.timezone
-        planning_pipeline.local_dt_from_ts.cache_clear()
-
-    def tearDown(self) -> None:
-        planning_pipeline.OPEN_METEO_TZ = self.old_timezone
-        planning_pipeline.local_dt_from_ts.cache_clear()
+        self.runtime = planning_pipeline.PlanningRuntime.from_mapping(
+            {"timezone": "Europe/Berlin"}
+        )
 
     def _history(self, days: int):
         first = self.start.astimezone(dt.timezone.utc) - dt.timedelta(days=days)
@@ -57,22 +68,27 @@ class ForecastProductionTests(unittest.TestCase):
         slots = []
         for index in range(days * 96):
             start = first + dt.timedelta(minutes=15 * index)
-            slot = SlotKey(int(start.timestamp() * 1000), int((start + dt.timedelta(minutes=15)).timestamp() * 1000))
+            slot = SlotKey(
+                int(start.timestamp() * 1000),
+                int((start + dt.timedelta(minutes=15)).timestamp() * 1000),
+            )
             quarter = index % 96
             load_w = 350.0 + 200.0 * (quarter in range(28, 40))
             pv_w = max(0.0, 1000.0 - abs(quarter - 52) * 70.0)
-            slots.append(HistoricalFeatureSlot(
-                slot=slot,
-                house_load_no_ev_kwh=load_w / 4000.0,
-                pv_generation_kwh=pv_w / 4000.0,
-                grid_import_kwh=max(0.0, load_w - pv_w) / 4000.0,
-                grid_export_kwh=max(0.0, pv_w - load_w) / 4000.0,
-                battery_charge_kwh=0.0,
-                battery_discharge_kwh=0.0,
-                ev_charge_kwh=0.0,
-                price_ct_per_kwh=25.0,
-                quality=DataQuality(),
-            ))
+            slots.append(
+                HistoricalFeatureSlot(
+                    slot=slot,
+                    house_load_no_ev_kwh=load_w / 4000.0,
+                    pv_generation_kwh=pv_w / 4000.0,
+                    grid_import_kwh=max(0.0, load_w - pv_w) / 4000.0,
+                    grid_export_kwh=max(0.0, pv_w - load_w) / 4000.0,
+                    battery_charge_kwh=0.0,
+                    battery_discharge_kwh=0.0,
+                    ev_charge_kwh=0.0,
+                    price_ct_per_kwh=25.0,
+                    quality=DataQuality(),
+                )
+            )
         return tuple(slots)
 
     def _forecast(self, history=None):
@@ -108,7 +124,10 @@ class ForecastProductionTests(unittest.TestCase):
         baseline, _ = self._forecast()
         future_start = self.start.astimezone(dt.timezone.utc) + dt.timedelta(days=1)
         future = HistoricalFeatureSlot(
-            slot=SlotKey(int(future_start.timestamp() * 1000), int((future_start + dt.timedelta(minutes=15)).timestamp() * 1000)),
+            slot=SlotKey(
+                int(future_start.timestamp() * 1000),
+                int((future_start + dt.timedelta(minutes=15)).timestamp() * 1000),
+            ),
             house_load_no_ev_kwh=99.0,
             pv_generation_kwh=99.0,
             grid_import_kwh=0.0,
@@ -127,12 +146,14 @@ class ForecastProductionTests(unittest.TestCase):
 
     def test_optimizer_requires_explicit_forecast_bundle(self):
         with self.assertRaisesRegex(TypeError, "forecast_bundle"):
-            planning_pipeline._planning_service().plan(
+            planning_pipeline._planning_service(self.runtime.settings).plan(
                 intervals=self.intervals, samples=[], start_energy_kwh=3.0
             )
 
     def test_optimizer_does_not_construct_forecasts(self):
-        source = inspect.getsource(planning_pipeline._planning_service().plan)
+        source = inspect.getsource(
+            planning_pipeline._planning_service(self.runtime.settings).plan
+        )
         self.assertNotIn("build_production_forecast", source)
         self.assertNotIn("build_feature_store_forecast", source)
 
@@ -143,17 +164,22 @@ class ForecastProductionTests(unittest.TestCase):
 
     def test_load_state_removes_obsolete_comparison_traces(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            state_path = Path(temp_dir) / "optimizer_state.json"
-            planning_pipeline.save_state_document(state_path, {
-                "forecast_shadow_trace": [{"slot_start_ts": 1234}],
-                "forecast_parity_trace": [{"slot_start_ts": 5678}],
-                "state_schema": 7,
-            })
-            with patch.object(planning_pipeline, "STATE_FILE", str(state_path)):
-                data = planning_pipeline.load_state()
+            state_path = Path(temp_dir) / "battery_strategy_optimizer_state.json"
+            save_state_document(
+                state_path,
+                {
+                    "forecast_shadow_trace": [{"slot_start_ts": 1234}],
+                    "forecast_parity_trace": [{"slot_start_ts": 5678}],
+                    "state_schema": 7,
+                },
+            )
+            runtime = planning_pipeline.PlanningRuntime.from_mapping(
+                {"config_dir": temp_dir, "timezone": "Europe/Berlin"}
+            )
+            data = planning_pipeline.load_state(runtime)
         self.assertNotIn("forecast_shadow_trace", data)
         self.assertNotIn("forecast_parity_trace", data)
-        self.assertEqual(data["state_schema"], 8)
+        self.assertEqual(data["state_schema"], 9)
 
 
 if __name__ == "__main__":

@@ -2,9 +2,14 @@
 
 ## Allowed
 
-- Capture normalized Home Assistant snapshots in `planning_adapter.py`.
+- Capture Home Assistant inputs in `planning_adapter.py` and freeze each run in
+  `planning_runtime.py`.
+- Normalize only captured measurements and tariffs in the two `runtime_*`
+  modules.
 - Sequence existing component APIs in `planning_pipeline.py`.
-- Publish the stable integration payload and bounded diagnostics.
+- Keep state migration/persistence in `planning_state.py`, forecast invocation
+  and evaluation in their application modules, and entity/profile projection in
+  `plan_presentation.py`.
 
 ## Forbidden
 
@@ -13,6 +18,8 @@
 - Add compatibility wrappers, subprocess/CLI protocols, stdout transport or a
   second planning path.
 - Access Recorder schemas, database engines or battery services directly.
+- Store per-entry configuration, state, history, weather or prices in module
+  globals.
 
 ## Required checks
 

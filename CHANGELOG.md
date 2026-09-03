@@ -28,6 +28,16 @@ All notable changes to Battery Strategy are documented here.
   preserving the authoritative learned optimizer state.
 - Removed the final compatibility engine and CLI/stdout protocol. Home
   Assistant now invokes the planning pipeline directly through its adapter.
+- Replaced mutable module-global planning inputs with an immutable per-refresh
+  runtime snapshot and split measurement, tariff, state, forecast application,
+  evaluation and presentation responsibilities out of the coordinator pipeline.
+- Migrated persisted optimizer state to schema 9 so historical EV samples are
+  normalized once rather than through a permanent runtime compatibility branch.
+- Removed HA-less and pre-minimum-version import fallbacks; runtime imports now
+  match the declared Home Assistant 2026.7 minimum instead of masking packaging
+  errors.
+- Moved bounded command-trace serialization out of the live coordinator while
+  retaining its executor boundary, schema and retention limits.
 
 ### Safety
 

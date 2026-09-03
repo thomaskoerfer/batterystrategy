@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import time
+from dataclasses import dataclass
 
 from .const import COMMAND_IDLE, COMMAND_INPUT, COMMAND_OUTPUT
 from .models import StrategyCommand, StrategyOptions

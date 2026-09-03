@@ -179,12 +179,14 @@ downstream layer receives a recorder engine or depends on recorder tables.
 
 Forecast composition, market enrichment, optimization, planning orchestration,
 plan compilation, live policy, actuation and measured savings have explicit
-implementation owners. `planning_adapter.py` captures Home Assistant data and
-`planning_pipeline.py` coordinates one run through those owners without
-reimplementing their rules. The coordinator never writes hardware directly;
-`actuator.py` is the sole Home Assistant battery-service writer. There are no
-compatibility facades, alternative optimizers, compilers, forecast runners or
-hardware writers.
+implementation owners. `planning_adapter.py` captures Home Assistant data,
+`planning_runtime.py` freezes one refresh, the `runtime_*` adapters normalize
+measurements and tariffs, and `planning_pipeline.py` coordinates the remaining
+owners without reimplementing their rules. State, forecast invocation and
+evaluation, and Home Assistant presentation have separate application modules.
+The coordinator never writes hardware directly; `actuator.py` is the sole Home
+Assistant battery-service writer. There are no compatibility facades,
+alternative optimizers, compilers, forecast runners or hardware writers.
 
 ## Migration plan and gates
 

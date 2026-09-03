@@ -1,4 +1,4 @@
-"""Adapter for the full-quality internal optimizer engine."""
+"""Home Assistant adapter for the planning application."""
 
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ from .plan_models import DailyCost, PlanPoint, StrategyPlan
 
 CACHE_TTL_S = 240
 SLOT_MS = 15 * 60 * 1000
-_ENGINE_RUN_LOCK = threading.Lock()
+_PLANNING_RUN_LOCK = threading.Lock()
 LOGGER = logging.getLogger(__name__)
 
 
@@ -111,10 +111,9 @@ class PlanningPipelineAdapter:
 
         from . import planning_pipeline
 
-        # Reloading a config entry cannot cancel Python code already running in an
-        # executor thread. Serialize engine runs so an old and a new coordinator
-        # never mutate the module-global optimizer context or state file together.
-        with _ENGINE_RUN_LOCK:
+        # Executor work survives config-entry cancellation. Serialize persistence
+        # so an old and a new coordinator cannot write the same state file together.
+        with _PLANNING_RUN_LOCK:
             if runtime_context:
                 runtime_context = dict(runtime_context)
                 if self._hass is not None:
@@ -335,7 +334,9 @@ def _points_from_output(
         _series(output.get("profile_today_pv_charge_power")),
         _series(output.get("profile_tomorrow_pv_charge_power")),
     )
-    grid_charge = _series(output.get("profile_48h_grid_charge_fc_power")) or _merge_series(
+    grid_charge = _series(
+        output.get("profile_48h_grid_charge_fc_power")
+    ) or _merge_series(
         _series(output.get("profile_today_grid_charge_power")),
         _series(output.get("profile_tomorrow_grid_charge_power")),
     )
