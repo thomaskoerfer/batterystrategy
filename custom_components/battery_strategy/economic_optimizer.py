@@ -15,11 +15,9 @@ from .contracts import (
 SLOT_H = 0.25
 ENERGY_STEP_KWH = 0.025
 ECONOMIC_COST_TIE_EUR = 1e-9
-CHARGE_DEFERRAL_MARGIN_CT = 0.5
 PV_RECOVERY_LOOKAHEAD_H = 18.0
 SCARCE_VALUE_TIE_CT = 0.5
-MICROCYCLE_LOOKBACK_SLOTS = 8
-OPTIMIZER_VERSION = "economic-dp-v1"
+OPTIMIZER_VERSION = "economic-dp-v2"
 
 
 @dataclass(slots=True)
@@ -230,30 +228,6 @@ class DynamicProgrammingOptimizer:
                                 prices[slot_index] + policy.min_margin_ct_per_kwh
                             ):
                                 continue
-                            later_cheaper_capacity = sum(
-                                max_charge_slot
-                                for later in range(slot_index + 1, slot_count)
-                                if prices[later] + CHARGE_DEFERRAL_MARGIN_CT
-                                < prices[slot_index]
-                            )
-                            if later_cheaper_capacity > 1e-9:
-                                profitable_need = sum(
-                                    min(max_discharge_slot, net_load[later])
-                                    for later in range(slot_index + 1, slot_count)
-                                    if prices[later]
-                                    >= prices[slot_index]
-                                    / constraints.round_trip_efficiency
-                                    + policy.min_margin_ct_per_kwh
-                                )
-                                usable = max(0.0, (energy_now - min_energy) * eta_d)
-                                additional_input = max(
-                                    0.0,
-                                    (profitable_need - usable)
-                                    / constraints.round_trip_efficiency,
-                                )
-                                if later_cheaper_capacity >= additional_input - 1e-6:
-                                    continue
-
                         imported = (
                             max(0.0, net_load[slot_index] - discharge_out)
                             + grid_input
@@ -341,24 +315,6 @@ class DynamicProgrammingOptimizer:
         max_energy = constraints.capacity_kwh * constraints.max_soc_pct / 100.0
         max_charge = constraints.max_charge_power_w / 1000.0 * SLOT_H
         max_discharge = constraints.max_discharge_power_w / 1000.0 * SLOT_H
-
-        for index, action in enumerate(actions):
-            if action.discharge_kwh <= 1e-9:
-                continue
-            paid = []
-            for earlier in range(max(0, index - MICROCYCLE_LOOKBACK_SLOTS), index):
-                grid = max(0.0, actions[earlier].charge_kwh - surplus[earlier])
-                if grid > 1e-9:
-                    paid.append((grid, prices[earlier]))
-            if paid:
-                average = sum(energy * price for energy, price in paid) / sum(
-                    energy for energy, _price in paid
-                )
-                if prices[index] <= (
-                    average / constraints.round_trip_efficiency
-                    + policy.min_margin_ct_per_kwh
-                ):
-                    action.discharge_kwh = 0.0
 
         quantum = ENERGY_STEP_KWH / eta_c
         if policy.grid_charging_allowed:

@@ -33,6 +33,18 @@ The optimizer considers:
 The objective uses real import cost, export opportunity cost and explicit policy
 only. Ranks and heuristics must not appear as fictional currency credits.
 
+Energy substitution is chronological. A later charging opportunity can replace
+an earlier one only for demand that occurs after that later charge. The dynamic
+programming state already enforces this causality through the battery trajectory;
+global future-capacity shortcuts must not reject otherwise feasible actions.
+Equal-cost plans may still defer grid charging through deterministic tie-breaking,
+but never beyond the demand that requires the stored energy.
+
+Economic charge/discharge eligibility is resolved inside the optimization
+objective. Publication may normalize lattice-sized source allocation, but it
+must not delete an optimized discharge based on a guessed origin or age of the
+stored energy; doing so can strand paid inventory and invalidate plan cost.
+
 ## Plan semantics
 
 Each `BatteryPlanSlot` contains planned charge and discharge energy, separate PV

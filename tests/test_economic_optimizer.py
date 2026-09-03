@@ -118,6 +118,52 @@ def test_profitable_grid_charge_is_used_for_later_expensive_load():
     assert plan.optimized_cost_eur < plan.baseline_cost_eur
 
 
+def test_cheaper_slot_after_peak_cannot_replace_energy_needed_before_it():
+    plan = DynamicProgrammingOptimizer().optimize(
+        problem(
+            [20.0, 40.0, 15.0],
+            loads=[0.0, 0.4, 0.0],
+            soc=10.0,
+            rte=0.8,
+        )
+    )
+
+    assert plan.slots[0].planned_grid_charge_kwh > 0.0
+    assert plan.slots[1].planned_discharge_kwh > 0.0
+    assert plan.slots[2].planned_grid_charge_kwh == 0.0
+    assert plan.optimized_cost_eur < plan.baseline_cost_eur
+
+
+def test_cheaper_slot_before_peak_defers_grid_charge():
+    plan = DynamicProgrammingOptimizer().optimize(
+        problem(
+            [20.0, 15.0, 40.0],
+            loads=[0.0, 0.0, 0.4],
+            soc=10.0,
+            rte=0.8,
+        )
+    )
+
+    assert plan.slots[0].planned_grid_charge_kwh == 0.0
+    assert plan.slots[1].planned_grid_charge_kwh > 0.0
+    assert plan.slots[2].planned_discharge_kwh > 0.0
+
+
+def test_insufficient_cheaper_capacity_before_peak_keeps_earlier_charge():
+    plan = DynamicProgrammingOptimizer().optimize(
+        problem(
+            [20.0, 15.0, 40.0, 40.0],
+            loads=[0.0, 0.0, 0.6, 0.6],
+            soc=10.0,
+            rte=0.8,
+        )
+    )
+
+    assert plan.slots[0].planned_grid_charge_kwh > 0.0
+    assert plan.slots[1].planned_grid_charge_kwh > 0.0
+    assert sum(slot.planned_discharge_kwh for slot in plan.slots[2:]) > 0.6
+
+
 def test_round_trip_loss_blocks_uneconomic_cycle():
     plan = DynamicProgrammingOptimizer().optimize(
         problem([30.0, 35.0], loads=[0.0, 0.5], rte=0.8)

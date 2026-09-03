@@ -2,7 +2,16 @@
 
 All notable changes to Battery Strategy are documented here.
 
-## Unreleased
+## [0.2.0-rc.5] - 2026-09-03
+
+### Fixed
+
+- Prevented grid charging from being deferred past the expensive demand it is
+  intended to serve merely because cheaper charging capacity exists later in
+  the planning horizon.
+- Removed post-optimization micro-cycle filtering that could delete discharge
+  while retaining its preceding paid charge; RTE and minimum margin remain
+  enforced directly by the economic objective.
 
 ### Added
 
