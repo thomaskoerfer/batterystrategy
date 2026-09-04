@@ -42,6 +42,7 @@ class PlanCompilerRuntime:
         self._next_slot_charged_kwh = 0.0
         self._next_slot_discharged_kwh = 0.0
         self._progress_reconstructable = True
+        self._prorate_unrestored_discharge = False
         self._snapshot_dirty = False
         self._error: str | None = None
         self._last_accounting_at: dt.datetime | None = None
@@ -111,6 +112,7 @@ class PlanCompilerRuntime:
         self._next_slot_discharged_kwh = 0.0
         self._state = PlanCompilationState()
         self._progress_reconstructable = True
+        self._prorate_unrestored_discharge = False
 
         restored = self._restored_snapshot
         self._restored_snapshot = None
@@ -127,7 +129,10 @@ class PlanCompilerRuntime:
             return
 
         if not transitioned_while_running and now_ms > int(slot_start_ms) + 5_000:
-            self._progress_reconstructable = False
+            # A deployment may start without a persisted runtime snapshot. Do
+            # not reopen the full slot, but retain proportional discharge
+            # permission for its unelapsed portion. Paid charging stays closed.
+            self._prorate_unrestored_discharge = True
 
     def _add_energy(self, power_w: float, elapsed_s: float, *, next_slot: bool) -> None:
         """Attribute one measured power segment to its actual quarter-hour."""
@@ -182,6 +187,26 @@ class PlanCompilerRuntime:
                 slot_start_ms=current_slot.start_ms,
                 allow_pv_charge=True,
             )
+        if self._prorate_unrestored_discharge and self._state.slot is None:
+            remaining_fraction = max(
+                0.0,
+                min(
+                    1.0,
+                    (current_slot.end_ms - now_ms)
+                    / (current_slot.end_ms - current_slot.start_ms),
+                ),
+            )
+            self._state = PlanCompilationState(
+                slot=current_slot,
+                committed_plan_id=plan.plan_id,
+                required_charge_commitment_kwh=0.0,
+                discharge_budget_commitment_kwh=(
+                    plan_slot.discharge_budget_kwh * remaining_fraction
+                ),
+                grid_charge_allowed=False,
+            )
+            self._prorate_unrestored_discharge = False
+            self._snapshot_dirty = True
         try:
             compiled, next_state = self._compiler.compile(
                 plan,

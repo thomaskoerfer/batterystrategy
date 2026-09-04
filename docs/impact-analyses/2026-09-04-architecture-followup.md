@@ -162,6 +162,16 @@ Recommendations 5-9 do not change approved interface contracts, entity IDs,
 schema-11 keys, optimizer behavior, plan-compiler semantics, live policy or the
 single actuator path.
 
+### Deployment restart follow-up
+
+The owner approved proportional same-slot discharge recovery on 2026-09-04.
+When no usable compiler-runtime snapshot exists, a mid-slot startup now latches
+only the optimizer budget corresponding to the unelapsed slot fraction. It does
+not reopen on replanning, and required grid charge remains closed. Exact clean
+state and monotonic-counter reconstruction retain precedence. This changes
+restart semantics documented by the plan-compiler contract without changing
+contract types, entity IDs or persistence schema.
+
 ## Rollback
 
 The pre-follow-up deployment remains `0.2.0-rc.6`. Reverting this candidate to

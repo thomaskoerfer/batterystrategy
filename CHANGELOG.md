@@ -2,6 +2,16 @@
 
 All notable changes to Battery Strategy are documented here.
 
+## [0.2.0-rc.9] - 2026-09-04
+
+### Fixed
+
+- Preserve proportional discharge permission when Home Assistant starts in the
+  middle of a slot without a usable compiler-runtime snapshot. The fallback
+  uses only the unelapsed slot fraction and cannot reopen during later replans.
+- Keep paid grid charging closed in that fallback. Exact clean snapshots and
+  counter-reconstructed unclean snapshots continue to take precedence.
+
 ## [0.2.0-rc.8] - 2026-09-04
 
 ### Fixed

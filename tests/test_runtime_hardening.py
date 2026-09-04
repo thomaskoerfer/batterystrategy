@@ -196,6 +196,33 @@ def test_unclean_restart_without_counters_fails_commercially_closed():
     assert directive.discharge_budget_remaining_kwh == 0.0
 
 
+def test_mid_slot_restart_without_snapshot_prorates_discharge_budget():
+    runtime = PlanCompilerRuntime()
+    now_ms = SLOT_START_MS + 450_000
+
+    directive = runtime.compile(
+        _plan(discharge_budget_kwh=0.6),
+        _options(),
+        _measurements(captured_at_ms=now_ms),
+        now_ms,
+        (None, None),
+    )
+
+    assert directive.discharge_budget_remaining_kwh == pytest.approx(0.3)
+    assert not directive.grid_charge_allowed
+    assert directive.required_charge_remaining_kwh == 0.0
+    assert runtime.snapshot_dirty
+
+    replanned = runtime.compile(
+        _plan(discharge_budget_kwh=0.6),
+        _options(),
+        _measurements(captured_at_ms=now_ms + 60_000),
+        now_ms + 60_000,
+        (None, None),
+    )
+    assert replanned.discharge_budget_remaining_kwh == pytest.approx(0.3)
+
+
 def test_running_process_resets_progress_only_at_next_slot():
     runtime = PlanCompilerRuntime()
     start = dt.datetime.fromtimestamp(SLOT_START_MS / 1000, dt.timezone.utc)
