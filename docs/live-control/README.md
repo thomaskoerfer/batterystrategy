@@ -73,9 +73,11 @@ The two EV discharge controls are independent:
 | On | Off | EV power is removed; only remaining household load is eligible |
 | On | On | Total eligible load, including EV, may be supplied |
 
-The configured EV active threshold determines when these rules apply. If an EV
-sensor is configured but remains stale beyond its bounded bridge, automatic
-discharge fails closed whenever correct EV exclusion cannot be guaranteed.
+The configured EV active threshold determines when these rules apply. An
+unchanged but available EV value remains valid because event-driven integrations
+may publish only changes. If the configured EV entity becomes unavailable or
+invalid beyond its bounded bridge, automatic discharge fails closed whenever
+correct EV exclusion cannot be guaranteed.
 
 These EV rules apply identically to load-following and price-sensitive automatic
 discharge.
@@ -109,11 +111,11 @@ path. There is never a second automatic hardware writer.
   in the coordinator or actuator.
 - Minimum command and delta thresholds reduce oscillation and unnecessary
   writes without changing commercial permission.
-- An invalid or expired directive, stale grid input or stale SoC produces a safe
-  idle/zero outcome.
-- Change-driven battery power sensors use their source availability instead of
-  state age; an unchanged valid zero must not expire merely because the device
-  publishes only on value changes.
+- An invalid or expired directive, stale grid input, or a SoC entity unavailable
+  beyond its bounded bridge produces a safe idle/zero outcome.
+- Change-driven battery power, SoC and EV sensors use source availability instead
+  of state age; an unchanged valid value must not expire merely because the
+  device publishes only on value changes.
 
 ## Setup independence
 

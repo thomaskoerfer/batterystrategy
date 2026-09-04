@@ -2753,7 +2753,7 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertTrue(coordinator._soc_control_ready)
         self.assertTrue(coordinator._soc_recovered)
 
-    def test_numeric_but_stale_soc_does_not_refresh_control_readiness(self):
+    def test_unchanged_available_soc_remains_control_ready(self):
         stale_at = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=10)
         state = SimpleNamespace(
             state="41",
@@ -2774,8 +2774,31 @@ class HacsStrategyTests(unittest.TestCase):
         coordinator._soc_control_ready = True
         coordinator._soc_recovered = False
 
-        self.assertEqual(coordinator._battery_soc_pct(), 37.0)
-        self.assertFalse(coordinator._soc_control_ready)
+        self.assertEqual(coordinator._battery_soc_pct(), 41.0)
+        self.assertTrue(coordinator._soc_control_ready)
+
+    def test_unchanged_available_ev_power_remains_control_ready(self):
+        stale_at = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=10)
+        state = SimpleNamespace(
+            state="0",
+            attributes={"unit_of_measurement": "W"},
+            last_reported=stale_at,
+            last_updated=stale_at,
+            last_changed=stale_at,
+        )
+        coordinator = object.__new__(BatteryStrategyCoordinator)
+        coordinator.entry = SimpleNamespace(
+            data={"ev_power_entity": "sensor.ev_power"}
+        )
+        coordinator.hass = SimpleNamespace(
+            states=SimpleNamespace(get=lambda _entity_id: state)
+        )
+        coordinator._last_known_ev_power_w = 11000.0
+        coordinator._last_valid_ev_at = stale_at
+        coordinator._ev_control_ready = False
+
+        self.assertEqual(coordinator._ev_power_w(), 0.0)
+        self.assertTrue(coordinator._ev_control_ready)
 
     def test_change_driven_battery_power_remains_usable_while_available(self):
         stale_at = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=10)

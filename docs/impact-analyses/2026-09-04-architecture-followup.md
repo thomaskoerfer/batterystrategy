@@ -145,10 +145,12 @@ read bounded Recorder history in the executor, load typed owner state, invoke
 planning, persist that state under the existing schema-11 lease, then publish.
 No optimizer, compiler, live-control, actuator, entity or persistence-schema
 semantics changed. The residual duplicate EV-history conversion was removed as
-part of enforcing the existing unit contract. Battery power availability uses
-the source integration's availability state rather than an age limit because
-change-driven MQTT sensors legitimately retain an unchanged value. Grid, SoC
-and policy-relevant EV inputs retain their bounded freshness checks.
+part of enforcing the existing unit contract. Battery power, SoC and EV
+availability use the source integration's availability state rather than an age
+limit because change-driven MQTT sensors legitimately retain unchanged values.
+The existing bounded SoC and EV bridges apply only after a source becomes
+unavailable or invalid. Grid inputs retain their strict age checks because the
+live feedback loop requires current measurements.
 
 ## Contract impact
 

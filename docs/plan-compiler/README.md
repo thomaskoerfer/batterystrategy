@@ -91,8 +91,9 @@ discharge already measured in that slot.
 Compilation state is explicit, not a hidden module global. It identifies the
 active slot, original committed plan and the accepted required-charge and
 discharge ceilings. A restart may restore a directive only from a valid current
-plan and real progress inputs; missing or stale SoC fails closed rather than
-inventing a nominal value.
+plan and real progress inputs; a missing SoC that exceeds its bounded adapter
+bridge fails closed rather than inventing a nominal value. An unchanged but
+available SoC remains valid for event-driven sources.
 
 The Home Assistant adapter persists one compact, versioned snapshot containing
 the active compilation state, measured slot throughput and the corresponding
@@ -155,7 +156,8 @@ Required regression scenarios include:
   while keeping grid charge closed;
 - a temporary same-slot plan gap remains closed and cannot erase or reopen the
   latched commitment;
-- stale SoC and invalid slot identity fail closed.
+- unavailable SoC beyond its bounded bridge and invalid slot identity fail
+  closed.
 
 The production migration and rollback gate is maintained in
 `docs/impact-analyses/2026-08-31-phase-6-plan-compiler.md`.

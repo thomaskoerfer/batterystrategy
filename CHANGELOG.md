@@ -2,6 +2,15 @@
 
 All notable changes to Battery Strategy are documented here.
 
+## [0.2.0-rc.11] - 2026-09-04
+
+### Fixed
+
+- Keep unchanged but available SoC and EV measurements valid for event-driven
+  integrations that publish only value changes. The bounded bridge now starts
+  only when the configured entity becomes unavailable or invalid; fresh grid
+  measurements remain strictly required for live control.
+
 ## [0.2.0-rc.10] - 2026-09-04
 
 ### Fixed

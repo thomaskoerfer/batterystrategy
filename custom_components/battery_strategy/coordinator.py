@@ -746,13 +746,12 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         )
 
     def _battery_soc_pct(self) -> float:
-        """Return the last real SoC estimate and gate control when it is stale."""
+        """Return real SoC and briefly bridge an unavailable source."""
         entity_id = self.entry.data.get(CONF_BATTERY_SOC_ENTITY)
         if entity_id:
             state = self.hass.states.get(entity_id)
             if (
                 state is not None
-                and self._state_age_s(entity_id) <= SOC_BRIDGE_MAX_AGE_S
                 and state.state not in ("unknown", "unavailable", "none", "")
             ):
                 try:
@@ -764,7 +763,9 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
                     self._last_known_soc_pct = value
                     self._soc_control_ready = True
                     self._soc_recovered = not was_control_ready
-                    self._last_valid_soc_at = self._state_reported_at(entity_id)
+                    # Event-driven integrations may not rewrite an unchanged
+                    # value. Availability, not state age, defines validity.
+                    self._last_valid_soc_at = dt.datetime.now(dt.timezone.utc)
                     return value
         last_valid_soc_at = getattr(
             self, "_last_valid_soc_at", dt.datetime.now(dt.timezone.utc)
@@ -823,7 +824,6 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         state = self.hass.states.get(entity_id)
         if (
             state is not None
-            and self._state_age_s(entity_id) <= EV_POWER_BRIDGE_MAX_AGE_S
             and state.state not in ("unknown", "unavailable", "none", "")
         ):
             try:
@@ -832,7 +832,9 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
                 value = None
             if value is not None:
                 self._last_known_ev_power_w = value
-                self._last_valid_ev_at = self._state_reported_at(entity_id)
+                # EV meters may publish only changes. A valid available state
+                # remains authoritative even when its value is unchanged.
+                self._last_valid_ev_at = dt.datetime.now(dt.timezone.utc)
                 self._ev_control_ready = True
                 return value
         now = dt.datetime.now(dt.timezone.utc)
