@@ -5,62 +5,47 @@ from __future__ import annotations
 from .planning_runtime import HistoryRole
 
 
-def fetch_sensor_series_many(runtime, roles, cutoff_ts):
-    """Return bounded Recorder history captured through the HA adapter."""
-    roles = tuple(
-        item if isinstance(item, HistoryRole) else HistoryRole(item)
-        for item in roles
-    )
-    return runtime.history.read(roles, cutoff_ts)
-
-
-def fetch_sensor_series(runtime, role, cutoff_ts):
-    """Return one normalized series from the captured history snapshot."""
-    return fetch_sensor_series_many(runtime, [role], cutoff_ts)[role]
-
-
 def fetch_net_actual_profile(runtime, hours=48):
-    cutoff_ts = runtime.captured_at_s - hours * 3600
-    series_map = fetch_sensor_series_many(
-        runtime,
+    cutoff_ms = runtime.captured_at_ms - hours * 3_600_000
+    series_map = runtime.history.read(
         [
             HistoryRole.GRID_IMPORT_POWER_W,
             HistoryRole.GRID_EXPORT_POWER_W,
         ],
-        cutoff_ts,
+        cutoff_ms,
     )
     imp = series_map[HistoryRole.GRID_IMPORT_POWER_W]
     exp = series_map[HistoryRole.GRID_EXPORT_POWER_W]
     buckets = {}
     for ts, v in imp:
-        h = int(ts // 3600) * 3600
+        h = int(ts // 3_600_000) * 3_600_000
         buckets.setdefault(h, {"imp": [], "exp": []})["imp"].append(float(v))
     for ts, v in exp:
-        h = int(ts // 3600) * 3600
+        h = int(ts // 3_600_000) * 3_600_000
         buckets.setdefault(h, {"imp": [], "exp": []})["exp"].append(float(v))
     out = []
     for h in sorted(buckets.keys()):
         rec = buckets[h]
         imp_avg = (sum(rec["imp"]) / len(rec["imp"])) if rec["imp"] else 0.0
         exp_avg = (sum(rec["exp"]) / len(rec["exp"])) if rec["exp"] else 0.0
-        out.append([int(h * 1000), round(imp_avg - exp_avg, 1)])
+        out.append([h, round(imp_avg - exp_avg, 1)])
     return out
 
 
 def fetch_pv_actual_profile(runtime, hours=48):
-    cutoff_ts = runtime.captured_at_s - hours * 3600
-    pv = fetch_sensor_series_many(
-        runtime, [HistoryRole.PV_GENERATION_POWER_W], cutoff_ts
+    cutoff_ms = runtime.captured_at_ms - hours * 3_600_000
+    pv = runtime.history.read(
+        [HistoryRole.PV_GENERATION_POWER_W], cutoff_ms
     )[HistoryRole.PV_GENERATION_POWER_W]
     buckets = {}
     for ts, v in pv:
-        h = int(ts // 3600) * 3600
+        h = int(ts // 3_600_000) * 3_600_000
         buckets.setdefault(h, []).append(max(0.0, float(v)))
     out = []
     for h in sorted(buckets.keys()):
         vals = buckets[h]
         avg = (sum(vals) / len(vals)) if vals else 0.0
-        out.append([int(h * 1000), round(avg, 1)])
+        out.append([h, round(avg, 1)])
     return out
 
 
@@ -96,9 +81,8 @@ def fetch_house_actual_profile(runtime, hours=48, samples=None):
     if len(sample_profile) >= 3:
         return sample_profile
 
-    cutoff_ts = runtime.captured_at_s - hours * 3600
-    series_map = fetch_sensor_series_many(
-        runtime,
+    cutoff_ms = runtime.captured_at_ms - hours * 3_600_000
+    series_map = runtime.history.read(
         [
             HistoryRole.GRID_IMPORT_POWER_W,
             HistoryRole.GRID_EXPORT_POWER_W,
@@ -107,7 +91,7 @@ def fetch_house_actual_profile(runtime, hours=48, samples=None):
             HistoryRole.BATTERY_CHARGE_POWER_W,
             HistoryRole.BATTERY_DISCHARGE_POWER_W,
         ],
-        cutoff_ts,
+        cutoff_ms,
     )
     imp = series_map[HistoryRole.GRID_IMPORT_POWER_W]
     exp = series_map[HistoryRole.GRID_EXPORT_POWER_W]
@@ -118,7 +102,7 @@ def fetch_house_actual_profile(runtime, hours=48, samples=None):
     buckets = {}
 
     def bucket(timestamp):
-        key = int(timestamp // 900) * 900
+        key = int(timestamp // 900_000) * 900_000
         return key, buckets.setdefault(
             key,
             {
@@ -142,7 +126,7 @@ def fetch_house_actual_profile(runtime, hours=48, samples=None):
         record["pv"].append(max(0.0, float(v)))
     for ts, v in wallbox:
         _, record = bucket(ts)
-        record["wb"].append(max(0.0, float(v) * 1000.0))
+        record["wb"].append(max(0.0, float(v)))
     for ts, v in charge:
         _, record = bucket(ts)
         record["charge"].append(float(v))
@@ -167,7 +151,7 @@ def fetch_house_actual_profile(runtime, hours=48, samples=None):
         bat_avg = discharge_avg - charge_avg
         # Battery correction: +bat_avg reconstructs house load before battery action.
         house_wo_ev = max(0.0, imp_avg + pv_avg + bat_avg - exp_avg - wb_avg)
-        out.append([int(b * 1000), round(house_wo_ev, 1)])
+        out.append([b, round(house_wo_ev, 1)])
     return out
 
 

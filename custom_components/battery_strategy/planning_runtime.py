@@ -37,17 +37,17 @@ class HistoryRole(StrEnum):
 class PlanningHistory:
     """Immutable, role-keyed and capture-bounded historical observations."""
 
-    _series: Mapping[HistoryRole, tuple[tuple[float, float], ...]]
+    _series: Mapping[HistoryRole, tuple[tuple[int, float], ...]]
 
     def __post_init__(self) -> None:
         normalized = {}
         for role, series in self._series.items():
             typed_role = role if isinstance(role, HistoryRole) else HistoryRole(role)
             values = tuple(
-                (float(timestamp), float(value)) for timestamp, value in series
+                (int(timestamp), float(value)) for timestamp, value in series
             )
             if any(
-                not math.isfinite(timestamp) or not math.isfinite(value)
+                timestamp < 0 or not math.isfinite(value)
                 for timestamp, value in values
             ):
                 raise ValueError("planning history values must be finite")
@@ -63,28 +63,30 @@ class PlanningHistory:
         return cls(MappingProxyType({}))
 
     @classmethod
-    def from_series(
+    def from_recorder_series(
         cls,
         values: Mapping[HistoryRole | str, Iterable[tuple[float, float]]],
         *,
-        captured_at_s: float,
+        captured_at_ms: int,
     ) -> PlanningHistory:
+        """Normalize Recorder epoch-second rows to contract epoch milliseconds."""
         normalized = {}
         for raw_role, series in values.items():
             role = (
                 raw_role if isinstance(raw_role, HistoryRole) else HistoryRole(raw_role)
             )
             normalized[role] = tuple(
-                (float(timestamp), float(value))
+                (int(round(float(timestamp) * 1000.0)), float(value))
                 for timestamp, value in series
-                if float(timestamp) <= captured_at_s
+                if math.isfinite(float(timestamp))
+                and float(timestamp) * 1000.0 <= captured_at_ms
             )
         return cls(normalized)
 
     def read(
-        self, roles: Iterable[HistoryRole], cutoff_ts: float
-    ) -> dict[HistoryRole, list[tuple[float, float]]]:
-        cutoff = float(cutoff_ts)
+        self, roles: Iterable[HistoryRole], cutoff_ms: int
+    ) -> dict[HistoryRole, list[tuple[int, float]]]:
+        cutoff = int(cutoff_ms)
         return {
             role: [item for item in self._series.get(role, ()) if item[0] >= cutoff]
             for role in roles

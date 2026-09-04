@@ -151,6 +151,10 @@ def test_planning_snapshot_excludes_adapter_and_persistence_details():
     assert "PlanningRuntime.from_mapping" not in runtime_source
     assert "def collect_inputs(" not in pipeline_source
     assert "owner_state: PlanningOwnerState" in pipeline_source
+    coordinator_source = (PACKAGE / "coordinator.py").read_text(encoding="utf-8")
+    assert 'LOGGER.warning("Planning snapshot capture failed: %s", err)' in (
+        coordinator_source
+    )
 
 
 def test_runtime_settings_preserve_established_zero_value_fallbacks():

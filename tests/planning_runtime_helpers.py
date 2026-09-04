@@ -64,9 +64,7 @@ def runtime_snapshot(
         captured_at_ms=captured_at_ms,
         settings=settings,
         observations=observations,
-        history=PlanningHistory.from_series(
-            history_series or {}, captured_at_s=captured_at_ms / 1000.0
-        ),
+        history=PlanningHistory(history_series or {}),
         tariffs=TariffSchedule.from_provider_rows(
             list(provider_prices), settings.timezone
         ),

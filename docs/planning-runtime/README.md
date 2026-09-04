@@ -27,9 +27,10 @@ slot selection, forecast generation and persistence ordering.
 Battery charge and discharge remain separate non-negative fields in current and
 historical observations; the orchestration derives a signed legacy calculation
 value only at its point of use. Historical prices are normalized to EUR/kWh,
-tariff timestamps to the Home Assistant timezone, and non-finite values are
-rejected. Provider metadata cannot redefine the authority of normalized retail
-tariffs.
+historical timestamps to UTC epoch milliseconds, tariff timestamps to the Home
+Assistant timezone, and non-finite values are rejected. Provider metadata cannot
+redefine the authority of normalized retail tariffs. Unitless price history uses
+the prior history-based unit inference when the current entity is unavailable.
 
 The runtime is split by application responsibility:
 

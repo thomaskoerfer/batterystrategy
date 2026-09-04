@@ -41,7 +41,6 @@ from .runtime_measurements import (
     fetch_house_actual_profile,
     fetch_net_actual_profile,
     fetch_pv_actual_profile,
-    fetch_sensor_series_many,
     net_no_battery_no_ev_w,
     net_no_battery_with_ev_w,
     real_charge_follow_surplus_w,
@@ -131,6 +130,14 @@ def _planning_service(settings: PlanningRuntimeSettings) -> PlanningService:
 
 def _update_actual_savings(runtime, state, now_ts):
     """Update measured savings through its independent accounting boundary."""
+
+    def history_seconds(roles, cutoff_s):
+        series = runtime.history.read(roles, int(float(cutoff_s) * 1000.0))
+        return {
+            role: [(timestamp_ms / 1000.0, value) for timestamp_ms, value in values]
+            for role, values in series.items()
+        }
+
     return SavingsLedger(
         config=SavingsConfig(
             timezone=runtime.settings.timezone,
@@ -145,9 +152,7 @@ def _update_actual_savings(runtime, state, now_ts):
                 battery_discharge_power=HistoryRole.BATTERY_DISCHARGE_POWER_W,
             ),
         ),
-        history_reader=lambda entities, cutoff: fetch_sensor_series_many(
-            runtime, entities, cutoff
-        ),
+        history_reader=history_seconds,
         price_reader=runtime.tariffs.for_dates,
     ).update(state, now_ts)
 

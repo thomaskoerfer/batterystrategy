@@ -346,10 +346,15 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         self._soc_recovered = False
         optimizer_scheduled = False
         if self._soc_control_ready:
-            runtime_context = self._planning_pipeline.runtime_context(inputs, options)
-            optimizer_scheduled = self._planner.maybe_schedule(
-                inputs, options, runtime_context, force=force_optimizer
-            )
+            try:
+                runtime_context = self._planning_pipeline.runtime_context(
+                    inputs, options
+                )
+                optimizer_scheduled = self._planner.maybe_schedule(
+                    inputs, options, runtime_context, force=force_optimizer
+                )
+            except Exception as err:  # Planner capture must not interrupt live control.
+                LOGGER.warning("Planning snapshot capture failed: %s", err)
         planning_result = self._planner.current(inputs, options)
         plan = planning_result.operator_plan
         self._optimizer_attrs = planning_result.operator_data

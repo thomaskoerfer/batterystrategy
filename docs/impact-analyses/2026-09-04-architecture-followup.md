@@ -133,6 +133,12 @@ facade. Recorder rows are normalized at the adapter into explicit unit-bearing
 roles, including separate battery charge/discharge power and EUR/kWh prices.
 Tariffs are converted to the Home Assistant timezone, and non-finite current,
 historical and tariff observations are rejected before planning.
+The same review removed a residual second EV-history kW-to-W conversion and
+made planner-capture failure non-fatal to the fast live-control cycle.
+Historical timestamps now cross the planning seam exclusively as UTC epoch
+milliseconds. The legacy seconds-based savings ledger receives an explicit
+internal conversion at its call seam; persisted schema-11 timestamp meanings
+remain unchanged.
 
 The adapter preserves the required lifecycle order: capture on the event loop,
 read bounded Recorder history in the executor, load typed owner state, invoke

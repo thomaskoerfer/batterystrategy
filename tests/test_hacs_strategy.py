@@ -86,7 +86,9 @@ from custom_components.battery_strategy.plan_models import PlanPoint, StrategyPl
 from custom_components.battery_strategy.planner import BackgroundPlanner
 from custom_components.battery_strategy.planning_runtime import HistoryRole
 from custom_components.battery_strategy.runtime_market_data import TariffInterval
-from custom_components.battery_strategy.runtime_measurements import fetch_sensor_series
+from custom_components.battery_strategy.runtime_measurements import (
+    fetch_house_actual_profile,
+)
 from custom_components.battery_strategy.strategy import DeterministicLiveController
 from tests.live_contract_helpers import directive as contract_directive_factory
 from tests.live_contract_helpers import measurements, policy_from_options, probe
@@ -394,26 +396,55 @@ class HacsStrategyTests(unittest.TestCase):
                     (101.0, 700.0),
                 ),
             },
-            200.0,
+            200_000,
         )
 
         self.assertEqual(
             history.read([HistoryRole.PRICE_EUR_PER_KWH], 0.0)[
                 HistoryRole.PRICE_EUR_PER_KWH
             ],
-            [(100.0, 0.25)],
+            [(100_000, 0.25)],
         )
         self.assertEqual(
             history.read([HistoryRole.BATTERY_CHARGE_POWER_W], 0.0)[
                 HistoryRole.BATTERY_CHARGE_POWER_W
             ],
-            [(100.0, 500.0), (101.0, 0.0)],
+            [(100_000, 500.0), (101_000, 0.0)],
         )
         self.assertEqual(
             history.read([HistoryRole.BATTERY_DISCHARGE_POWER_W], 0.0)[
                 HistoryRole.BATTERY_DISCHARGE_POWER_W
             ],
-            [(100.0, 0.0), (101.0, 700.0)],
+            [(100_000, 0.0), (101_000, 700.0)],
+        )
+
+        unitless_cents = planning_adapter.PlanningPipelineAdapter._normalize_history(
+            {"price_raw": ((100.0, 25.0),)}, 200_000
+        )
+        self.assertEqual(
+            unitless_cents.read([HistoryRole.PRICE_EUR_PER_KWH], 0)[
+                HistoryRole.PRICE_EUR_PER_KWH
+            ],
+            [(100_000, 0.25)],
+        )
+
+    def test_house_profile_consumes_ev_history_once_in_watts(self):
+        timestamp_ms = 1_800_000_000_000
+        runtime = runtime_snapshot(
+            captured_at_ms=timestamp_ms,
+            history_series={
+                HistoryRole.GRID_IMPORT_POWER_W: ((timestamp_ms, 600.0),),
+                HistoryRole.GRID_EXPORT_POWER_W: ((timestamp_ms, 0.0),),
+                HistoryRole.PV_GENERATION_POWER_W: ((timestamp_ms, 1000.0),),
+                HistoryRole.EV_CHARGE_POWER_W: ((timestamp_ms, 1000.0),),
+                HistoryRole.BATTERY_CHARGE_POWER_W: ((timestamp_ms, 0.0),),
+                HistoryRole.BATTERY_DISCHARGE_POWER_W: ((timestamp_ms, 0.0),),
+            },
+        )
+
+        self.assertEqual(
+            fetch_house_actual_profile(runtime, samples=[]),
+            [[timestamp_ms, 600.0]],
         )
 
     def test_optimizer_current_price_ignores_stale_prior_day_tariff(self):
@@ -470,16 +501,16 @@ class HacsStrategyTests(unittest.TestCase):
                 HistoryRole.PV_GENERATION_POWER_W: ((100.0, 1250.0),)
             },
         )
-        result = planning_pipeline.fetch_sensor_series_many(
-            runtime, [HistoryRole.PV_GENERATION_POWER_W], 0.0
-        )
+        result = runtime.history.read([HistoryRole.PV_GENERATION_POWER_W], 0)
         self.assertEqual(
             result[HistoryRole.PV_GENERATION_POWER_W], [(100.0, 1250.0)]
         )
 
     def test_optimizer_history_does_not_fall_back_to_local_sqlite(self):
         runtime = runtime_snapshot()
-        series = fetch_sensor_series(runtime, HistoryRole.GRID_IMPORT_POWER_W, 0.0)
+        series = runtime.history.read([HistoryRole.GRID_IMPORT_POWER_W], 0)[
+            HistoryRole.GRID_IMPORT_POWER_W
+        ]
         self.assertEqual(series, [])
 
     def test_optional_entity_selectors_can_be_omitted(self):

@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import math
+import statistics
 import threading
 import time
 from collections.abc import Mapping
@@ -65,6 +66,11 @@ def _as_float(value) -> float | None:
         return None
 
 
+def _non_negative_float(value) -> float:
+    parsed = _as_float(value)
+    return max(0.0, parsed) if parsed is not None else 0.0
+
+
 class _RecorderRole(StrEnum):
     PRICE_RAW = "price_raw"
     GRID_IMPORT = "grid_import"
@@ -84,6 +90,7 @@ class PlanningCapture:
     snapshot: PlanningRuntime
     recorder_entities: Mapping[_RecorderRole, str]
     recorder_scales: Mapping[_RecorderRole, float]
+    price_history_scale: float | None = None
 
 
 class PlanningPipelineAdapter:
@@ -219,7 +226,11 @@ class PlanningPipelineAdapter:
                         end_time=captured_at,
                     )
                     runtime = runtime.with_history(
-                        self._normalize_history(series, runtime.captured_at_s)
+                        self._normalize_history(
+                            series,
+                            runtime.captured_at_ms,
+                            runtime_context.price_history_scale,
+                        )
                     )
                 except Exception as err:  # Recorder failure must not stop control.
                     LOGGER.warning("Recorder history snapshot failed: %s", err)
@@ -279,14 +290,20 @@ class PlanningPipelineAdapter:
         future_max_price_ct = (
             future_stats["max_ct"] if future_stats is not None else current_price_ct
         )
-        battery_power_w = inputs.battery_discharge_w - inputs.battery_charge_w
+        grid_import_w = _non_negative_float(inputs.grid_import_w)
+        grid_export_w = _non_negative_float(inputs.grid_export_w)
+        pv_generation_w = _non_negative_float(inputs.pv_generation_w)
+        battery_charge_w = _non_negative_float(inputs.battery_charge_w)
+        battery_discharge_w = _non_negative_float(inputs.battery_discharge_w)
+        battery_power_w = battery_discharge_w - battery_charge_w
+        ev_charge_w = _non_negative_float(inputs.ev_charge_w)
         house_load_no_ev_w = max(
             0.0,
-            inputs.grid_import_w
-            + inputs.pv_generation_w
+            grid_import_w
+            + pv_generation_w
             + battery_power_w
-            - inputs.grid_export_w
-            - inputs.ev_charge_w,
+            - grid_export_w
+            - ev_charge_w,
         )
         current_weather = next(
             (
@@ -311,23 +328,23 @@ class PlanningPipelineAdapter:
         observations = PlanningObservations(
             current_price_ct_per_kwh=current_price_ct,
             future_max_price_ct_per_kwh=future_max_price_ct,
-            grid_import_w=float(inputs.grid_import_w),
-            grid_export_w=float(inputs.grid_export_w),
-            pv_generation_w=float(inputs.pv_generation_w),
-            battery_charge_w=float(inputs.battery_charge_w),
-            battery_discharge_w=float(inputs.battery_discharge_w),
-            battery_soc_pct=float(inputs.soc_pct),
+            grid_import_w=grid_import_w,
+            grid_export_w=grid_export_w,
+            pv_generation_w=pv_generation_w,
+            battery_charge_w=battery_charge_w,
+            battery_discharge_w=battery_discharge_w,
+            battery_soc_pct=_as_float(inputs.soc_pct),
             battery_min_soc_pct=float(options.min_soc_pct),
             ev_charge_w=(
-                float(inputs.ev_charge_w)
-                if inputs.ev_charge_w >= options.ev_active_threshold_w
+                ev_charge_w
+                if ev_charge_w >= options.ev_active_threshold_w
                 else 0.0
             ),
             heat_pump_power_w=0.0,
             pv_next_hour_kwh=0.0,
             pv_tomorrow_kwh=None,
-            cloud_cover_pct=float(cloud_cover),
-            shortwave_radiation_w_m2=float(radiation),
+            cloud_cover_pct=_non_negative_float(cloud_cover),
+            shortwave_radiation_w_m2=_non_negative_float(radiation),
         )
         registry = er.async_get(self._hass)
         grid_import_entity = registry.async_get_entity_id(
@@ -376,16 +393,26 @@ class PlanningPipelineAdapter:
             ),
             recorder_scales=MappingProxyType(
                 {
-                    _RecorderRole.PRICE_RAW: self._price_scale(price_entity),
                     _RecorderRole.PV_POWER: self._power_scale(pv_entity),
                     _RecorderRole.EV_POWER: self._power_scale(ev_entity),
                 }
             ),
+            price_history_scale=self._price_scale(price_entity),
         )
 
     @staticmethod
-    def _normalize_history(series, captured_at_s: float) -> PlanningHistory:
+    def _normalize_history(
+        series, captured_at_ms: int, price_history_scale: float | None = None
+    ) -> PlanningHistory:
         signed_battery = series.get(_RecorderRole.BATTERY_SIGNED_POWER, ())
+        raw_prices = series.get(_RecorderRole.PRICE_RAW, ())
+        if price_history_scale is None:
+            price_values = [float(value) for _, value in raw_prices]
+            price_history_scale = (
+                0.01
+                if price_values and statistics.median(price_values) > 2.0
+                else 1.0
+            )
 
         def non_negative(role):
             return tuple(
@@ -393,10 +420,11 @@ class PlanningPipelineAdapter:
                 for timestamp, value in series.get(role, ())
             )
 
-        return PlanningHistory.from_series(
+        return PlanningHistory.from_recorder_series(
             {
-                HistoryRole.PRICE_EUR_PER_KWH: series.get(
-                    _RecorderRole.PRICE_RAW, ()
+                HistoryRole.PRICE_EUR_PER_KWH: tuple(
+                    (timestamp, value * price_history_scale)
+                    for timestamp, value in raw_prices
                 ),
                 HistoryRole.GRID_IMPORT_POWER_W: non_negative(
                     _RecorderRole.GRID_IMPORT
@@ -428,7 +456,7 @@ class PlanningPipelineAdapter:
                     _RecorderRole.EV_POWER
                 ),
             },
-            captured_at_s=captured_at_s,
+            captured_at_ms=captured_at_ms,
         )
 
     def _power_scale(self, entity_id: str | None) -> float:
@@ -445,7 +473,7 @@ class PlanningPipelineAdapter:
         )
         return {"kw": 1000.0, "mw": 1_000_000.0}.get(unit, 1.0)
 
-    def _price_scale(self, entity_id: str | None) -> float:
+    def _price_scale(self, entity_id: str | None) -> float | None:
         """Normalize Recorder price history to EUR/kWh at the HA seam."""
         state = self._hass.states.get(entity_id) if entity_id else None
         unit = str(
@@ -456,7 +484,9 @@ class PlanningPipelineAdapter:
         if ("eur/" in unit or "€/" in unit) and "mwh" in unit:
             return 0.001
         current = _as_float(state.state) if state is not None else None
-        return 0.01 if current is not None and abs(current) > 2.0 else 1.0
+        if current is None:
+            return None
+        return 0.01 if abs(current) > 2.0 else 1.0
 
     def age_s(self) -> float | None:
         """Return seconds since the last optimizer run."""
