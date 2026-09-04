@@ -38,7 +38,11 @@ class OpenMeteoWeatherProvider:
                     refreshed = await self._fetch(request)
                 except Exception as err:
                     age_s = time.monotonic() - self._cache_at
-                    if key != self._cache_key or not self._cache or age_s > WEATHER_STALE_MAX_S:
+                    if (
+                        key != self._cache_key
+                        or not self._cache
+                        or age_s > WEATHER_STALE_MAX_S
+                    ):
                         raise
                     self.last_error = f"{type(err).__name__}: {err}"
                     return _mark_estimated(self._cache)

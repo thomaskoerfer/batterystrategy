@@ -21,7 +21,7 @@ class P1UpdateGate:
 
     def should_refresh(self, p1_w: float, now_s: float) -> bool:
         """Return whether a combined grid reading should run the live controller."""
-        p1 = int(round(p1_w))
+        p1 = round(p1_w)
         if now_s < self._next_fast_s:
             self._history.append(p1)
             return False

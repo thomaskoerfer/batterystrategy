@@ -74,8 +74,8 @@ energy and quality coverage. Tests prohibit prices, SoC and optimizer imports;
 check component summation and missing-data behavior; and prove that load and PV
 changes cannot affect each other unintentionally.
 
-## Migration status
+## Production status
 
 Feature-store forecasting is authoritative. The slot-profile helpers are its
-single parity-preserving mathematical source, not a second runtime selector.
-Completed shadow composition and rollback-only paths are removed in Phase 7.
+single mathematical source, not a second runtime selector. No alternate
+forecast composition or rollback-only runtime path is installed.

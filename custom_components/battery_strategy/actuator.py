@@ -277,5 +277,5 @@ class HomeAssistantZendureActuator:
     def _float(self, entity: str) -> float:
         try:
             return float(self._hass.states.get(entity).state)
-        except (AttributeError, TypeError, ValueError):
+        except AttributeError, TypeError, ValueError:
             return 0.0

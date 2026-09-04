@@ -74,15 +74,17 @@ def build_component_load_forecast(
             fallback.training_cutoff_ms,
             "component-load-warming-v1",
             fallback.slots,
-            (general,)
-            + tuple(
-                LoadForecastComponent(
-                    spec.component_key,
-                    "component-warming-v1",
-                    fallback.training_cutoff_ms,
-                    zero_slots,
-                )
-                for spec in specs
+            (
+                general,
+                *tuple(
+                    LoadForecastComponent(
+                        spec.component_key,
+                        "component-warming-v1",
+                        fallback.training_cutoff_ms,
+                        zero_slots,
+                    )
+                    for spec in specs
+                ),
             ),
         )
 
@@ -155,7 +157,7 @@ def _component_power_w(spec, target, history, context, weather, request) -> floa
     target_oat = weather.temperature_c if weather is not None else None
     for item in history[-90 * 96 :]:
         local = dt.datetime.fromtimestamp(
-            item.slot.start_ms / 1000.0, tz=dt.timezone.utc
+            item.slot.start_ms / 1000.0, tz=dt.UTC
         ).astimezone(target.tzinfo)
         if local.hour * 4 + local.minute // 15 != target_slot:
             continue

@@ -12,7 +12,7 @@ hardware-writing boundary.
 ## Forbidden
 
 Do not change commercial intent, increase requested power, reverse direction or
-let shadow/diagnostic code obtain an actuator reference. Disabled control writes
+let evaluation/diagnostic code obtain an actuator reference. Disabled control writes
 zero once and then stops writing.
 
 ## Required checks

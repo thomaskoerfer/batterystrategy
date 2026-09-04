@@ -73,7 +73,7 @@ reuse, quality marking and expiry. A data-layer change must prove that forecast,
 optimizer and live-command outputs remain unchanged unless a separately
 approved downstream contract change is intended.
 
-## Migration status
+## Production status
 
 The compressed feature store is the production forecast history source and the
 bootstrap source for learned quarter-hour samples. Bounded dashboard and

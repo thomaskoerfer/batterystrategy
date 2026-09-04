@@ -1,4 +1,4 @@
-"""Atomic compressed persistence for optimizer runtime state."""
+"""Atomic compressed persistence for versioned planning documents."""
 
 from __future__ import annotations
 
@@ -11,14 +11,14 @@ from typing import Any
 
 
 def load_state_document(path: str | Path) -> dict[str, Any] | None:
-    """Load JSON state, accepting both gzip and legacy plain JSON."""
+    """Load current gzip or an earlier plain-JSON persisted document."""
     state_path = Path(path)
     try:
         raw = state_path.read_bytes()
         if raw.startswith(b"\x1f\x8b"):
             raw = gzip.decompress(raw)
         data = json.loads(raw.decode("utf-8"))
-    except (OSError, EOFError, UnicodeDecodeError, json.JSONDecodeError):
+    except OSError, EOFError, UnicodeDecodeError, json.JSONDecodeError:
         return None
     return data if isinstance(data, dict) else None
 

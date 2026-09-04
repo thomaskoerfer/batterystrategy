@@ -54,7 +54,7 @@ def _result_fixture():
             "profile_48h_discharge_budget_kwh": [[start_ms, 0.2]],
             "profile_today_soc": [[start_ms, 50.0]],
         },
-        timezone=dt.timezone.utc,
+        timezone=dt.UTC,
         now_ms=start_ms,
         override_active=False,
     )
@@ -67,7 +67,7 @@ def test_canonical_plan_round_trips_without_using_operator_profiles():
     restored = result_from_persisted_output(
         persisted_output(result, options),
         options,
-        timezone=dt.timezone.utc,
+        timezone=dt.UTC,
         now_ms=start_ms,
     )
 
@@ -83,7 +83,7 @@ def test_restore_uses_canonical_soc_when_active_profile_point_is_missing():
     restored = result_from_persisted_output(
         stored,
         options,
-        timezone=dt.timezone.utc,
+        timezone=dt.UTC,
         now_ms=start_ms + 60_000,
     )
 
@@ -93,7 +93,7 @@ def test_restore_uses_canonical_soc_when_active_profile_point_is_missing():
 
 def test_legacy_operator_snapshot_remains_visible_but_cannot_authorize_control():
     _, options, start_ms = _result_fixture()
-    legacy = {
+    previous_schema = {
         "profile_48h_price": [[start_ms, 30.0]],
         "profile_48h_discharge_fc_power": [[start_ms, 800.0]],
         "profile_48h_discharge_budget_kwh": [[start_ms, 0.2]],
@@ -101,7 +101,7 @@ def test_legacy_operator_snapshot_remains_visible_but_cannot_authorize_control()
     }
 
     restored = result_from_persisted_output(
-        legacy, options, timezone=dt.timezone.utc, now_ms=start_ms
+        previous_schema, options, timezone=dt.UTC, now_ms=start_ms
     )
 
     assert restored.battery_plan is None
@@ -114,7 +114,7 @@ def test_corrupt_canonical_plan_fails_closed_instead_of_partially_loading():
     stored[PERSISTED_PLAN_KEY]["slots"].append("invalid")
 
     restored = result_from_persisted_output(
-        stored, options, timezone=dt.timezone.utc, now_ms=start_ms
+        stored, options, timezone=dt.UTC, now_ms=start_ms
     )
 
     assert restored.battery_plan is None
@@ -126,7 +126,7 @@ def test_changed_physical_constraints_invalidate_persisted_plan():
     restored = result_from_persisted_output(
         persisted_output(result, StrategyOptions()),
         StrategyOptions(battery_capacity_kwh=8.0),
-        timezone=dt.timezone.utc,
+        timezone=dt.UTC,
         now_ms=start_ms,
     )
 
@@ -139,7 +139,7 @@ def test_changed_execution_policy_invalidates_persisted_plan():
     restored = result_from_persisted_output(
         persisted_output(result, options),
         StrategyOptions(grid_charging="price_sensitive"),
-        timezone=dt.timezone.utc,
+        timezone=dt.UTC,
         now_ms=start_ms,
     )
 
@@ -188,7 +188,7 @@ def test_restore_requires_explicit_observation_time():
         result_from_persisted_output(
             persisted_output(result, options),
             options,
-            timezone=dt.timezone.utc,
+            timezone=dt.UTC,
         )
 
 
@@ -212,7 +212,7 @@ def test_restore_does_not_borrow_next_slot_power_for_active_idle_slot():
 
     plan = planning_result.operator_plan_from_output(
         output,
-        timezone=dt.timezone.utc,
+        timezone=dt.UTC,
         now_ms=start_ms + 60_000,
         override_active=False,
     )

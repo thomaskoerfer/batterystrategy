@@ -65,8 +65,8 @@ class MarketContextService:
         if len(sorted_values) == 1:
             return float(sorted_values[0])
         position = (len(sorted_values) - 1) * quantile
-        lower = int(math.floor(position))
-        upper = int(math.ceil(position))
+        lower = math.floor(position)
+        upper = math.ceil(position)
         if lower == upper:
             return float(sorted_values[lower])
         fraction = position - lower
@@ -75,7 +75,7 @@ class MarketContextService:
         )
 
     def _local_datetime(self, timestamp: float) -> dt.datetime:
-        return dt.datetime.fromtimestamp(float(timestamp), dt.timezone.utc).astimezone(
+        return dt.datetime.fromtimestamp(float(timestamp), dt.UTC).astimezone(
             self._config.timezone
         )
 
@@ -99,7 +99,7 @@ class MarketContextService:
         headers: dict[str, str] | None = None,
     ) -> dict:
         request = Request(url, data=data, headers=headers or {})
-        with urlopen(request, timeout=20) as response:  # noqa: S310 - fixed EEX URLs
+        with urlopen(request, timeout=20) as response:
             return json.loads(response.read().decode("utf-8"))
 
     def _eex_filter_rows(self, product: str) -> list[dict]:
@@ -219,7 +219,8 @@ class MarketContextService:
                         record["peak"]["settl_ct_kwh"] - record["base"]["settl_ct_kwh"],
                         3,
                     )
-        except Exception:  # noqa: BLE001 - EEX is optional diagnostic context.
+        # Optional EEX enrichment must not invalidate otherwise usable prices.
+        except Exception:
             pass
 
         cache["fetched_at_ts"] = local_now.timestamp()
@@ -318,7 +319,7 @@ class MarketContextService:
         try:
             value = eex_day.get(product, {}).get("settl_ct_kwh")
             return None if value is None else float(value)
-        except (AttributeError, TypeError, ValueError):
+        except AttributeError, TypeError, ValueError:
             return None
 
     def _intervals_by_date(self, intervals: list[TariffInterval]) -> dict:

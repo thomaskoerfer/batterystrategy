@@ -52,7 +52,9 @@ class BatteryStrategyBacktestTests(unittest.TestCase):
                 reason="live_idle",
             ),
         ]
-        slots = mod.aggregate_slots(samples, [(1_799_000.0, 30.0)], 1_800_000.0, 1_800_030.0)
+        slots = mod.aggregate_slots(
+            samples, [(1_799_000.0, 30.0)], 1_800_000.0, 1_800_030.0
+        )
         self.assertAlmostEqual(slots[0].residual_with_ev_kwh, 5.0 / 120.0, places=4)
         self.assertAlmostEqual(slots[0].dischargeable_load_kwh, 0.8 / 120.0, places=4)
 

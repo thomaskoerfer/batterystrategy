@@ -73,7 +73,7 @@ class LoadComponentAdapterTests(unittest.TestCase):
             )
         )
         result = collect_load_components(
-            hass, entry, dt.datetime(2026, 8, 22, 10, tzinfo=dt.timezone.utc)
+            hass, entry, dt.datetime(2026, 8, 22, 10, tzinfo=dt.UTC)
         )
         self.assertEqual(dict(result.powers_w)["heat_pump_dhw"], 2500.0)
         self.assertEqual(dict(result.powers_w)["heat_pump_space_heating"], 0.0)
@@ -107,7 +107,7 @@ class LoadComponentAdapterTests(unittest.TestCase):
         result = collect_load_components(
             SimpleNamespace(states=_States(states)),
             entry,
-            dt.datetime.now(dt.timezone.utc),
+            dt.datetime.now(dt.UTC),
         )
         self.assertEqual(dict(result.powers_w)["air_conditioning"], 900.0)
         driver = result.drivers[0]

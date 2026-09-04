@@ -73,9 +73,9 @@ class SavingsLedger:
         return values[position] if position >= 0 else None
 
     def _local_datetime(self, timestamp_ms: int) -> dt.datetime:
-        return dt.datetime.fromtimestamp(
-            int(timestamp_ms) / 1000.0, dt.timezone.utc
-        ).astimezone(self._config.timezone)
+        return dt.datetime.fromtimestamp(int(timestamp_ms) / 1000.0, dt.UTC).astimezone(
+            self._config.timezone
+        )
 
     def _local_dates_between(self, start_ms: int, end_ms: int) -> set[str]:
         start_day = self._local_datetime(start_ms).date()
@@ -90,7 +90,7 @@ class SavingsLedger:
     def _price_index(self, dates: set[str]) -> tuple[list[int], list[float]]:
         pairs = sorted(
             (
-                int(round(interval.starts_at.timestamp() * 1000.0)),
+                round(interval.starts_at.timestamp() * 1000.0),
                 float(interval.price_eur_per_kwh),
             )
             for interval in self._price_reader(dates)
@@ -128,29 +128,25 @@ class SavingsLedger:
         needs_backfill = first_run is False and not tracker.get(
             "savings_backfill_v1_done"
         )
-        midnight_ms = int(
-            round(
-                dt.datetime.combine(
-                    local_now.date(), dt.time.min, tzinfo=self._config.timezone
-                ).timestamp()
-                * 1000.0
-            )
+        midnight_ms = round(
+            dt.datetime.combine(
+                local_now.date(), dt.time.min, tzinfo=self._config.timezone
+            ).timestamp()
+            * 1000.0
         )
         if first_run:
             query_from_ms = now_ms - 86_400_000
         elif needs_backfill:
-            query_from_ms = int(
-                round(
-                    (
-                        dt.datetime.combine(
-                            local_now.date(),
-                            dt.time.min,
-                            tzinfo=self._config.timezone,
-                        )
-                        - dt.timedelta(days=2)
-                    ).timestamp()
-                    * 1000.0
-                )
+            query_from_ms = round(
+                (
+                    dt.datetime.combine(
+                        local_now.date(),
+                        dt.time.min,
+                        tzinfo=self._config.timezone,
+                    )
+                    - dt.timedelta(days=2)
+                ).timestamp()
+                * 1000.0
             )
         else:
             query_from_ms = min(last_ms - 120_000, midnight_ms)
@@ -174,9 +170,7 @@ class SavingsLedger:
         grid_import_series = series_map.get(entities.grid_import, [])
         grid_export_series = series_map.get(entities.grid_export, [])
         battery_charge_series = series_map.get(entities.battery_charge_power, [])
-        battery_discharge_series = series_map.get(
-            entities.battery_discharge_power, []
-        )
+        battery_discharge_series = series_map.get(entities.battery_discharge_power, [])
         tariff_index = self._price_index(
             self._local_dates_between(query_from_ms, now_ms)
         )
@@ -227,32 +221,26 @@ class SavingsLedger:
                 grid_import = max(
                     0.0,
                     float(
-                        self._value_at_or_before(grid_import_index, timestamp_ms)
-                        or 0.0
+                        self._value_at_or_before(grid_import_index, timestamp_ms) or 0.0
                     ),
                 )
                 grid_export = max(
                     0.0,
                     float(
-                        self._value_at_or_before(grid_export_index, timestamp_ms)
-                        or 0.0
+                        self._value_at_or_before(grid_export_index, timestamp_ms) or 0.0
                     ),
                 )
                 charge_w = max(
                     0.0,
                     float(
-                        self._value_at_or_before(
-                            battery_charge_index, timestamp_ms
-                        )
+                        self._value_at_or_before(battery_charge_index, timestamp_ms)
                         or 0.0
                     ),
                 )
                 discharge_w = max(
                     0.0,
                     float(
-                        self._value_at_or_before(
-                            battery_discharge_index, timestamp_ms
-                        )
+                        self._value_at_or_before(battery_discharge_index, timestamp_ms)
                         or 0.0
                     ),
                 )

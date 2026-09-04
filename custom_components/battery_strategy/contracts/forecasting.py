@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol
 
 from .common import (
@@ -20,7 +20,7 @@ class LoadFeatureValue:
 
     feature_key: str
     value: float
-    quality: DataQuality = DataQuality()
+    quality: DataQuality = field(default_factory=DataQuality)
 
     def __post_init__(self) -> None:
         if not self.feature_key:
@@ -34,7 +34,7 @@ class LoadComponentEnergy:
 
     component_key: str
     energy_kwh: float
-    quality: DataQuality = DataQuality()
+    quality: DataQuality = field(default_factory=DataQuality)
     features: tuple[LoadFeatureValue, ...] = ()
 
     def __post_init__(self) -> None:
@@ -59,7 +59,7 @@ class HistoricalFeatureSlot:
     battery_discharge_kwh: float
     ev_charge_kwh: float
     price_ct_per_kwh: float | None
-    quality: DataQuality = DataQuality()
+    quality: DataQuality = field(default_factory=DataQuality)
     load_components: tuple[LoadComponentEnergy, ...] = ()
 
     def __post_init__(self) -> None:
@@ -88,7 +88,7 @@ class WeatherSlot:
     shortwave_radiation_w_m2: float | None = None
     cloud_cover_pct: float | None = None
     temperature_c: float | None = None
-    quality: DataQuality = DataQuality()
+    quality: DataQuality = field(default_factory=DataQuality)
 
     def __post_init__(self) -> None:
         if self.shortwave_radiation_w_m2 is not None:
@@ -149,7 +149,7 @@ class LoadDriverSnapshot:
 
     driver_key: str
     power_w: float
-    quality: DataQuality = DataQuality()
+    quality: DataQuality = field(default_factory=DataQuality)
     features: tuple[LoadFeatureValue, ...] = ()
 
     def __post_init__(self) -> None:
@@ -181,7 +181,7 @@ class ForecastSlot:
 
     slot: SlotKey
     energy: QuantileEnergy
-    quality: DataQuality = DataQuality()
+    quality: DataQuality = field(default_factory=DataQuality)
 
 
 @dataclass(frozen=True, slots=True)

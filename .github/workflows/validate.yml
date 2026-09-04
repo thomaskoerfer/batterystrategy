@@ -34,5 +34,7 @@ jobs:
         with:
           python-version: "3.14"
       - run: pip install -r requirements-dev.txt
+      - run: python -m ruff check custom_components tests scripts
+      - run: python -m ruff format --check custom_components tests scripts
       - run: python -m py_compile custom_components/battery_strategy/*.py
       - run: python -m pytest -q tests

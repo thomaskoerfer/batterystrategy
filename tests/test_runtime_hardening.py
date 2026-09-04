@@ -257,7 +257,7 @@ def test_transient_plan_gap_preserves_prorated_discharge_commitment():
 
 def test_running_process_resets_progress_only_at_next_slot():
     runtime = PlanCompilerRuntime()
-    start = dt.datetime.fromtimestamp(SLOT_START_MS / 1000, dt.timezone.utc)
+    start = dt.datetime.fromtimestamp(SLOT_START_MS / 1000, dt.UTC)
     runtime.sync_slot(SLOT_START_MS, SLOT_START_MS, (None, None))
     runtime.account(start, -1200.0)
     runtime.account(start + dt.timedelta(minutes=10), 1800.0)
@@ -274,7 +274,7 @@ def test_running_process_resets_progress_only_at_next_slot():
 
 def test_unavailable_battery_feedback_breaks_energy_accounting_continuity():
     runtime = PlanCompilerRuntime()
-    start = dt.datetime.fromtimestamp(SLOT_START_MS / 1000, dt.timezone.utc)
+    start = dt.datetime.fromtimestamp(SLOT_START_MS / 1000, dt.UTC)
     runtime.sync_slot(SLOT_START_MS, SLOT_START_MS, (None, None))
     runtime.account(start, 1000.0)
     runtime.suspend_accounting(start + dt.timedelta(minutes=5))
@@ -347,7 +347,7 @@ def test_optimizer_prefetch_and_expiry_are_each_requested_once():
     coordinator._last_optimizer_force_key = None
 
     def at(timestamp_ms: int) -> dt.datetime:
-        return dt.datetime.fromtimestamp(timestamp_ms / 1000, dt.timezone.utc)
+        return dt.datetime.fromtimestamp(timestamp_ms / 1000, dt.UTC)
 
     assert not coordinator._should_force_optimizer(at(SLOT.end_ms - 60_001))
     assert coordinator._should_force_optimizer(at(SLOT.end_ms - 60_000))
@@ -358,7 +358,7 @@ def test_optimizer_prefetch_and_expiry_are_each_requested_once():
 
 def test_coordinator_cycle_preserves_runtime_order_and_compiled_permission():
     calls: list[str] = []
-    now = dt.datetime.now(dt.timezone.utc)
+    now = dt.datetime.now(dt.UTC)
     slot_start_ms = int(now.timestamp() * 1000) // 900_000 * 900_000
     options = _options()
     inputs = _measurements(500.0, captured_at_ms=slot_start_ms)

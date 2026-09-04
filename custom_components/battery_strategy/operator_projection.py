@@ -187,7 +187,7 @@ def _command_source(data: Mapping[str, object]) -> str:
 def _raw_float(raw: object, key: str, default: float = 0.0) -> float:
     try:
         return float((raw if isinstance(raw, Mapping) else {}).get(key, default))
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return default
 
 
@@ -330,7 +330,7 @@ def _profile(raw: object) -> list[list[float | int]]:
             continue
         try:
             out.append([int(float(item[0])), float(item[1])])
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             continue
     return out
 
@@ -338,5 +338,5 @@ def _profile(raw: object) -> list[list[float | int]]:
 def _format_ts_ms(ts_ms: int, timezone: str) -> str:
     if not ts_ms:
         return ""
-    value = dt.datetime.fromtimestamp(ts_ms / 1000.0, dt.timezone.utc)
+    value = dt.datetime.fromtimestamp(ts_ms / 1000.0, dt.UTC)
     return value.astimezone(ZoneInfo(timezone)).strftime("%Y-%m-%d %H:%M")

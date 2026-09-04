@@ -249,7 +249,7 @@ def test_disabled_discharge_never_creates_plan_or_budget():
     ],
 )
 def test_pure_optimizer_matches_current_economic_kernel(prices, loads, pv, soc):
-    start = dt.datetime(2026, 8, 30, tzinfo=dt.timezone.utc)
+    start = dt.datetime(2026, 8, 30, tzinfo=dt.UTC)
     intervals = [
         {
             "dt": start + dt.timedelta(minutes=15 * index),
@@ -282,8 +282,7 @@ def test_pure_optimizer_matches_current_economic_kernel(prices, loads, pv, soc):
         planning_pipeline._planning_service(settings)
         .plan(
             intervals=[
-                TariffInterval(item["dt"], item["price_eur"])
-                for item in intervals
+                TariffInterval(item["dt"], item["price_eur"]) for item in intervals
             ],
             samples=[],
             start_energy_kwh=6.0 * soc / 100.0,

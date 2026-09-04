@@ -228,7 +228,8 @@ class PlanCompilerRuntime:
             self._state = next_state
             self._error = None
             return compiled
-        except Exception as err:  # noqa: BLE001 - control must fail closed.
+        # This control boundary contains compiler failures and fails closed.
+        except Exception as err:
             self._state = PlanCompilationState()
             self._error = f"{type(err).__name__}: {err}"
             LOGGER.error("Plan compiler failed closed: %s", self._error)

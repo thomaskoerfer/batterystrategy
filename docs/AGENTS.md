@@ -1,23 +1,23 @@
 # Architecture documentation rules
 
-These instructions apply to all architecture-layer documentation below this
+These instructions apply to all architecture-component documentation below this
 directory.
 
 ## Required context
 
-Read the root `ARCHITECTURE.md`, `INTERFACE_CONTRACTS.md`, this layer's
+Read the root `ARCHITECTURE.md`, `INTERFACE_CONTRACTS.md`, this component's
 `README.md` and any approved impact analysis before changing layer behavior.
 
 ## Documentation contract
 
-- Keep each layer README aligned with implementation and executable contracts.
+- Keep each component README aligned with implementation and executable contracts.
 - Describe purpose, inputs, outputs, non-responsibilities, supported capability
-  classes, verification and migration debt.
-- Update README and agent guidance in the same change as an affected layer.
+  classes and verification.
+- Update README and agent guidance in the same change as an affected component.
 - Treat contract semantics as binding. Changes require an impact analysis and
   explicit owner approval, even when the implementation would be easy.
-- Record transitional debt explicitly; do not present a target boundary as
-  already complete.
+- Keep historical design work in impact analyses; active guides describe only
+  the production architecture and current limitations.
 
 ## Setup independence
 
@@ -30,4 +30,4 @@ generic examples.
 ## Required checks
 
 Run architecture-documentation tests, contract tests and the tests owned by
-every changed layer. Check links and review the diff for private setup data.
+every changed component. Check links and review the diff for private setup data.

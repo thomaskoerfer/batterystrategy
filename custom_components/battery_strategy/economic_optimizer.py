@@ -154,7 +154,7 @@ class DynamicProgrammingOptimizer:
 
         slot_count = len(prices)
         inf = 10**18
-        # Mode remains a path dimension for exact deterministic parity even
+        # Mode remains a path dimension for exact deterministic reproducibility even
         # though economic switching cost is currently zero.
         modes = (-1, 0, 1)
         mode_index = {-1: 0, 0: 1, 1: 2}
@@ -180,7 +180,8 @@ class DynamicProgrammingOptimizer:
             for energy_index, energy_now in enumerate(energies):
                 minimum_next = max(
                     min_energy,
-                    energy_now - min(max_discharge_slot / eta_d, discharge_limit / eta_d),
+                    energy_now
+                    - min(max_discharge_slot / eta_d, discharge_limit / eta_d),
                 )
                 maximum_next = min(max_energy, energy_now + eta_c * max_charge_slot)
                 for previous_mode_index, _previous_mode in enumerate(modes):
@@ -224,13 +225,14 @@ class DynamicProgrammingOptimizer:
 
                         grid_input = max(0.0, charge_in - surplus[slot_index])
                         if grid_input > 1e-9:
-                            if future_peak[slot_index + 1] * constraints.round_trip_efficiency < (
+                            if future_peak[
+                                slot_index + 1
+                            ] * constraints.round_trip_efficiency < (
                                 prices[slot_index] + policy.min_margin_ct_per_kwh
                             ):
                                 continue
                         imported = (
-                            max(0.0, net_load[slot_index] - discharge_out)
-                            + grid_input
+                            max(0.0, net_load[slot_index] - discharge_out) + grid_input
                         )
                         exported = max(0.0, surplus[slot_index] - charge_in)
                         step_cost = (
@@ -238,7 +240,11 @@ class DynamicProgrammingOptimizer:
                             - exported * export_prices[slot_index]
                             + discharge_out * policy.min_margin_ct_per_kwh
                         ) / 100.0
-                        current_mode = 1 if charge_in > 1e-4 else (-1 if discharge_out > 1e-4 else 0)
+                        current_mode = (
+                            1
+                            if charge_in > 1e-4
+                            else (-1 if discharge_out > 1e-4 else 0)
+                        )
                         current_mode_index = mode_index[current_mode]
                         candidate_cost = base_cost + step_cost
                         candidate_grid = (
@@ -257,9 +263,15 @@ class DynamicProgrammingOptimizer:
                             grid_charge[slot_index + 1][next_index][current_mode_index],
                             timing[slot_index + 1][next_index][current_mode_index],
                         ):
-                            costs[slot_index + 1][next_index][current_mode_index] = candidate_cost
-                            grid_charge[slot_index + 1][next_index][current_mode_index] = candidate_grid
-                            timing[slot_index + 1][next_index][current_mode_index] = candidate_timing
+                            costs[slot_index + 1][next_index][current_mode_index] = (
+                                candidate_cost
+                            )
+                            grid_charge[slot_index + 1][next_index][
+                                current_mode_index
+                            ] = candidate_grid
+                            timing[slot_index + 1][next_index][current_mode_index] = (
+                                candidate_timing
+                            )
                             previous[slot_index + 1][next_index][current_mode_index] = (
                                 energy_index,
                                 previous_mode_index,
@@ -270,9 +282,7 @@ class DynamicProgrammingOptimizer:
         best = None
         for energy_index, energy in enumerate(energies):
             terminal_credit = (
-                policy.terminal_value_ct_per_kwh
-                * max(0.0, energy - min_energy)
-                / 100.0
+                policy.terminal_value_ct_per_kwh * max(0.0, energy - min_energy) / 100.0
             )
             for current_mode_index in range(3):
                 candidate = (
@@ -296,7 +306,9 @@ class DynamicProgrammingOptimizer:
             record = previous[slot_index][energy_index][mode_cursor]
             if record is None:
                 record = (energy_index, mode_index[0], 0.0, 0.0)
-            previous_energy_index, previous_mode_index, charge_in, discharge_out = record
+            previous_energy_index, previous_mode_index, charge_in, discharge_out = (
+                record
+            )
             action = actions[slot_index - 1]
             action.charge_kwh = max(0.0, charge_in)
             action.discharge_kwh = max(0.0, discharge_out)
@@ -321,8 +333,7 @@ class DynamicProgrammingOptimizer:
             for source_index, source in enumerate(actions):
                 source_grid = max(0.0, source.charge_kwh - surplus[source_index])
                 if not (
-                    surplus[source_index] > 1e-9
-                    and 1e-9 < source_grid < quantum - 1e-9
+                    surplus[source_index] > 1e-9 and 1e-9 < source_grid < quantum - 1e-9
                 ):
                     continue
                 deadline = next(
@@ -338,11 +349,21 @@ class DynamicProgrammingOptimizer:
                     target_grid = max(
                         0.0, actions[target_index].charge_kwh - surplus[target_index]
                     )
-                    if target_grid < quantum - 1e-9 or prices[target_index] >= prices[source_index] - 1e-9:
+                    if (
+                        target_grid < quantum - 1e-9
+                        or prices[target_index] >= prices[source_index] - 1e-9
+                    ):
                         continue
                     capacity = max(0.0, max_charge - actions[target_index].charge_kwh)
                     if capacity > 1e-9:
-                        candidates.append((prices[target_index], -target_index, target_index, capacity))
+                        candidates.append(
+                            (
+                                prices[target_index],
+                                -target_index,
+                                target_index,
+                                capacity,
+                            )
+                        )
                 if sum(item[3] for item in candidates) + 1e-9 < source_grid:
                     continue
                 source.charge_kwh = surplus[source_index]
@@ -367,7 +388,9 @@ class DynamicProgrammingOptimizer:
                 max(0.0, (max_energy - energy) / eta_c),
             )
             if not policy.grid_charging_allowed:
-                charge = min(charge, surplus[index] if policy.pv_charging_allowed else 0.0)
+                charge = min(
+                    charge, surplus[index] if policy.pv_charging_allowed else 0.0
+                )
             elif not policy.pv_charging_allowed and surplus[index] > 1e-9:
                 charge = 0.0
             discharge = min(
@@ -382,9 +405,13 @@ class DynamicProgrammingOptimizer:
             action.discharge_kwh = discharge
             action.grid_charge_kwh = max(0.0, charge - surplus[index])
             action.pv_charge_kwh = charge - action.grid_charge_kwh
-            action.grid_import_kwh = max(0.0, net_load[index] - discharge) + action.grid_charge_kwh
+            action.grid_import_kwh = (
+                max(0.0, net_load[index] - discharge) + action.grid_charge_kwh
+            )
             action.grid_export_kwh = max(0.0, surplus[index] - charge)
-            energy = _clamp(energy + charge * eta_c - discharge / eta_d, min_energy, max_energy)
+            energy = _clamp(
+                energy + charge * eta_c - discharge / eta_d, min_energy, max_energy
+            )
             action.soc_end_kwh = energy
 
     def _discharge_budgets(
@@ -424,14 +451,15 @@ class DynamicProgrammingOptimizer:
                     end = later
                     break
             future_surplus = sum(surplus[index + 1 : end])
-            recoverable = (
-                future_surplus * eta_c * policy.pv_recovery_confidence
-            )
+            recoverable = future_surplus * eta_c * policy.pv_recovery_confidence
             headroom = max(0.0, max_energy - action.soc_end_kwh)
-            safe_recovery = max(
-                0.0,
-                recoverable - headroom - policy.pv_recovery_reserve_kwh,
-            ) * eta_d
+            safe_recovery = (
+                max(
+                    0.0,
+                    recoverable - headroom - policy.pv_recovery_reserve_kwh,
+                )
+                * eta_d
+            )
             pv_budget = min(
                 maximum,
                 max(

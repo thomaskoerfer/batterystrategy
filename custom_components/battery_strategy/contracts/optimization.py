@@ -171,11 +171,14 @@ class BatteryPlanSlot:
             raise ValueError("a slot cannot plan charge and discharge simultaneously")
         if self.required_charge_kwh > self.planned_charge_kwh:
             raise ValueError("required charge cannot exceed planned charge")
-        if abs(
-            self.planned_charge_kwh
-            - self.planned_pv_charge_kwh
-            - self.planned_grid_charge_kwh
-        ) > 1e-9:
+        if (
+            abs(
+                self.planned_charge_kwh
+                - self.planned_pv_charge_kwh
+                - self.planned_grid_charge_kwh
+            )
+            > 1e-9
+        ):
             raise ValueError("planned charge must equal its PV and grid sources")
         if self.planned_grid_charge_kwh > 0.0 and not self.grid_charge_allowed:
             raise ValueError("planned grid charge requires grid permission")

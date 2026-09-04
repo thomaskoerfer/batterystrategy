@@ -82,9 +82,7 @@ def build_feature_store_forecast(
             weather=weather,
             component_specs=component_specs,
         ),
-        pv=build_feature_store_pv_forecast(
-            request, samples, targets, config
-        ),
+        pv=build_feature_store_pv_forecast(request, samples, targets, config),
     )
 
 
@@ -110,9 +108,7 @@ def build_feature_store_load_forecast(
             component_specs,
             config.load_config(),
         )
-    return build_load_forecast(
-        request, samples, targets, context, config.load_config()
-    )
+    return build_load_forecast(request, samples, targets, context, config.load_config())
 
 
 def build_feature_store_pv_forecast(
@@ -122,9 +118,7 @@ def build_feature_store_pv_forecast(
     config: ForecastModelConfig,
 ) -> PvForecast:
     """Build PV independently from load components and load context."""
-    return build_pv_forecast(
-        request, samples, targets, config.pv_config()
-    )
+    return build_pv_forecast(request, samples, targets, config.pv_config())
 
 
 def eligible_feature_history(
@@ -149,12 +143,10 @@ def feature_samples(
                 grid_import_w=item.grid_import_kwh / SLOT_H * 1000.0,
                 grid_export_w=item.grid_export_kwh / SLOT_H * 1000.0,
                 load_valid=(
-                    item.quality.coverage >= 0.999
-                    and not flags & _LOAD_INVALID_FLAGS
+                    item.quality.coverage >= 0.999 and not flags & _LOAD_INVALID_FLAGS
                 ),
                 pv_valid=(
-                    item.quality.coverage >= 0.999
-                    and not flags & _PV_INVALID_FLAGS
+                    item.quality.coverage >= 0.999 and not flags & _PV_INVALID_FLAGS
                 ),
             )
         )
@@ -201,10 +193,10 @@ def feature_store_forecast_readiness(
     )
 
 
-def _has_usable_components(
-    item: HistoricalFeatureSlot, keys: tuple[str, ...]
-) -> bool:
-    components = {component.component_key: component for component in item.load_components}
+def _has_usable_components(item: HistoricalFeatureSlot, keys: tuple[str, ...]) -> bool:
+    components = {
+        component.component_key: component for component in item.load_components
+    }
     return item.quality.coverage >= 0.999 and all(
         key in components and components[key].quality.coverage >= 0.999 for key in keys
     )

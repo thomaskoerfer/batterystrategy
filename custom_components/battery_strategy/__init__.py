@@ -73,9 +73,9 @@ async def async_setup_entry(
 
 
 def _migrate_runtime_files(config_dir: str) -> None:
-    """Preserve learned state and traces from pre-release filenames."""
+    """Upgrade persisted data formats without retaining alternate runtime paths."""
     root = Path(config_dir)
-    # Completed parity windows are not runtime dependencies. Remove their
+    # Completed evaluation windows are not runtime dependencies. Remove their
     # bounded traces during upgrade instead of retaining permanent dead state.
     for obsolete_name in (
         "battery_strategy_optimizer_shadow.jsonl",
@@ -84,31 +84,31 @@ def _migrate_runtime_files(config_dir: str) -> None:
     ):
         (root / obsolete_name).unlink(missing_ok=True)
     current = root / OPTIMIZER_STATE_FILE
-    legacy = root / "battery_strategy_hacs_optimizer_state.json"
-    if not current.exists() and legacy.exists():
-        current.write_bytes(legacy.read_bytes())
+    previous_state = root / "battery_strategy_hacs_optimizer_state.json"
+    if not current.exists() and previous_state.exists():
+        current.write_bytes(previous_state.read_bytes())
     if current.exists():
-        legacy.unlink(missing_ok=True)
+        previous_state.unlink(missing_ok=True)
 
     trace = root / COMMAND_TRACE_FILE
     if trace.exists():
         return
-    for legacy_name in (
+    for previous_name in (
         "battery_strategy_command_trace.json",
         "battery_strategy_hacs_command_trace.json",
     ):
-        legacy_trace = Path(config_dir) / legacy_name
-        if not legacy_trace.exists():
+        previous_trace = Path(config_dir) / previous_name
+        if not previous_trace.exists():
             continue
         try:
-            payload = json.loads(legacy_trace.read_text(encoding="utf-8"))
+            payload = json.loads(previous_trace.read_text(encoding="utf-8"))
             items = payload if isinstance(payload, list) else payload.get("trace", [])
             with trace.open("w", encoding="utf-8") as handle:
                 for item in items[-60480:]:
                     handle.write(json.dumps(item, separators=(",", ":")) + "\n")
-        except (OSError, ValueError, AttributeError):
+        except OSError, ValueError, AttributeError:
             continue
-        legacy_trace.unlink(missing_ok=True)
+        previous_trace.unlink(missing_ok=True)
         break
 
 
@@ -121,7 +121,8 @@ async def async_unload_entry(
         return False
     try:
         unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-    except Exception:  # noqa: BLE001 - retained entries must recover before propagation.
+    # Keep the coordinator alive when a platform unload raises so it can resume.
+    except Exception:
         await coordinator.async_abort_unload()
         raise
     if not unload_ok:
@@ -185,7 +186,7 @@ def _async_register_services(hass) -> None:
 
 
 def _coordinators(hass: HomeAssistant) -> Iterable[BatteryStrategyCoordinator]:
-    """Yield loaded coordinators without maintaining a parallel registry."""
+    """Yield loaded coordinators without maintaining a secondary registry."""
     for entry in hass.config_entries.async_entries(DOMAIN):
         coordinator = getattr(entry, "runtime_data", None)
         if isinstance(coordinator, BatteryStrategyCoordinator):

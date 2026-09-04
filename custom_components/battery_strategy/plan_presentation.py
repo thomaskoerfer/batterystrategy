@@ -168,7 +168,7 @@ def derive_planned_dispatch(first_plan):
         return "idle", 0
 
     plan_mode = first_plan.get("mode", "idle")
-    plan_power = int(round(abs(float(first_plan.get("power_w", 0.0)))))
+    plan_power = round(abs(float(first_plan.get("power_w", 0.0))))
 
     if plan_mode == "charge":
         charge_mode = (

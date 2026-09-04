@@ -7,6 +7,7 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from typing import ClassVar
 from unittest.mock import AsyncMock, patch
 from zoneinfo import ZoneInfo
 
@@ -77,10 +78,6 @@ from custom_components.battery_strategy.operator_projection import (
     PROFILE_ATTRIBUTE_KEYS,
     build_operator_projection,
 )
-from custom_components.battery_strategy.optimizer_state import (
-    load_state_document,
-    save_state_document,
-)
 from custom_components.battery_strategy.plan_compiler import DeterministicPlanCompiler
 from custom_components.battery_strategy.plan_models import PlanPoint, StrategyPlan
 from custom_components.battery_strategy.planner import BackgroundPlanner
@@ -88,6 +85,10 @@ from custom_components.battery_strategy.planning_runtime import HistoryRole
 from custom_components.battery_strategy.runtime_market_data import TariffInterval
 from custom_components.battery_strategy.runtime_measurements import (
     fetch_house_actual_profile,
+)
+from custom_components.battery_strategy.state_document import (
+    load_state_document,
+    save_state_document,
 )
 from custom_components.battery_strategy.strategy import DeterministicLiveController
 from tests.live_contract_helpers import directive as contract_directive_factory
@@ -107,7 +108,7 @@ TEST_PV_INVERTER_KW = 1.0
 
 
 def plan_live_directive_from_plan(plan, options, current_soc_pct=None):
-    """Compile a plan through the production Phase-7 boundary for tests."""
+    """Compile a plan through the production contract boundary for tests."""
     contract_plan = canonical_plan(plan, options, plan.points[0].ts_ms)
     directive, _ = DeterministicPlanCompiler().compile(
         contract_plan,
@@ -467,9 +468,7 @@ class HacsStrategyTests(unittest.TestCase):
             capture = adapter.runtime_context(
                 measurements(captured_at_ms=1_800_000_000_000), StrategyOptions()
             )
-        self.assertEqual(
-            capture.snapshot.observations.current_price_ct_per_kwh, 350.0
-        )
+        self.assertEqual(capture.snapshot.observations.current_price_ct_per_kwh, 350.0)
 
     def test_house_profile_consumes_ev_history_once_in_watts(self):
         timestamp_ms = 1_800_000_000_000
@@ -491,7 +490,7 @@ class HacsStrategyTests(unittest.TestCase):
         )
 
     def test_optimizer_current_price_ignores_stale_prior_day_tariff(self):
-        captured = dt.datetime(2027, 1, 15, 10, 15, tzinfo=dt.timezone.utc)
+        captured = dt.datetime(2027, 1, 15, 10, 15, tzinfo=dt.UTC)
         price_state = SimpleNamespace(
             state="31.5",
             attributes={
@@ -517,9 +516,9 @@ class HacsStrategyTests(unittest.TestCase):
                 time_zone="UTC",
             )
             states = SimpleNamespace(
-                get=lambda entity_id: price_state
-                if entity_id == "sensor.price"
-                else None
+                get=lambda entity_id: (
+                    price_state if entity_id == "sensor.price" else None
+                )
             )
 
         entry = SimpleNamespace(
@@ -530,24 +529,20 @@ class HacsStrategyTests(unittest.TestCase):
         adapter = planning_adapter.PlanningPipelineAdapter(FakeHass(), entry)
         with patch.object(planning_adapter.er, "async_get", return_value=Registry()):
             context = adapter.runtime_context(
-                measurements(0, 0, 0, 0, 0, 50, captured_at_ms=int(captured.timestamp() * 1000)),
+                measurements(
+                    0, 0, 0, 0, 0, 50, captured_at_ms=int(captured.timestamp() * 1000)
+                ),
                 StrategyOptions(),
             )
 
-        self.assertEqual(
-            context.snapshot.observations.current_price_ct_per_kwh, 31.5
-        )
+        self.assertEqual(context.snapshot.observations.current_price_ct_per_kwh, 31.5)
 
     def test_optimizer_history_normalizes_mapped_power_units(self):
         runtime = runtime_snapshot(
-            history_series={
-                HistoryRole.PV_GENERATION_POWER_W: ((100.0, 1250.0),)
-            },
+            history_series={HistoryRole.PV_GENERATION_POWER_W: ((100.0, 1250.0),)},
         )
         result = runtime.history.read([HistoryRole.PV_GENERATION_POWER_W], 0)
-        self.assertEqual(
-            result[HistoryRole.PV_GENERATION_POWER_W], [(100.0, 1250.0)]
-        )
+        self.assertEqual(result[HistoryRole.PV_GENERATION_POWER_W], [(100.0, 1250.0)])
 
     def test_optimizer_history_does_not_fall_back_to_local_sqlite(self):
         runtime = runtime_snapshot()
@@ -954,18 +949,18 @@ class HacsStrategyTests(unittest.TestCase):
 
     def test_slot_progress_accounts_measured_battery_power(self):
         runtime = PlanCompilerRuntime()
-        now = dt.datetime.now(dt.timezone.utc)
+        now = dt.datetime.now(dt.UTC)
         runtime.account(now - dt.timedelta(seconds=36), -1000.0)
         runtime.account(now, -1000.0)
         self.assertAlmostEqual(runtime.charged_kwh, 0.01, places=4)
         self.assertEqual(runtime.discharged_kwh, 0.0)
 
     def test_ev_power_dropout_bridges_then_marks_discharge_input_unsafe(self):
-        now = dt.datetime.now(dt.timezone.utc)
+        now = dt.datetime.now(dt.UTC)
 
         class FakeState:
             state = "unavailable"
-            attributes = {"unit_of_measurement": "kW"}
+            attributes: ClassVar = {"unit_of_measurement": "kW"}
 
         coordinator = object.__new__(BatteryStrategyCoordinator)
         coordinator.hass = SimpleNamespace(
@@ -1004,7 +999,7 @@ class HacsStrategyTests(unittest.TestCase):
             "discharge": "off",
         }
         try:
-            start = dt.datetime(2026, 7, 1, tzinfo=dt.timezone.utc)
+            start = dt.datetime(2026, 7, 1, tzinfo=dt.UTC)
             intervals = [
                 {
                     "dt": start + dt.timedelta(minutes=15 * i),
@@ -1176,8 +1171,8 @@ class HacsStrategyTests(unittest.TestCase):
                 path.write_text("{}\n")
             legacy_state = root / "battery_strategy_hacs_optimizer_state.json"
             legacy_state.write_bytes(b"learned-state")
-            legacy = root / "battery_strategy_hacs_command_trace.json"
-            legacy.write_text(
+            previous_trace = root / "battery_strategy_hacs_command_trace.json"
+            previous_trace.write_text(
                 json.dumps([{"ts": 1, "mode": "idle"}, {"ts": 2, "mode": "input"}])
             )
             _migrate_runtime_files(tmp)
@@ -1186,7 +1181,7 @@ class HacsStrategyTests(unittest.TestCase):
             self.assertEqual(
                 lines, [{"ts": 1, "mode": "idle"}, {"ts": 2, "mode": "input"}]
             )
-            self.assertFalse(legacy.exists())
+            self.assertFalse(previous_trace.exists())
             self.assertTrue(all(not path.exists() for path in obsolete_runtime_files))
             self.assertEqual(
                 (root / "battery_strategy_optimizer_state.json").read_bytes(),
@@ -1494,7 +1489,7 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertEqual(cmd.allowed_discharge_load_w, 0)
 
     def test_must_charge_blocks_discharge_and_charges_from_grid(self):
-        now = dt.datetime(2026, 5, 29, 12, tzinfo=dt.timezone.utc)
+        now = dt.datetime(2026, 5, 29, 12, tzinfo=dt.UTC)
         point = PlanPoint(
             int(now.timestamp() * 1000),
             now.date().isoformat(),
@@ -1538,7 +1533,7 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertEqual(cmd.reason, "must_charge")
 
     def test_must_charge_executes_current_published_grid_charge(self):
-        now = dt.datetime(2026, 5, 29, 12, tzinfo=dt.timezone.utc)
+        now = dt.datetime(2026, 5, 29, 12, tzinfo=dt.UTC)
         points = [
             PlanPoint(
                 int((now + dt.timedelta(minutes=15 * i)).timestamp() * 1000),
@@ -1571,7 +1566,7 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertEqual(directive.required_charge_remaining_kwh, 0.25)
 
     def test_plan_live_directive_describes_only_required_live_inputs(self):
-        now = dt.datetime(2026, 5, 29, 12, tzinfo=dt.timezone.utc)
+        now = dt.datetime(2026, 5, 29, 12, tzinfo=dt.UTC)
         point = PlanPoint(
             int(now.timestamp() * 1000),
             now.date().isoformat(),
@@ -1615,7 +1610,7 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertEqual(directive.max_soc_pct, 100)
 
     def test_explicit_pv_only_slot_never_becomes_must_charge(self):
-        now = dt.datetime(2026, 8, 23, 10, 45, tzinfo=dt.timezone.utc)
+        now = dt.datetime(2026, 8, 23, 10, 45, tzinfo=dt.UTC)
         point = PlanPoint(
             ts_ms=int(now.timestamp() * 1000),
             date=now.date().isoformat(),
@@ -1650,7 +1645,7 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertEqual(directive.required_charge_remaining_kwh, 0.0)
 
     def test_required_mixed_charge_keeps_total_target_across_pv_error(self):
-        now = dt.datetime(2026, 8, 23, 13, tzinfo=dt.timezone.utc)
+        now = dt.datetime(2026, 8, 23, 13, tzinfo=dt.UTC)
         point = PlanPoint(
             ts_ms=int(now.timestamp() * 1000),
             date=now.date().isoformat(),
@@ -1697,7 +1692,7 @@ class HacsStrategyTests(unittest.TestCase):
             self.assertEqual(command.reason, "must_charge")
 
     def test_price_sensitive_discharge_uses_plan_budget_not_soc_floor(self):
-        now = dt.datetime(2026, 5, 29, 18, tzinfo=dt.timezone.utc)
+        now = dt.datetime(2026, 5, 29, 18, tzinfo=dt.UTC)
         point = PlanPoint(
             int(now.timestamp() * 1000),
             now.date().isoformat(),
@@ -1738,7 +1733,7 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertEqual(cmd.reason, "live_idle")
 
     def test_price_sensitive_discharge_budget_comes_from_plan_not_spill_heuristic(self):
-        now = dt.datetime(2026, 5, 29, 14, tzinfo=dt.timezone.utc)
+        now = dt.datetime(2026, 5, 29, 14, tzinfo=dt.UTC)
         points = [
             PlanPoint(
                 int(now.timestamp() * 1000),
@@ -1799,7 +1794,7 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertEqual(cmd.reason, "live_idle")
 
     def test_price_sensitive_discharge_fc_does_not_create_live_budget(self):
-        now = dt.datetime(2026, 7, 12, 20, tzinfo=dt.timezone.utc)
+        now = dt.datetime(2026, 7, 12, 20, tzinfo=dt.UTC)
         point = PlanPoint(
             int(now.timestamp() * 1000),
             now.date().isoformat(),
@@ -1838,7 +1833,7 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertEqual(cmd.power_w, 0)
 
     def test_price_sensitive_low_price_does_not_use_pv_charge_as_free_replacement(self):
-        now = dt.datetime(2026, 5, 29, 12, tzinfo=dt.timezone.utc)
+        now = dt.datetime(2026, 5, 29, 12, tzinfo=dt.UTC)
         points = [
             PlanPoint(
                 int(now.timestamp() * 1000),
@@ -1904,7 +1899,7 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertEqual(directive.discharge_budget_remaining_kwh, 0.0)
 
     def test_price_sensitive_low_price_does_not_open_without_plan_budget(self):
-        now = dt.datetime(2026, 5, 29, 12, tzinfo=dt.timezone.utc)
+        now = dt.datetime(2026, 5, 29, 12, tzinfo=dt.UTC)
         points = [
             PlanPoint(
                 int(now.timestamp() * 1000),
@@ -1975,7 +1970,7 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertEqual(directive.discharge_budget_remaining_kwh, 0.0)
 
     def test_price_sensitive_low_price_rejects_grid_replacement_after_losses(self):
-        now = dt.datetime(2026, 5, 29, 12, tzinfo=dt.timezone.utc)
+        now = dt.datetime(2026, 5, 29, 12, tzinfo=dt.UTC)
         points = [
             PlanPoint(
                 int(now.timestamp() * 1000),
@@ -2042,7 +2037,7 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertEqual(directive.discharge_budget_remaining_kwh, 0.0)
 
     def test_price_sensitive_grid_replacement_budget_must_be_in_plan(self):
-        now = dt.datetime(2026, 5, 29, 12, tzinfo=dt.timezone.utc)
+        now = dt.datetime(2026, 5, 29, 12, tzinfo=dt.UTC)
         points = [
             PlanPoint(
                 int(now.timestamp() * 1000),
@@ -2095,7 +2090,7 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertEqual(directive.discharge_budget_remaining_kwh, 0.0)
 
     def test_price_sensitive_pv_recharge_budget_keeps_export_reserve(self):
-        now = dt.datetime(2026, 5, 29, 14, tzinfo=dt.timezone.utc)
+        now = dt.datetime(2026, 5, 29, 14, tzinfo=dt.UTC)
         points = [
             PlanPoint(
                 int((now + dt.timedelta(minutes=15 * i)).timestamp() * 1000),
@@ -2126,7 +2121,7 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertEqual(directive.discharge_budget_remaining_kwh, 0.0)
 
     def test_pv_recharge_budget_ignores_export_created_by_planned_discharge(self):
-        now = dt.datetime(2026, 5, 29, 14, tzinfo=dt.timezone.utc)
+        now = dt.datetime(2026, 5, 29, 14, tzinfo=dt.UTC)
         current = PlanPoint(
             int(now.timestamp() * 1000),
             now.date().isoformat(),
@@ -2174,7 +2169,7 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertEqual(directive.discharge_budget_remaining_kwh, 0.0)
 
     def test_price_sensitive_current_discharge_follows_meter_with_explicit_budget(self):
-        now = dt.datetime(2026, 5, 29, 21, tzinfo=dt.timezone.utc)
+        now = dt.datetime(2026, 5, 29, 21, tzinfo=dt.UTC)
         point = PlanPoint(
             int(now.timestamp() * 1000),
             now.date().isoformat(),
@@ -2216,7 +2211,7 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertEqual(cmd.reason, "budget_discharge")
 
     def test_headroom_budget_never_overrides_live_pv_or_exports_battery_power(self):
-        now = dt.datetime(2026, 8, 13, 12, tzinfo=dt.timezone.utc)
+        now = dt.datetime(2026, 8, 13, 12, tzinfo=dt.UTC)
         point = PlanPoint(
             int(now.timestamp() * 1000),
             now.date().isoformat(),
@@ -2296,7 +2291,7 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertEqual(idle_command.power_w, 0)
 
     def test_price_sensitive_highest_price_block_releases_available_energy(self):
-        now = dt.datetime(2026, 5, 29, 21, tzinfo=dt.timezone.utc)
+        now = dt.datetime(2026, 5, 29, 21, tzinfo=dt.UTC)
         points = [
             PlanPoint(
                 int((now + dt.timedelta(minutes=15 * i)).timestamp() * 1000),
@@ -2333,7 +2328,7 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertEqual(directive.discharge_budget_remaining_kwh, 4.8)
 
     def test_price_sensitive_budget_reserves_for_later_higher_value_slots(self):
-        now = dt.datetime(2026, 5, 29, 21, tzinfo=dt.timezone.utc)
+        now = dt.datetime(2026, 5, 29, 21, tzinfo=dt.UTC)
         prices = [45.0, 35.0, 80.0, 80.0, 80.0, 80.0]
         points = [
             PlanPoint(
@@ -2371,7 +2366,7 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertEqual(directive.discharge_budget_remaining_kwh, 2.4)
 
     def test_pv_surplus_charging_ignores_price_sensitive_grid_ceiling(self):
-        now = dt.datetime(2026, 5, 29, 12, tzinfo=dt.timezone.utc)
+        now = dt.datetime(2026, 5, 29, 12, tzinfo=dt.UTC)
         point = PlanPoint(
             int(now.timestamp() * 1000),
             now.date().isoformat(),
@@ -2409,7 +2404,7 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertEqual(cmd.reason, "live_pv_surplus")
 
     def test_must_charge_uses_grid_only_for_gap_after_pv_surplus(self):
-        now = dt.datetime(2026, 5, 29, 12, tzinfo=dt.timezone.utc)
+        now = dt.datetime(2026, 5, 29, 12, tzinfo=dt.UTC)
         point = PlanPoint(
             int(now.timestamp() * 1000),
             now.date().isoformat(),
@@ -2447,7 +2442,7 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertEqual(cmd.reason, "must_charge")
 
     def test_must_charge_does_not_add_grid_when_pv_exceeds_required_rate(self):
-        now = dt.datetime(2026, 5, 29, 12, tzinfo=dt.timezone.utc)
+        now = dt.datetime(2026, 5, 29, 12, tzinfo=dt.UTC)
         point = PlanPoint(
             int(now.timestamp() * 1000),
             now.date().isoformat(),
@@ -2623,7 +2618,7 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertEqual(NUMERIC_OPTIONS["min_margin_ct_per_kwh"].config_maximum, 30.0)
 
     def test_live_discharge_budget_uses_current_soc_instead_of_stale_plan_soc(self):
-        now = dt.datetime(2026, 7, 21, 20, tzinfo=dt.timezone.utc)
+        now = dt.datetime(2026, 7, 21, 20, tzinfo=dt.UTC)
         point = PlanPoint(
             int(now.timestamp() * 1000),
             now.date().isoformat(),
@@ -2648,7 +2643,7 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertEqual(directive.discharge_budget_remaining_kwh, 0.6)
 
     def test_live_discharge_budget_uses_configured_battery_capacity(self):
-        now = dt.datetime(2026, 7, 21, 20, tzinfo=dt.timezone.utc)
+        now = dt.datetime(2026, 7, 21, 20, tzinfo=dt.UTC)
         point = PlanPoint(
             int(now.timestamp() * 1000),
             now.date().isoformat(),
@@ -2724,9 +2719,9 @@ class HacsStrategyTests(unittest.TestCase):
             )
         )
         coordinator._last_known_soc_pct = 37.0
-        coordinator._last_valid_soc_at = dt.datetime.now(
-            dt.timezone.utc
-        ) - dt.timedelta(seconds=301)
+        coordinator._last_valid_soc_at = dt.datetime.now(dt.UTC) - dt.timedelta(
+            seconds=301
+        )
         coordinator._soc_control_ready = True
         coordinator._soc_recovered = False
 
@@ -2743,9 +2738,9 @@ class HacsStrategyTests(unittest.TestCase):
             states=SimpleNamespace(get=lambda _entity_id: SimpleNamespace(state="41"))
         )
         coordinator._last_known_soc_pct = 37.0
-        coordinator._last_valid_soc_at = dt.datetime.now(
-            dt.timezone.utc
-        ) - dt.timedelta(seconds=301)
+        coordinator._last_valid_soc_at = dt.datetime.now(dt.UTC) - dt.timedelta(
+            seconds=301
+        )
         coordinator._soc_control_ready = False
         coordinator._soc_recovered = False
 
@@ -2754,7 +2749,7 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertTrue(coordinator._soc_recovered)
 
     def test_unchanged_available_soc_remains_control_ready(self):
-        stale_at = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=10)
+        stale_at = dt.datetime.now(dt.UTC) - dt.timedelta(minutes=10)
         state = SimpleNamespace(
             state="41",
             attributes={},
@@ -2778,7 +2773,7 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertTrue(coordinator._soc_control_ready)
 
     def test_unchanged_available_ev_power_remains_control_ready(self):
-        stale_at = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=10)
+        stale_at = dt.datetime.now(dt.UTC) - dt.timedelta(minutes=10)
         state = SimpleNamespace(
             state="0",
             attributes={"unit_of_measurement": "W"},
@@ -2787,9 +2782,7 @@ class HacsStrategyTests(unittest.TestCase):
             last_changed=stale_at,
         )
         coordinator = object.__new__(BatteryStrategyCoordinator)
-        coordinator.entry = SimpleNamespace(
-            data={"ev_power_entity": "sensor.ev_power"}
-        )
+        coordinator.entry = SimpleNamespace(data={"ev_power_entity": "sensor.ev_power"})
         coordinator.hass = SimpleNamespace(
             states=SimpleNamespace(get=lambda _entity_id: state)
         )
@@ -2801,7 +2794,7 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertTrue(coordinator._ev_control_ready)
 
     def test_change_driven_battery_power_remains_usable_while_available(self):
-        stale_at = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=10)
+        stale_at = dt.datetime.now(dt.UTC) - dt.timedelta(minutes=10)
         state = SimpleNamespace(
             state="0",
             attributes={"unit_of_measurement": "W"},
@@ -3013,7 +3006,7 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertLess(sum(noon) / len(noon), sum(evening) / len(evening))
 
     def test_eex_proxy_does_not_replace_real_tomorrow_prices(self):
-        tz = dt.timezone.utc
+        tz = dt.UTC
         today = dt.date(2026, 6, 11)
         tomorrow = today + dt.timedelta(days=1)
         intervals = []
@@ -3027,9 +3020,7 @@ class HacsStrategyTests(unittest.TestCase):
 
         filled, source = planning_pipeline._market_context_service(
             self._planning_settings()
-        ).apply_eex_proxy_prices(
-            self._typed_intervals(intervals), {}, today, tomorrow
-        )
+        ).apply_eex_proxy_prices(self._typed_intervals(intervals), {}, today, tomorrow)
 
         self.assertEqual(source, "tibber")
         self.assertEqual(
@@ -3038,7 +3029,7 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertTrue(all(it.source == "tibber" for it in filled))
 
     def test_full_optimizer_does_not_plan_discharge_export_when_feed_in_is_zero(self):
-        tz = dt.timezone.utc
+        tz = dt.UTC
         start = dt.datetime(2026, 5, 26, 18, tzinfo=tz)
         intervals = [
             {
@@ -3088,7 +3079,7 @@ class HacsStrategyTests(unittest.TestCase):
 
     def test_optimizer_mode_penalty_does_not_move_energy_to_cheaper_slot(self):
         """Plan intent must follow economics; switching belongs to live control."""
-        start = dt.datetime(2026, 8, 17, 21, 30, tzinfo=dt.timezone.utc)
+        start = dt.datetime(2026, 8, 17, 21, 30, tzinfo=dt.UTC)
         prices = [43.2, 30.0, 30.0, 30.0, 30.0, 43.0, 42.9, 42.8]
         intervals = [
             {
@@ -3148,7 +3139,7 @@ class HacsStrategyTests(unittest.TestCase):
             )
 
     def test_optimizer_discharge_budget_opens_when_future_pv_would_spill(self):
-        tz = dt.timezone.utc
+        tz = dt.UTC
         start = dt.datetime(2026, 5, 29, 10, tzinfo=tz)
         intervals = [
             {
@@ -3495,7 +3486,7 @@ class HacsStrategyTests(unittest.TestCase):
     def test_optimizer_discharge_budget_reserves_scarce_energy_for_later_high_prices(
         self,
     ):
-        tz = dt.timezone.utc
+        tz = dt.UTC
         start = dt.datetime(2026, 5, 29, 10, tzinfo=tz)
         intervals = [
             {
@@ -3546,7 +3537,7 @@ class HacsStrategyTests(unittest.TestCase):
     def test_optimizer_discharge_budget_reserves_across_incomplete_charge_window(
         self,
     ):
-        tz = dt.timezone.utc
+        tz = dt.UTC
         start = dt.datetime(2026, 7, 13, 19, tzinfo=tz)
         prices = [36.0, 36.4, 38.0, 41.0, 40.0, 39.0, 20.0] + [41.0] * 16
         intervals = [
@@ -3595,7 +3586,7 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertGreater(plan["points"][6]["charge_fc_w"], 0.0)
 
     def test_optimizer_publishes_grid_charge_in_latest_equal_value_slot(self):
-        tz = dt.timezone.utc
+        tz = dt.UTC
         start = dt.datetime(2026, 8, 22, 10, tzinfo=tz)
         prices = [18.2] * 4 + [40.0] + [18.2] * 3
         intervals = [
@@ -3678,7 +3669,7 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertGreater(plan["points"][4]["discharge_fc_w"], 0.0)
 
     def test_optimizer_does_not_turn_pv_lattice_remainder_into_grid_commitment(self):
-        tz = dt.timezone.utc
+        tz = dt.UTC
         start = dt.datetime(2026, 8, 23, 10, tzinfo=tz)
         prices = [18.1, 18.0, 17.9, 17.5, 17.5, 40.0, 40.0, 40.0]
         intervals = [
@@ -3738,7 +3729,7 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertGreater(plan["points"][3]["required_charge_fc_w"], 0.0)
 
     def test_optimizer_keeps_earlier_grid_commitment_when_later_capacity_is_short(self):
-        tz = dt.timezone.utc
+        tz = dt.UTC
         start = dt.datetime(2026, 8, 23, 10, tzinfo=tz)
         prices = [18.0, 17.0, 40.0, 40.0]
         intervals = [
@@ -3793,7 +3784,7 @@ class HacsStrategyTests(unittest.TestCase):
     def test_optimizer_does_not_discharge_before_unprofitable_grid_replacement(
         self,
     ):
-        tz = dt.timezone.utc
+        tz = dt.UTC
         start = dt.datetime(2026, 8, 22, 10, tzinfo=tz)
         prices = [18.56, 18.31] + [18.20] * 14 + [39.99] * 12
         intervals = [
@@ -3886,7 +3877,7 @@ class HacsStrategyTests(unittest.TestCase):
         )
 
     def test_optimizer_discharge_floor_uses_cheapest_horizon_replacement(self):
-        tz = dt.timezone.utc
+        tz = dt.UTC
         start = dt.datetime(2026, 6, 21, 0, tzinfo=tz)
         prices = [
             35.83,
@@ -3955,7 +3946,7 @@ class HacsStrategyTests(unittest.TestCase):
     def test_optimizer_discharge_budget_opens_when_no_later_higher_price_reserve_is_needed(
         self,
     ):
-        tz = dt.timezone.utc
+        tz = dt.UTC
         start = dt.datetime(2026, 5, 29, 21, tzinfo=tz)
         prices = [35.0, 32.0, 29.0, 26.0, 23.0, 20.0]
         intervals = [
@@ -4005,7 +3996,7 @@ class HacsStrategyTests(unittest.TestCase):
     def test_optimizer_discharge_budget_does_not_reserve_for_equal_value_later_slots(
         self,
     ):
-        tz = dt.timezone.utc
+        tz = dt.UTC
         start = dt.datetime(2026, 5, 29, 21, tzinfo=tz)
         prices = [35.0, 35.0, 35.0, 35.0]
         intervals = [
@@ -4053,7 +4044,7 @@ class HacsStrategyTests(unittest.TestCase):
     def test_optimizer_discharge_budget_peak_slot_is_not_capped_by_current_forecast_load(
         self,
     ):
-        tz = dt.timezone.utc
+        tz = dt.UTC
         start = dt.datetime(2026, 7, 16, 20, 30, tzinfo=tz)
         prices = [58.0, 54.0, 50.0, 45.0]
         intervals = [
@@ -4101,7 +4092,7 @@ class HacsStrategyTests(unittest.TestCase):
         )
 
     def test_planning_adapter_filters_expired_cached_slots(self):
-        now = dt.datetime(2026, 5, 29, 12, tzinfo=dt.timezone.utc)
+        now = dt.datetime(2026, 5, 29, 12, tzinfo=dt.UTC)
         old_ts = int((now - dt.timedelta(minutes=20)).timestamp() * 1000)
         current_ts = int(now.timestamp() * 1000)
         output = {
@@ -4118,14 +4109,12 @@ class HacsStrategyTests(unittest.TestCase):
             "profile_48h_grid_net_fc_power": [[old_ts, 0.0], [current_ts, 0.0]],
         }
         points = planning_result._points_from_output(
-            output, now_ms=current_ts, timezone=dt.timezone.utc
+            output, now_ms=current_ts, timezone=dt.UTC
         )
         self.assertEqual([point.ts_ms for point in points], [current_ts])
 
     def test_planning_adapter_preserves_explicit_charge_sources_and_requirement(self):
-        ts = int(
-            dt.datetime(2026, 8, 23, 13, tzinfo=dt.timezone.utc).timestamp() * 1000
-        )
+        ts = int(dt.datetime(2026, 8, 23, 13, tzinfo=dt.UTC).timestamp() * 1000)
         output = {
             "profile_48h_price": [[ts, 17.55]],
             "profile_48h_charge_fc_power": [[ts, 1700.0]],
@@ -4136,18 +4125,16 @@ class HacsStrategyTests(unittest.TestCase):
             "profile_48h_house_fc_power": [[ts, 500.0]],
         }
 
-        point = planning_result._points_from_output(
-            output, now_ms=ts, timezone=dt.timezone.utc
-        )[0]
+        point = planning_result._points_from_output(output, now_ms=ts, timezone=dt.UTC)[
+            0
+        ]
 
         self.assertEqual(point.pv_charge_fc_w, 500)
         self.assertEqual(point.grid_charge_fc_w, 1200)
         self.assertEqual(point.required_charge_fc_w, 1700)
 
     def test_planning_adapter_assigns_dates_in_home_assistant_timezone(self):
-        ts = int(
-            dt.datetime(2026, 5, 29, 22, 0, tzinfo=dt.timezone.utc).timestamp() * 1000
-        )
+        ts = int(dt.datetime(2026, 5, 29, 22, 0, tzinfo=dt.UTC).timestamp() * 1000)
         output = {
             "profile_48h_price": [[ts, 30.0]],
             "profile_48h_house_fc_power": [[ts, 200.0]],
@@ -4160,7 +4147,7 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertEqual(points[0].date, "2026-05-30")
 
     def test_published_future_profile_is_not_mutated_by_live_actuals(self):
-        now = dt.datetime(2026, 5, 26, 18, tzinfo=dt.timezone.utc)
+        now = dt.datetime(2026, 5, 26, 18, tzinfo=dt.UTC)
         today = now.date().isoformat()
         tomorrow = (now.date() + dt.timedelta(days=1)).isoformat()
         actual = [

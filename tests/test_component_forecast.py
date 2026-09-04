@@ -48,9 +48,9 @@ class ComponentForecastTests(unittest.TestCase):
         start = history[-1].slot.end_ms
         slot = SlotKey(start, start + SLOT_MS)
         request = ForecastRequest(start, "Europe/Berlin", (slot,))
-        local = dt.datetime.fromtimestamp(
-            start / 1000.0, tz=dt.timezone.utc
-        ).astimezone(ZoneInfo("Europe/Berlin"))
+        local = dt.datetime.fromtimestamp(start / 1000.0, tz=dt.UTC).astimezone(
+            ZoneInfo("Europe/Berlin")
+        )
         forecast = build_component_load_forecast(
             request,
             history,
@@ -74,9 +74,9 @@ class ComponentForecastTests(unittest.TestCase):
         start = history[-1].slot.end_ms
         slot = SlotKey(start, start + SLOT_MS)
         request = ForecastRequest(start, "Europe/Berlin", (slot,))
-        local = dt.datetime.fromtimestamp(
-            start / 1000.0, tz=dt.timezone.utc
-        ).astimezone(ZoneInfo("Europe/Berlin"))
+        local = dt.datetime.fromtimestamp(start / 1000.0, tz=dt.UTC).astimezone(
+            ZoneInfo("Europe/Berlin")
+        )
         forecast = build_component_load_forecast(
             request,
             history,

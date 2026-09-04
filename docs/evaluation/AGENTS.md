@@ -18,7 +18,7 @@ attributes or expose private configuration in diagnostics.
 
 Test alignment, maturation, missing-data exclusion, retention, redaction,
 non-authoritative flags and failure containment. Define observation duration and
-tolerances before evaluating a migration gate.
+tolerances before evaluating release readiness.
 
 ## Setup independence
 

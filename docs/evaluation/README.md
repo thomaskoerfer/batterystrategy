@@ -47,9 +47,7 @@ non-authoritative flags, retention, bounded attributes, redaction and failure
 containment. A release gate must state its observation duration and numerical
 tolerances before results are reviewed.
 
-## Migration status
+## Production status
 
-Forecast and optimizer shadow traces were available only during their migration
-windows. Their runners, stores and optimizer trace are removed in Phase 7.
-Durable evaluation now means explicit backtests, matured forecast metrics and
+Durable evaluation means explicit backtests, matured forecast metrics and
 bounded command traces, not a dormant second implementation.

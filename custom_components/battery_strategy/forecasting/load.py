@@ -43,8 +43,8 @@ def build_load_forecast(
     if len(request.slots) != len(targets):
         raise ValueError("load targets must match requested grid")
     timezone = ZoneInfo(config.timezone)
-    # Transitional parity input: a separately modeled heat-pump component will
-    # replace this short-horizon context only through an approved contract change.
+    # Current heat-pump power is short-horizon context; component forecasts own
+    # longer-horizon device behavior independently.
     heat_pump_w = next(
         (
             driver.power_w
@@ -54,7 +54,7 @@ def build_load_forecast(
         0.0,
     )
     now_local = dt.datetime.fromtimestamp(
-        request.as_of_ms / 1000.0, tz=dt.timezone.utc
+        request.as_of_ms / 1000.0, tz=dt.UTC
     ).astimezone(timezone)
     slots = tuple(
         ForecastSlot(
@@ -102,9 +102,9 @@ def _forecast_load_w(
     same_slot, same_weekday, same_weektype, recent = [], [], [], []
     recent_cutoff = samples[-1].ts_s - 7200 if samples else 0.0
     for sample in samples[-6000:]:
-        sample_local = dt.datetime.fromtimestamp(
-            sample.ts_s, tz=dt.timezone.utc
-        ).astimezone(timezone)
+        sample_local = dt.datetime.fromtimestamp(sample.ts_s, tz=dt.UTC).astimezone(
+            timezone
+        )
         if not sample.load_valid or not sample.has_valid_live_power:
             continue
         if _slot_index(sample_local) == target_slot:

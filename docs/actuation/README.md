@@ -12,7 +12,7 @@ preserving direction, power and safety limits.
 actuator may lower or reject a request for safety, availability or throttling,
 but it may not increase power, reverse direction or invent commercial intent.
 
-No optimizer, plan compiler, dashboard, diagnostic or shadow component may hold
+No optimizer, plan compiler, dashboard, diagnostic or evaluation component may hold
 an actuator reference.
 
 ## Write sequencing
@@ -47,7 +47,7 @@ controls, write coalescing, minimum deltas, restart behavior, disabled-control
 no-write behavior and the single-writer invariant. Hardware cutovers require a
 rollback release and the shortest practical Home Assistant interruption.
 
-## Migration status
+## Production status
 
 The vendor translation, write tracker and all Home Assistant battery service
 calls are owned by `HomeAssistantZendureActuator`. The live controller produces

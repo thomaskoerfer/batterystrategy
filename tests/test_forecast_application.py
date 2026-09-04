@@ -1,4 +1,4 @@
-"""Regression tests for the feature-store production forecast cutover."""
+"""Regression tests for the production feature-store forecast application."""
 
 from __future__ import annotations
 
@@ -25,12 +25,12 @@ from custom_components.battery_strategy.forecasting import (
     build_feature_store_forecast,
     weather_targets,
 )
-from custom_components.battery_strategy.optimizer_state import save_state_document
 from custom_components.battery_strategy.planning_state import (
     STATE_SCHEMA_VERSION,
     PlanningStateStore,
 )
 from custom_components.battery_strategy.runtime_market_data import TariffInterval
+from custom_components.battery_strategy.state_document import save_state_document
 from tests.planning_runtime_helpers import runtime_snapshot, settings_from_values
 
 
@@ -77,7 +77,7 @@ class ForecastProductionTests(unittest.TestCase):
         )
 
     def _history(self, days: int):
-        first = self.start.astimezone(dt.timezone.utc) - dt.timedelta(days=days)
+        first = self.start.astimezone(dt.UTC) - dt.timedelta(days=days)
         first = first.replace(minute=(first.minute // 15) * 15, second=0, microsecond=0)
         slots = []
         for index in range(days * 96):
@@ -208,7 +208,7 @@ class ForecastProductionTests(unittest.TestCase):
 
     def test_future_history_is_not_visible_to_forecast(self):
         baseline, _ = self._forecast()
-        future_start = self.start.astimezone(dt.timezone.utc) + dt.timedelta(days=1)
+        future_start = self.start.astimezone(dt.UTC) + dt.timedelta(days=1)
         future = HistoricalFeatureSlot(
             slot=SlotKey(
                 int(future_start.timestamp() * 1000),
@@ -223,7 +223,7 @@ class ForecastProductionTests(unittest.TestCase):
             ev_charge_kwh=0.0,
             price_ct_per_kwh=0.0,
         )
-        candidate, _ = self._forecast(self.history + (future,))
+        candidate, _ = self._forecast((*self.history, future))
         self.assertEqual(candidate, baseline)
 
     def test_insufficient_feature_history_fails_closed(self):

@@ -6,19 +6,68 @@ on:
       - "[0-9]*"
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  release:
+  hacs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: HACS validation
+        uses: hacs/action@1ebf01c408f29afcb6406bd431bc98fd8cbb15aa # main
+        with:
+          category: integration
+          comment: false
+
+  hassfest:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: home-assistant/actions/hassfest@a7c616ce81ccda50150bf1595786c71b1883fabb # master
+
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.14"
+      - run: pip install -r requirements-dev.txt
+      - run: python -m ruff check custom_components tests scripts
+      - run: python -m ruff format --check custom_components tests scripts
+      - run: python -m py_compile custom_components/battery_strategy/*.py
+      - run: python -m pytest -q tests
+
+  release:
+    needs: [hacs, hassfest, tests]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Verify release commit is current main
+        run: |
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          test "$GITHUB_SHA" = "$(git rev-parse origin/main)"
       - name: Verify tag matches integration version
         run: |
           version="$(jq -r '.version' custom_components/battery_strategy/manifest.json)"
           test "$GITHUB_REF_NAME" = "$version"
       - name: Build integration archive
-        run: zip -r battery_strategy.zip custom_components/battery_strategy
+        run: |
+          cd custom_components/battery_strategy
+          zip -r "$GITHUB_WORKSPACE/battery_strategy.zip" . \
+            -x '*/__pycache__/*' '*.pyc'
+      - name: Verify integration archive
+        run: |
+          unzip -t battery_strategy.zip
+          listing="$(unzip -Z1 battery_strategy.zip)"
+          grep -qx '__init__.py' <<<"$listing"
+          grep -qx 'manifest.json' <<<"$listing"
+          grep -qx 'strings.json' <<<"$listing"
+          if grep -Eq '^(custom_components/|battery_strategy/)' <<<"$listing"; then
+            echo 'Integration files must be located at the ZIP root.' >&2
+            exit 1
+          fi
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}

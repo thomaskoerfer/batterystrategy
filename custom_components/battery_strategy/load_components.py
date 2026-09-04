@@ -62,7 +62,7 @@ def add_central_weather(
             key,
             values
             if any(item[0] == feature[0] for item in values)
-            else values + (feature,),
+            else (*values, feature),
         )
         for key, values in collection.features
     )
@@ -73,7 +73,7 @@ def add_central_weather(
             driver.driver_key,
             driver.power_w,
             driver.quality,
-            driver.features + (LoadFeatureValue(*feature),),
+            (*driver.features, LoadFeatureValue(*feature)),
         )
         for driver in collection.drivers
     )
@@ -260,7 +260,7 @@ def _state_text(hass, entity_id) -> str | None:
 def _finite(value) -> float | None:
     try:
         result = float(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
     return result if math.isfinite(result) else None
 

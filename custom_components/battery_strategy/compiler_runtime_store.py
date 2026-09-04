@@ -93,7 +93,7 @@ class CompilerRuntimeSnapshot:
                 output_energy_kwh=_optional_float(raw.get("output_energy_kwh")),
                 clean_shutdown=clean_shutdown,
             )
-        except (KeyError, TypeError, ValueError):
+        except KeyError, TypeError, ValueError:
             return None
 
 

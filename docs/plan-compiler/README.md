@@ -159,5 +159,5 @@ Required regression scenarios include:
 - unavailable SoC beyond its bounded bridge and invalid slot identity fail
   closed.
 
-The production migration and rollback gate is maintained in
+The approved semantics and their rollback evidence are recorded in
 `docs/impact-analyses/2026-08-31-phase-6-plan-compiler.md`.

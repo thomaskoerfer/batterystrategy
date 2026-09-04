@@ -4,13 +4,10 @@ from __future__ import annotations
 
 import datetime as dt
 import math
-from collections.abc import Mapping
-from typing import Hashable, TypeVar
-
-RoleT = TypeVar("RoleT", bound=Hashable)
+from collections.abc import Hashable, Mapping
 
 
-def read_recorder_series(
+def read_recorder_series[RoleT: Hashable](
     hass,
     entity_map: Mapping[RoleT, str],
     entity_scale: Mapping[RoleT, float],
@@ -41,7 +38,7 @@ def read_recorder_series(
             try:
                 timestamp = state.last_updated.timestamp()
                 value = float(state.state) * scale
-            except (AttributeError, TypeError, ValueError):
+            except AttributeError, TypeError, ValueError:
                 continue
             if (
                 timestamp > end_time.timestamp()

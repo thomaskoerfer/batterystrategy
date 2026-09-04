@@ -191,9 +191,7 @@ def test_compiler_is_deterministic():
 
     assert compiler.compile(
         plan, progress, PlanCompilationState(), 60_000
-    ) == compiler.compile(
-        plan, progress, PlanCompilationState(), 60_000
-    )
+    ) == compiler.compile(plan, progress, PlanCompilationState(), 60_000)
 
 
 def test_reoptimization_may_lower_but_not_raise_active_slot_commitments():

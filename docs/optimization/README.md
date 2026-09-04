@@ -75,10 +75,8 @@ terminal value, horizon boundaries, PV headroom, source permissions, scarce
 future energy, EV exclusion and deterministic tie-breaking. Perfect-foresight
 replays assess economic quality but never participate in live actuation.
 
-## Migration status
+## Production status
 
-The pure optimizer is authoritative after retained shadow results passed
-operational parity. The completed comparator and old kernel are removed in the
-Phase-7 preparation branch. Market-policy metadata is computed once and one
-explicit `OptimizationProblem` is optimized; there is no runtime optimizer
-selector or second economic plan.
+The pure optimizer is authoritative. Market-policy metadata is computed once
+and one explicit `OptimizationProblem` is optimized; there is no runtime
+optimizer selector or second economic plan.

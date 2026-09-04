@@ -3,12 +3,12 @@
 Battery Strategy plans and controls a Home Assistant battery using quarter-hour electricity prices, learned house load, PV forecasts and live grid measurements. EV charging can be excluded from automatic battery discharge.
 
 Development and refactoring must follow the documented
-[target architecture](ARCHITECTURE.md), especially its single-actuator safety
-invariant and staged migration gates. Layer changes must also preserve the
+[production architecture](ARCHITECTURE.md), especially its single-actuator
+safety invariant. Layer changes must also preserve the
 [interface contracts](INTERFACE_CONTRACTS.md).
 
-The [architecture layer guides](docs/README.md) describe each boundary,
-supported capability class, migration state and required verification without
+The [architecture component guides](docs/README.md) describe each boundary,
+supported capability class and required verification without
 depending on one Home Assistant installation.
 
 Detailed, owner-approved runtime semantics are documented separately for the
@@ -95,12 +95,12 @@ provided by the same release.
 
 The current actual-savings metric is intentionally a gross battery metric: measured charge energy is split into PV and grid energy, while every measured discharge-counter delta is credited at the applicable import price. Battery export and EV consumption are not yet removed from the discharge credit.
 
-The integration also maintains `battery_strategy_features.json.gz`: a compact,
-atomic 15-minute observation store with 180-day retention. During the Phase-3
-observation window it is diagnostic only and cannot affect production
-forecasts, plans or battery commands. Store health and growth are included in
-integration diagnostics; raw feature records are intentionally not exposed as
-HA entities.
+The integration also maintains `battery_strategy_features.json.gz`: the compact,
+atomic 15-minute production feature store with 180-day retention. Forecasting
+reads this store through the typed feature boundary; optimization and live
+control never access its persistence format. Store health and growth are
+included in integration diagnostics, while raw feature records are intentionally
+not exposed as HA entities.
 
 ## Troubleshooting
 

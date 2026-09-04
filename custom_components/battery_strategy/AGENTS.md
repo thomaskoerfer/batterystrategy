@@ -48,7 +48,7 @@ documented impact analysis and explicit owner approval.
 
 ## Boundary rules
 
-- Keep one hardware writer. Shadow and evaluation code never receive an
+- Keep one hardware writer. Evaluation code never receives an
   actuator reference.
 - Apply source-aware freshness: strict report age is for continuous grid
   feedback; available and valid change-driven SoC, EV and battery states do not
@@ -58,15 +58,14 @@ documented impact analysis and explicit owner approval.
 - Keep forecasting free of prices and battery state; keep optimization free of
   Home Assistant and I/O; keep live control free of economic re-optimization.
 - Use contract types at boundaries and explicit state instead of module globals.
-- Do not introduce parallel input, directive or command models at an existing
+- Do not introduce duplicate input, directive or command models at an existing
   contract seam. Projection models never authorize execution.
 - Update the affected public README and agent guidance with implementation.
 
 ## Required checks
 
 Run formatting/static checks, all unit tests owned by changed layers, contract
-tests, architecture-documentation tests and any retained-history parity suite
-required by the migration phase.
+tests, architecture-documentation tests and relevant retained-history replays.
 
 ## Setup independence
 

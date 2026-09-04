@@ -47,8 +47,7 @@ class PlanningHistory:
                 (int(timestamp), float(value)) for timestamp, value in series
             )
             if any(
-                timestamp < 0 or not math.isfinite(value)
-                for timestamp, value in values
+                timestamp < 0 or not math.isfinite(value) for timestamp, value in values
             ):
                 raise ValueError("planning history values must be finite")
             if typed_role is not HistoryRole.PRICE_EUR_PER_KWH and any(
@@ -76,7 +75,7 @@ class PlanningHistory:
                 raw_role if isinstance(raw_role, HistoryRole) else HistoryRole(raw_role)
             )
             normalized[role] = tuple(
-                (int(round(float(timestamp) * 1000.0)), float(value))
+                (round(float(timestamp) * 1000.0), float(value))
                 for timestamp, value in series
                 if math.isfinite(float(timestamp))
                 and float(timestamp) * 1000.0 <= captured_at_ms
@@ -131,7 +130,9 @@ class PlanningObservations:
             self.cloud_cover_pct,
             self.shortwave_radiation_w_m2,
         )
-        if any(value is not None and not math.isfinite(float(value)) for value in values):
+        if any(
+            value is not None and not math.isfinite(float(value)) for value in values
+        ):
             raise ValueError("planning observations must be finite")
         flows = (
             self.grid_import_w,
@@ -175,19 +176,14 @@ class PlanningRuntimeSettings:
         zone = timezone if isinstance(timezone, ZoneInfo) else ZoneInfo(str(timezone))
         capacity = max(0.5, float(options.battery_capacity_kwh or 6.0))
         min_soc = max(0.0, min(100.0, float(options.min_soc_pct or 0.0)))
-        max_soc = max(
-            min_soc, min(100.0, float(options.max_soc_pct or 100.0))
+        max_soc = max(min_soc, min(100.0, float(options.max_soc_pct or 100.0)))
+        fallback_power = (
+            max(float(options.max_charge_power_w), float(options.max_discharge_power_w))
+            or 2400.0
         )
-        fallback_power = max(
-            float(options.max_charge_power_w), float(options.max_discharge_power_w)
-        ) or 2400.0
         max_charge = max(0.0, float(options.max_charge_power_w or fallback_power))
-        max_discharge = max(
-            0.0, float(options.max_discharge_power_w or fallback_power)
-        )
-        rte = max(
-            0.01, min(1.0, float(options.round_trip_efficiency or 0.8))
-        )
+        max_discharge = max(0.0, float(options.max_discharge_power_w or fallback_power))
+        rte = max(0.01, min(1.0, float(options.round_trip_efficiency or 0.8)))
         pv_capacity = max(0.1, float(options.pv_capacity_kwp) or 1.0)
         discharge_mode = str(options.discharge)
         return cls(
@@ -201,18 +197,14 @@ class PlanningRuntimeSettings:
             grid_charging_allowed=str(options.grid_charging) != "off",
             discharge_allowed=discharge_mode != "off",
             discharge_mode=discharge_mode,
-            planning_horizon_h=max(
-                1, min(48, int(options.planning_horizon_h or 48))
-            ),
+            planning_horizon_h=max(1, min(48, int(options.planning_horizon_h or 48))),
             round_trip_efficiency=rte,
             min_margin_ct_per_kwh=max(0.0, float(options.min_margin_ct_per_kwh)),
             export_opportunity_ct_per_kwh=max(
                 0.0, float(options.feed_in_tariff_ct_per_kwh)
             ),
             pv_capacity_kwp=pv_capacity,
-            pv_inverter_kw=max(
-                0.1, float(options.pv_inverter_power_kw) or pv_capacity
-            ),
+            pv_inverter_kw=max(0.1, float(options.pv_inverter_power_kw) or pv_capacity),
         )
 
     @property

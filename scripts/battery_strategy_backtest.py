@@ -13,10 +13,10 @@ import csv
 import json
 import math
 import sqlite3
+from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Iterable
 
 SLOT_SECONDS = 15 * 60
 SLOT_H = 0.25
@@ -103,10 +103,14 @@ def _float(value, default: float = 0.0) -> float:
     try:
         if value is None:
             return default
-        if isinstance(value, str) and value.lower() in {"unknown", "unavailable", "none"}:
+        if isinstance(value, str) and value.lower() in {
+            "unknown",
+            "unavailable",
+            "none",
+        }:
             return default
         return float(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return default
 
 
@@ -144,7 +148,9 @@ def load_trace(path: str | Path) -> list[RawSample]:
     return sorted(samples, key=lambda sample: sample.ts)
 
 
-def load_price_series(db_path: str | Path, entity_id: str, start_ts: float, end_ts: float) -> list[tuple[float, float]]:
+def load_price_series(
+    db_path: str | Path, entity_id: str, start_ts: float, end_ts: float
+) -> list[tuple[float, float]]:
     con = sqlite3.connect(str(db_path))
     try:
         rows = con.execute(
@@ -174,12 +180,18 @@ def load_price_series(db_path: str | Path, entity_id: str, start_ts: float, end_
     return series
 
 
-def load_tibber_pool_prices(pattern: str, start_ts: float, end_ts: float) -> list[tuple[float, float]]:
+def load_tibber_pool_prices(
+    pattern: str, start_ts: float, end_ts: float
+) -> list[tuple[float, float]]:
     series: list[tuple[float, float]] = []
-    for path in sorted(Path("/").glob(pattern[1:]) if pattern.startswith("/") else Path(".").glob(pattern)):
+    for path in sorted(
+        Path("/").glob(pattern[1:])
+        if pattern.startswith("/")
+        else Path(".").glob(pattern)
+    ):
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except OSError, json.JSONDecodeError:
             continue
         data = payload.get("data", payload) if isinstance(payload, dict) else {}
         groups = data.get("fetch_groups", []) if isinstance(data, dict) else []
@@ -190,12 +202,17 @@ def load_tibber_pool_prices(pattern: str, start_ts: float, end_ts: float) -> lis
                 if starts_at is None or total is None:
                     continue
                 try:
-                    ts = datetime.fromisoformat(str(starts_at).replace("Z", "+00:00")).timestamp()
+                    ts = datetime.fromisoformat(
+                        str(starts_at).replace("Z", "+00:00")
+                    ).timestamp()
                     value = float(total)
-                except (TypeError, ValueError):
+                except TypeError, ValueError:
                     continue
                 price_ct = value * 100.0 if value < 2.0 else value
-                if start_ts - 6 * 3600 <= ts <= end_ts + 3600 and 0.0 <= price_ct <= 200.0:
+                if (
+                    start_ts - 6 * 3600 <= ts <= end_ts + 3600
+                    and 0.0 <= price_ct <= 200.0
+                ):
                     series.append((ts, price_ct))
     return sorted(set(series))
 
@@ -223,14 +240,23 @@ def _mode_reason(items: Iterable[RawSample]) -> tuple[str, str]:
     return max(weights.items(), key=lambda kv: kv[1])[0] if weights else ("idle", "")
 
 
-def aggregate_slots(samples: list[RawSample], prices: list[tuple[float, float]], start_ts: float, end_ts: float) -> list[Slot]:
+def aggregate_slots(
+    samples: list[RawSample],
+    prices: list[tuple[float, float]],
+    start_ts: float,
+    end_ts: float,
+) -> list[Slot]:
     selected = [sample for sample in samples if start_ts <= sample.ts <= end_ts]
     if len(selected) < 2:
         raise ValueError("Not enough trace samples in requested window")
 
     buckets: dict[int, list[tuple[RawSample, float]]] = {}
     for idx, sample in enumerate(selected):
-        next_ts = selected[idx + 1].ts if idx + 1 < len(selected) else min(end_ts, sample.ts + 10)
+        next_ts = (
+            selected[idx + 1].ts
+            if idx + 1 < len(selected)
+            else min(end_ts, sample.ts + 10)
+        )
         duration_s = max(0.0, min(60.0, next_ts - sample.ts))
         if duration_s <= 0:
             continue
@@ -253,9 +279,13 @@ def aggregate_slots(samples: list[RawSample], prices: list[tuple[float, float]],
         samples_only = []
         for sample, duration_s in rows:
             weight_h = duration_s / 3600.0
-            residual_w = sample.grid_import_w - sample.grid_export_w + sample.battery_power_w
+            residual_w = (
+                sample.grid_import_w - sample.grid_export_w + sample.battery_power_w
+            )
             residual_kwh += residual_w / 1000.0 * weight_h
-            dischargeable_kwh += max(0.0, residual_w - sample.ev_power_w) / 1000.0 * weight_h
+            dischargeable_kwh += (
+                max(0.0, residual_w - sample.ev_power_w) / 1000.0 * weight_h
+            )
             actual_import_kwh += sample.grid_import_w / 1000.0 * weight_h
             actual_export_kwh += sample.grid_export_w / 1000.0 * weight_h
             if sample.mode == "input":
@@ -288,7 +318,9 @@ def aggregate_slots(samples: list[RawSample], prices: list[tuple[float, float]],
     return slots
 
 
-def cost_eur(import_kwh: float, export_kwh: float, price_ct: float, feed_in_ct: float) -> float:
+def cost_eur(
+    import_kwh: float, export_kwh: float, price_ct: float, feed_in_ct: float
+) -> float:
     return ((import_kwh * price_ct) - (export_kwh * feed_in_ct)) / 100.0
 
 
@@ -311,13 +343,12 @@ def optimize_perfect_foresight(
     max_e = CAP_KWH * max_soc_pct / 100.0
     start_e = min(max_e, max(min_e, CAP_KWH * start_soc_pct / 100.0))
     target_end_e = min(max_e, max(min_e, CAP_KWH * target_end_soc_pct / 100.0))
-    steps = int(round(CAP_KWH / ENERGY_STEP_KWH))
 
     def idx_to_e(idx: int) -> float:
         return idx * ENERGY_STEP_KWH
 
     def e_to_idx(e_kwh: float) -> int:
-        return int(round(e_kwh / ENERGY_STEP_KWH))
+        return round(e_kwh / ENERGY_STEP_KWH)
 
     start_idx = e_to_idx(start_e)
     min_idx = e_to_idx(min_e)
@@ -336,7 +367,7 @@ def optimize_perfect_foresight(
             max_charge_ac = min(max_slot_kwh, max(0.0, (max_e - e) / eta_c))
             if not allow_grid_charge:
                 max_charge_ac = min(max_charge_ac, max(0.0, -slot.residual_with_ev_kwh))
-            charge_steps = int(math.floor(max_charge_ac / ENERGY_STEP_KWH + 1e-9))
+            charge_steps = math.floor(max_charge_ac / ENERGY_STEP_KWH + 1e-9)
             for step in range(1, charge_steps + 1):
                 actions.append((step * ENERGY_STEP_KWH, 0.0))
 
@@ -345,7 +376,7 @@ def optimize_perfect_foresight(
                 max(0.0, slot.dischargeable_load_kwh),
                 max(0.0, (e - min_e) * eta_d),
             )
-            discharge_steps = int(math.floor(max_discharge_ac / ENERGY_STEP_KWH + 1e-9))
+            discharge_steps = math.floor(max_discharge_ac / ENERGY_STEP_KWH + 1e-9)
             for step in range(1, discharge_steps + 1):
                 actions.append((0.0, step * ENERGY_STEP_KWH))
 
@@ -361,11 +392,20 @@ def optimize_perfect_foresight(
                 total = acc_cost_ct + step_cost_ct
                 if total < next_dp.get(next_idx, inf):
                     next_dp[next_idx] = total
-                    back[next_idx] = (idx, charge_ac, discharge_ac, grid_import, grid_export, step_cost_ct)
+                    back[next_idx] = (
+                        idx,
+                        charge_ac,
+                        discharge_ac,
+                        grid_import,
+                        grid_export,
+                        step_cost_ct,
+                    )
         dp = next_dp
         prev.append(back)
 
-    final_candidates = {idx: cost for idx, cost in dp.items() if idx_to_e(idx) + 1e-9 >= target_end_e}
+    final_candidates = {
+        idx: cost for idx, cost in dp.items() if idx_to_e(idx) + 1e-9 >= target_end_e
+    }
     if not final_candidates:
         final_candidates = dp
     final_idx = min(final_candidates, key=final_candidates.get)
@@ -375,7 +415,9 @@ def optimize_perfect_foresight(
     for back in reversed(prev):
         rec = back[idx]
         prev_idx, charge_ac, discharge_ac, grid_import, grid_export, step_cost_ct = rec
-        actions_rev.append((idx, charge_ac, discharge_ac, grid_import, grid_export, step_cost_ct))
+        actions_rev.append(
+            (idx, charge_ac, discharge_ac, grid_import, grid_export, step_cost_ct)
+        )
         idx = prev_idx
     actions = list(reversed(actions_rev))
 
@@ -388,8 +430,15 @@ def optimize_perfect_foresight(
         next_idx, charge_ac, discharge_ac, opt_import, opt_export, step_cost_ct = action
         baseline_import = max(0.0, slot.residual_with_ev_kwh)
         baseline_export = max(0.0, -slot.residual_with_ev_kwh)
-        baseline_cost += cost_eur(baseline_import, baseline_export, slot.price_ct, feed_in_ct)
-        actual_slot_cost = cost_eur(slot.actual_grid_import_kwh, slot.actual_grid_export_kwh, slot.price_ct, feed_in_ct)
+        baseline_cost += cost_eur(
+            baseline_import, baseline_export, slot.price_ct, feed_in_ct
+        )
+        actual_slot_cost = cost_eur(
+            slot.actual_grid_import_kwh,
+            slot.actual_grid_export_kwh,
+            slot.price_ct,
+            feed_in_ct,
+        )
         optimal_slot_cost = step_cost_ct / 100.0
         actual_cost += actual_slot_cost
         optimal_cost += optimal_slot_cost
@@ -441,7 +490,9 @@ def summarize(result: BacktestResult, top_n: int) -> dict:
     import_opt = sum(slot.optimal_grid_import_kwh for slot in result.slots)
     export_actual = sum(slot.actual_grid_export_kwh for slot in result.slots)
     export_opt = sum(slot.optimal_grid_export_kwh for slot in result.slots)
-    worst = sorted(result.slots, key=lambda slot: slot.slot_gap_eur, reverse=True)[:top_n]
+    worst = sorted(result.slots, key=lambda slot: slot.slot_gap_eur, reverse=True)[
+        :top_n
+    ]
     return {
         "slots": len(result.slots),
         "start_soc_pct": result.start_soc_pct,
@@ -463,7 +514,9 @@ def summarize(result: BacktestResult, top_n: int) -> dict:
         "optimal_grid_export_kwh": round(export_opt, 3),
         "top_gaps": [
             {
-                "time": datetime.fromtimestamp(slot.ts, timezone.utc).astimezone().isoformat(timespec="minutes"),
+                "time": datetime.fromtimestamp(slot.ts, UTC)
+                .astimezone()
+                .isoformat(timespec="minutes"),
                 "gap_eur": round(slot.slot_gap_eur, 4),
                 "price_ct": round(slot.price_ct, 2),
                 "actual_mode": slot.actual_mode,
@@ -510,7 +563,9 @@ def write_csv(result: BacktestResult, path: str | Path) -> None:
         for slot in result.slots:
             writer.writerow(
                 {
-                    "time": datetime.fromtimestamp(slot.ts, timezone.utc).astimezone().isoformat(timespec="minutes"),
+                    "time": datetime.fromtimestamp(slot.ts, UTC)
+                    .astimezone()
+                    .isoformat(timespec="minutes"),
                     "price_ct": round(slot.price_ct, 3),
                     "residual_with_ev_kwh": round(slot.residual_with_ev_kwh, 4),
                     "dischargeable_load_kwh": round(slot.dischargeable_load_kwh, 4),
@@ -545,7 +600,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--eta-rt", type=float, default=DEFAULT_ETA_RT)
     parser.add_argument("--feed-in-ct", type=float, default=0.0)
     parser.add_argument("--no-grid-charge", action="store_true")
-    parser.add_argument("--target-end-soc", choices=["actual", "start", "min"], default="actual")
+    parser.add_argument(
+        "--target-end-soc", choices=["actual", "start", "min"], default="actual"
+    )
     parser.add_argument("--top", type=int, default=10)
     parser.add_argument("--csv-out")
     parser.add_argument("--json-out")
@@ -592,7 +649,9 @@ def main() -> int:
     if args.csv_out:
         write_csv(result, args.csv_out)
     if args.json_out:
-        Path(args.json_out).write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+        Path(args.json_out).write_text(
+            json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8"
+        )
     return 0
 
 

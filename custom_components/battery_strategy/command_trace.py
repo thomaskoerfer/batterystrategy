@@ -15,7 +15,7 @@ COMMAND_TRACE_RETAIN_LINES = 50000
 
 def append_command_trace(path: Path, data: dict) -> None:
     """Append one compact observation without influencing live control."""
-    now = dt.datetime.now(dt.timezone.utc)
+    now = dt.datetime.now(dt.UTC)
     command = data["command"]
     calculated_command = data["calculated_command"]
     plan = data["plan"]

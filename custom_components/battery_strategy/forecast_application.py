@@ -83,7 +83,7 @@ def weather_snapshot(runtime, now_ts_ms):
     hourly = {}
     for item in slots:
         local = dt.datetime.fromtimestamp(
-            item.slot.start_ms / 1000.0, dt.timezone.utc
+            item.slot.start_ms / 1000.0, dt.UTC
         ).astimezone(runtime.settings.timezone)
         key = local.replace(minute=0, second=0, microsecond=0).isoformat()
         cloud = item.cloud_cover_pct
@@ -108,7 +108,7 @@ def weather_snapshot(runtime, now_ts_ms):
 
 @dataclass(frozen=True, slots=True)
 class ProductionForecastConfig:
-    """Application-owned per-run parity inputs absent from current contracts."""
+    """Application-owned per-run calibration inputs outside public contracts."""
 
     load_bias: float
     load_slot_biases: tuple[float, ...]
@@ -128,7 +128,7 @@ class ProductionForecastResult:
 
 
 class ProductionForecastModule:
-    """Narrow legacy bridge for exact current production forecast behavior."""
+    """Compose the authoritative production forecast from typed inputs."""
 
     def forecast(
         self,
@@ -151,9 +151,7 @@ class ProductionForecastModule:
             raise FeatureStoreForecastNotReady(readiness.reason or "not_ready")
 
         tomorrow_date = (
-            dt.datetime.fromtimestamp(
-                request.slots[0].start_ms / 1000.0, dt.timezone.utc
-            )
+            dt.datetime.fromtimestamp(request.slots[0].start_ms / 1000.0, dt.UTC)
             .astimezone(ZoneInfo(request.timezone))
             .date()
             + dt.timedelta(days=1)

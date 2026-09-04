@@ -68,7 +68,7 @@ class TariffSchedule:
                 if not math.isfinite(price_eur):
                     continue
                 merged[parsed.timestamp()] = TariffInterval(parsed, price_eur)
-            except (AttributeError, TypeError, ValueError):
+            except AttributeError, TypeError, ValueError:
                 continue
         return cls(tuple(merged[key] for key in sorted(merged)))
 
@@ -86,9 +86,7 @@ class TariffSchedule:
             return None
         return self.intervals[position].price_eur_per_kwh
 
-    def future_price_stats(
-        self, now_local: dt.datetime
-    ) -> Mapping[str, float] | None:
+    def future_price_stats(self, now_local: dt.datetime) -> Mapping[str, float] | None:
         date_set = {
             now_local.date().isoformat(),
             (now_local.date() + dt.timedelta(days=1)).isoformat(),

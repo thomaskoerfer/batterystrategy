@@ -1,12 +1,12 @@
 # Battery Strategy Architecture
 
-This document defines the target architecture and the migration rules for
+This document defines the production architecture and evolution rules for
 Battery Strategy. Contributors should read it before changing forecasting,
 optimization, history access, plan directives, or live battery control.
 
 The normative units, data semantics and executable layer boundaries are defined
 in [INTERFACE_CONTRACTS.md](INTERFACE_CONTRACTS.md) and the `contracts` package.
-They are binding migration guidelines, but deliberately evolvable. Any contract
+They are binding guidelines, but deliberately evolvable. Any contract
 change requires the impact analysis and explicit owner approval defined there
 before implementations are adapted. Local workarounds that bypass a boundary
 are not an acceptable form of contract evolution.
@@ -17,28 +17,20 @@ There is exactly one battery actuation path. Evaluation and diagnostics never
 receive an actuator reference. The pure live controller returns a validated
 command; only the Home Assistant coordinator calls the actuator.
 
-## Target data flow
+## Production data flow
 
 ```text
-Home Assistant entities, recorder, weather and market data
-                              |
-                              v
-                 Data adapters and feature store
-                              |
-                              v
-                         Forecasting
-                              |
-                              v
-                         Optimization
-                              |
-                              v
-                         Plan compiler
-                              |
-                              v
-                        Live controller
-                              |
-                              v
-                           Actuator
+HA measurements, recorder, weather ---> Data and feature store ---> Forecasting
+                                                                          |
+Market providers --------------------> Market context ----------------------+
+                                                                          v
+Battery state and configuration ------------------------------------> Optimization
+                                                                          |
+                                                                          v
+                                                  Execution control (compiler + live)
+                                                                          |
+                                                                          v
+                                                                       Actuator
 ```
 
 Evaluation, diagnostics and backtesting observe the typed outputs of each layer.
@@ -46,20 +38,28 @@ They do not participate in live actuation.
 
 ## Documentation and agent-guidance gate
 
-Every architecture layer has two maintained artifacts:
+Every architecture component has two maintained artifacts:
 
 - a public `README.md` that explains purpose, contracts, inputs, outputs,
-  non-responsibilities, supported capability classes, verification and current
-  migration debt;
+  non-responsibilities, supported capability classes and verification;
 - an `AGENTS.md` that tells coding agents which responsibilities, dependencies
   and checks are allowed inside that boundary.
 
-The layer index is [docs/README.md](docs/README.md). A migration phase is not
-complete until the guides and agent instructions for every affected layer match
-the implementation. Interface-contract changes still require the impact
-analysis and explicit owner approval defined in `INTERFACE_CONTRACTS.md`.
+The component index is [docs/README.md](docs/README.md). A change is not complete
+until the guides and agent instructions for every affected component match the
+implementation. Interface-contract changes still require the impact analysis
+and explicit owner approval defined in `INTERFACE_CONTRACTS.md`.
 
-The maintained layer guides are:
+The five production layers are:
+
+1. data and feature store;
+2. forecasting;
+3. optimization;
+4. execution control, comprising plan compiler and live control;
+5. actuation.
+
+Maintained component guides also cover market input, application orchestration,
+measured savings, evaluation and diagnostics:
 
 - [data adapters and feature store](docs/data-feature-store/README.md);
 - [forecasting](docs/forecasting/README.md);
@@ -80,10 +80,9 @@ local filesystem paths. A currently supported vendor or provider class may be
 named when support is genuinely limited to it.
 
 While implementation modules share one package directory, its local
-`AGENTS.md` maps modules to their architecture owner. When a layer is extracted
-into its own package, its agent file moves with it. CI verifies that every layer
-keeps both artifacts and that common setup-specific identifiers do not leak
-into them.
+`AGENTS.md` maps modules to their architecture owner. CI verifies that every
+documented component keeps both artifacts and that common setup-specific
+identifiers do not leak into them.
 
 ## Layer responsibilities
 
@@ -131,7 +130,14 @@ The planning application publishes that same canonical plan in an immutable
 consumes only the canonical plan. Dashboard profiles and diagnostics remain
 non-authoritative and are never parsed back into executable permission.
 
-### Plan compiler
+### Execution control
+
+Execution control contains two deliberately separate responsibilities. The plan
+compiler preserves the optimizer's slot-level commercial commitment; live
+control converts that commitment and current measurements into a safe command.
+Neither responsibility may duplicate optimization or hardware translation.
+
+#### Plan compiler
 
 The plan compiler converts the economic `BatteryPlan` into explicit slot-bound
 `PlanLiveDirective` values: PV charge permission, required charge, grid-charge
@@ -146,7 +152,7 @@ remains executable.
 The active-slot commitment, rolling-replan and progress-accounting semantics
 are normative in [the plan compiler guide](docs/plan-compiler/README.md).
 
-### Live controller
+#### Live controller
 
 The live controller runs on the fast coordinator interval. It combines the
 current directive with live grid, PV, EV, battery and SoC measurements. It owns
@@ -180,6 +186,15 @@ control are normative in [the live control guide](docs/live-control/README.md).
 
 The actuator is the only hardware-writing boundary. It translates a validated
 live command into vendor controls and enforces write throttling and safe zeros.
+
+## Supporting components
+
+- Market context normalizes provider data and enriches commercial policy before
+  optimization. It is an input adapter, not a sixth decision layer.
+- Planning service and planning runtime capture one immutable run and orchestrate
+  calls across the five layers. They own no forecasting, economic or live rule.
+- Measured savings, evaluation, diagnostics and backtesting observe published
+  inputs and outputs. They cannot authorize a plan, command or hardware write.
 
 ## Persistence and recorder independence
 
@@ -247,149 +262,20 @@ Configuration defaults and numeric constraints are owned once in
 without duplicating them. Stored option keys, config-entry versions and entity
 identities remain stable.
 
-## Migration plan and gates
+## Evolution and verification
 
-Current status: `0.2.0-rc.6` is deployed. The finalized feature store, pure
-optimizer and deterministic plan compiler are authoritative, and all completed
-shadow and compatibility paths have been removed. The `0.2.0-rc.7` candidate
-hardens the Home Assistant boundary, Recorder hygiene, active-slot restart
-continuity and concrete actuator conformance without changing economic,
-forecast, compiler or live-control contract semantics. Deployment remains
-subject to candidate validation and explicit owner approval.
+The architecture above is the production design. There is one authoritative
+implementation at every decision boundary; experiments and evaluations are
+non-authoritative and cannot reach actuation.
 
-### Phase 0: Baseline and contracts
-
-- Freeze representative historical scenarios and current regression output.
-- Introduce typed contracts for historical features, forecasts, optimization
-  inputs, battery plans and evaluation results.
-- Treat these contracts as the reviewed starting baseline; revise them through
-  impact analysis when migration evidence exposes an incorrect boundary.
-- Add forecast MAE/bias, plan parity and data-quality diagnostics.
-- Change no production decisions.
-
-Gate: all existing tests pass and serialized plan/live outputs are unchanged.
-
-### Phase 0.5: Forecast seam and shadow parity
-
-- Keep the existing forecast authoritative and duplicate only its pure
-  mathematics in isolated load/PV shadow modules.
-- Capture one immutable input set per optimizer run so production and shadow do
-  not perform separate recorder, weather or state reads.
-- Emit target-contract P50 forecasts; leave P10/P90 uncalibrated until matured
-  residuals exist.
-- Compare slot grids and P50 values without feeding shadow output into the
-  optimizer, plan compiler, live controller or actuator.
-- Retain one compact comparison per quarter-hour for 14 days outside the Home
-  Assistant recorder.
-
-Gate: at least 72 hours with identical slot grids, no unexplained shadow error,
-and at most 1 W load/PV difference per slot. Production plans, commands and
-actuation must remain unchanged. The transitional legacy sample input is not a
-replacement for the finalized feature-store contract.
-
-### Phase 1: Cut over extracted forecasting without changing mathematics
-
-- Make the parity-proven load and PV modules authoritative for optimizer input.
-- Keep coefficients, weather inputs and bias updates identical.
-- Retain the previous path only for a short rollback period, then remove the
-  duplicate forecast mathematics.
-
-Gate: slot outputs remain numerically identical apart from explicit rounding,
-live plans remain stable, and rollback to the old forecast path has been tested.
-After this gate, remove the inline forecast calculation, parity gating and
-legacy trace migration in one cleanup change; do not let the rollback path
-become a second permanent production implementation.
-
-### Phase 2: Add the feature store in parallel
-
-- Aggregate live measurements into finalized 15-minute records.
-- Persist versioned, compressed records with missing-data and coverage flags.
-- Migrate existing learned samples without resetting bias state.
-- Continue using recorder history as the production source.
-
-Gate: at least seven days with complete slot coverage, bounded disk growth and
-no effect on commands, forecasts or savings.
-
-### Phase 3: Shadow recorder-independent forecasting
-
-- Feed the extracted forecasters from the feature store in shadow mode.
-- Invoke the shadow forecaster directly from a dedicated runner; feature history
-  and shadow results never pass through optimization.
-- Compare history-derived and feature-store-derived forecasts and backtests.
-- Repair discrepancies in aggregation, restart handling and unit conversion.
-- Keep load and PV implementations, configuration and error diagnostics
-  independent. Compose total EV-free load from explicit named components so
-  separately metered devices can later evolve without changing PV or unrelated
-  base-load logic.
-- Fetch normalized weather once through the weather adapter and pass one
-  immutable slot snapshot to forecasters. No component performs network I/O.
-- Configure independently metered loads as config subentries. Initial profiles
-  split heat-pump DHW and space heating, model one shared AC outdoor-unit meter
-  with multiple indoor contexts, and support a generic metered consumer.
-
-Gate: at least seven complete days including weekdays and a weekend. Load and PV
-are assessed independently against identical actual slots by lead time, time of
-day, MAE, bias and daily energy. Missing data is excluded rather than treated as
-zero. Phase 4 requires a separate owner approval after joint review; it never
-starts automatically.
-
-### Phase 4: Cut forecasting over to the feature store
-
-- Make the feature store the production forecast source.
-- Compose one immutable `ForecastBundle` before optimization; the optimizer may
-  not read feature history or select a forecast implementation.
-- Fail closed when the production history gate is not met. Do not add a hidden
-  Recorder fallback or a permanent old/new runtime selector.
-- Retain recorder access only for bootstrap/backfill through one adapter.
-- Keep the existing optimizer and live controller unchanged.
-
-Gate: local contract/regression tests and retained-history replay pass; at least
-672 valid load slots, 672 valid PV slots, seven days of span and, when configured,
-672 complete component slots exist. Deployment then requires explicit owner
-confirmation. Several days of stable live operation and forecast metrics are
-required before old recorder-query bootstrap code is removed.
-
-### Phase 5: Extract a pure optimizer
-
-- Move dynamic programming and commercial budget logic behind a pure
-  `optimize(problem) -> BatteryPlan` interface.
-- Inject prices, forecasts, SoC and policy explicitly.
-- Remove module-global runtime context from optimization.
-
-Gate: golden-master parity across the full retained history plus explicit edge
-tests for RTE, terminal value, PV headroom, EV exclusion and horizon boundaries.
-
-### Phase 6: Formalize the plan compiler
-
-- Make every live permission and budget an explicit plan output.
-- Remove any remaining commercial re-interpretation from the live controller.
-- Preserve the proven meter-following and safety implementation.
-
-Gate: plan/directive/live contract tests and several days of command-trace review.
-
-### Phase 7: Remove transitional code
-
-- Delete direct recorder-schema access and obsolete optimizer globals.
-- Keep one production forecast path, one optimizer path and one actuator path.
-- Update diagnostics, documentation, release notes and migration tests.
-
-Gate: HACS, Hassfest, unit tests, historical backtests and live health checks pass.
-
-Phase 7 is the final transformation phase, but not the end of normal product
-development. Completion means every target boundary is authoritative and the
-superseded path is gone; a local cleanup branch alone does not satisfy the gate.
-
-## Refactoring rule
-
-Each phase is released and observed before the next cutover. Refactoring must
-preserve behavior first; forecast or optimization improvements are separate,
-measurable changes after the corresponding boundary is stable.
+Refactoring must preserve behavior first. Forecast or optimization improvements
+are separate, measurable changes with explicit regression and live-observation
+criteria.
 
 Documentation is part of the refactoring gate, not follow-up work. An affected
 layer README, its agent guidance and the architecture documentation must be
 updated in the same change as the implementation.
 
-Contract conformance is enforced at the boundary currently being migrated, not
-retroactively across the entire legacy runtime. Discovering a deficient
-contract pauses that boundary's cutover until its impact analysis, contract
-tests and migration approach have been reviewed.
+Discovering a deficient contract pauses implementation until its impact
+analysis, contract tests and compatibility approach have been reviewed and the
+owner has explicitly approved the change.

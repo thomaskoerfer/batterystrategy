@@ -2,6 +2,17 @@
 
 All notable changes to Battery Strategy are documented here.
 
+## [0.2.0-rc.13] - 2026-09-04
+
+- Recast the completed architecture as five production layers and moved
+  orchestration, market input, savings and evaluation into supporting component
+  documentation.
+- Removed transformation-era wording and filenames from active source and tests
+  while retaining bounded persisted-data migrations for updateability.
+- Added a repository-local Ruff policy and CI lint gate.
+- Made tagged releases depend on HACS, hassfest, lint and regression tests, and
+  aligned the release archive with HACS ZIP installation semantics.
+
 ## [0.2.0-rc.12] - 2026-09-04
 
 ### Documentation

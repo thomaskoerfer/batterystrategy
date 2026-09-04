@@ -9,8 +9,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .optimizer_state import load_state_document, save_state_document
 from .runtime_measurements import migrate_state_sample_v9, normalize_samples
+from .state_document import load_state_document, save_state_document
 
 SLOTS_PER_DAY = 96
 TRACE_MIN_INTERVAL_S = 240
@@ -111,7 +111,7 @@ class PlanningStateStore:
         document = _load_document(settings, self.path)
         try:
             return _owner_state_from_document(document, captured_at_ms)
-        except (KeyError, TypeError, ValueError):
+        except KeyError, TypeError, ValueError:
             return _owner_state_from_document(
                 _default_document(settings), captured_at_ms
             )
@@ -190,7 +190,7 @@ class PlanningStateStore:
         for candidate in candidates:
             try:
                 value = float(candidate)
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 continue
             if 0.0 <= value <= 100.0:
                 return value, display
@@ -222,7 +222,7 @@ def normalize_slot_biases(arr, lo, hi):
     for value in arr:
         try:
             out.append(_clamp(float(value), lo, hi))
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             out.append(1.0)
     return out
 
@@ -278,7 +278,7 @@ def _load_document(settings, path: str) -> dict[str, Any]:
         data["state_schema"] = STATE_SCHEMA_VERSION
         data["virtual_trace"] = compact_virtual_trace(data.get("virtual_trace", []))
         return data
-    except (OSError, TypeError, ValueError):
+    except OSError, TypeError, ValueError:
         return default_state
 
 
@@ -345,7 +345,7 @@ def _owner_state_from_document(
 def _savings_tracker_from_document(value: object) -> dict[str, Any]:
     tracker = dict(value) if isinstance(value, dict) else {}
     if tracker.get("last_ts"):
-        tracker["last_ts"] = int(round(float(tracker["last_ts"]) * 1000.0))
+        tracker["last_ts"] = round(float(tracker["last_ts"]) * 1000.0)
     return tracker
 
 
@@ -364,7 +364,7 @@ def _output_timestamp_ms(output: object) -> int:
         return int(
             dt.datetime.fromisoformat(str(output.get("timestamp"))).timestamp() * 1000
         )
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return -1
 
 

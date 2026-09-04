@@ -182,7 +182,7 @@ def run(
 ) -> PlanningRunOutcome:
     """Execute one planning refresh from an explicitly captured snapshot."""
     settings = runtime.settings
-    now = dt.datetime.fromtimestamp(runtime.captured_at_ms / 1000.0, tz=dt.timezone.utc)
+    now = dt.datetime.fromtimestamp(runtime.captured_at_ms / 1000.0, tz=dt.UTC)
     now_ts = now.timestamp()
     local_now = now.astimezone(settings.timezone)
     today = local_now.date().isoformat()
@@ -231,13 +231,13 @@ def run(
         persisted_soc = simulation_state.last_known_soc_pct
         try:
             persisted_soc = float(persisted_soc)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             persisted_soc = None
         if persisted_soc is None:
             for sample in reversed(forecast_state.samples):
                 try:
                     sample_soc = float(sample.get("soc"))
-                except (AttributeError, TypeError, ValueError):
+                except AttributeError, TypeError, ValueError:
                     continue
                 if 0.0 <= sample_soc <= 100.0:
                     persisted_soc = sample_soc
@@ -354,7 +354,7 @@ def run(
     now_floor = floor_to_quarter(local_now)
     now_ts_ms = int(now_ts * 1000)
     intervals = [it for it in intervals_all if it.starts_at >= now_floor]
-    intervals = intervals[: int(math.ceil(settings.planning_horizon_h / SLOT_H))]
+    intervals = intervals[: math.ceil(settings.planning_horizon_h / SLOT_H)]
     if soc is not None:
         start_e = clamp(
             settings.battery_capacity_kwh * soc / 100.0,
@@ -552,8 +552,8 @@ def run(
         "grid_import_actual_now_w": int(max(0.0, grid_import_w)),
         "grid_export_actual_now_w": int(max(0.0, grid_export_w)),
         "grid_net_actual_now_w": int(max(0.0, grid_import_w) - max(0.0, grid_export_w)),
-        "grid_net_no_battery_no_ev_now_w": int(round(net_no_battery_no_ev_now_w)),
-        "grid_net_no_battery_with_ev_now_w": int(round(net_no_battery_with_ev_now_w)),
+        "grid_net_no_battery_no_ev_now_w": round(net_no_battery_no_ev_now_w),
+        "grid_net_no_battery_with_ev_now_w": round(net_no_battery_with_ev_now_w),
         "house_load_actual_now_w": int(max(0.0, house_load_w)),
         "house_load_total_actual_now_w": int(max(0.0, house_load_total_w)),
         "wallbox_actual_now_w": int(max(0.0, wallbox_w)),

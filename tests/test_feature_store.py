@@ -277,7 +277,7 @@ class CompressedFeatureStoreTests(unittest.TestCase):
 
 class FeatureCoordinatorAdapterTests(unittest.TestCase):
     def test_tibber_interval_price_is_normalized_to_ct_per_kwh(self):
-        now = dt.datetime(2026, 8, 20, 12, 5, tzinfo=dt.timezone.utc)
+        now = dt.datetime(2026, 8, 20, 12, 5, tzinfo=dt.UTC)
         state = SimpleNamespace(
             state="0.31",
             attributes={

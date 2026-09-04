@@ -80,8 +80,8 @@ def require_slots_sorted_unique(slots: tuple[SlotKey, ...]) -> None:
     if tuple(sorted(set(slots))) != slots:
         raise ValueError("slots must be sorted and unique")
     if any(
-        previous.end_ms != current.start_ms
-        for previous, current in zip(slots, slots[1:])
+        slots[index - 1].end_ms != slots[index].start_ms
+        for index in range(1, len(slots))
     ):
         raise ValueError("slots must form a contiguous 15-minute grid")
 

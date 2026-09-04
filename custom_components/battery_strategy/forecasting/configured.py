@@ -123,10 +123,10 @@ def weather_targets(
     by_hour: dict[str, float] = {}
     for item in weather:
         local = dt.datetime.fromtimestamp(
-            item.slot.start_ms / 1000.0, dt.timezone.utc
+            item.slot.start_ms / 1000.0, dt.UTC
         ).astimezone(timezone)
         key = local.replace(minute=0, second=0, microsecond=0).isoformat()
-        # Preserve the old hourly dictionary behavior: the last quarter wins.
+        # Preserve the established hourly aggregation: the last quarter wins.
         by_hour[key] = _weather_factor(
             item.cloud_cover_pct,
             item.shortwave_radiation_w_m2,
@@ -134,9 +134,9 @@ def weather_targets(
 
     result = []
     for slot in request.slots:
-        local = dt.datetime.fromtimestamp(
-            slot.start_ms / 1000.0, dt.timezone.utc
-        ).astimezone(timezone)
+        local = dt.datetime.fromtimestamp(slot.start_ms / 1000.0, dt.UTC).astimezone(
+            timezone
+        )
         key = local.replace(minute=0, second=0, microsecond=0).isoformat()
         result.append(
             ForecastTargetInput(

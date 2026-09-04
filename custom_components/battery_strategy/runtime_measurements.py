@@ -34,9 +34,9 @@ def fetch_net_actual_profile(runtime, hours=48):
 
 def fetch_pv_actual_profile(runtime, hours=48):
     cutoff_ms = runtime.captured_at_ms - hours * 3_600_000
-    pv = runtime.history.read(
-        [HistoryRole.PV_GENERATION_POWER_W], cutoff_ms
-    )[HistoryRole.PV_GENERATION_POWER_W]
+    pv = runtime.history.read([HistoryRole.PV_GENERATION_POWER_W], cutoff_ms)[
+        HistoryRole.PV_GENERATION_POWER_W
+    ]
     buckets = {}
     for ts, v in pv:
         h = int(ts // 3_600_000) * 3_600_000
@@ -140,13 +140,9 @@ def fetch_house_actual_profile(runtime, hours=48, samples=None):
         exp_avg = (sum(rec["exp"]) / len(rec["exp"])) if rec["exp"] else 0.0
         pv_avg = (sum(rec["pv"]) / len(rec["pv"])) if rec["pv"] else 0.0
         wb_avg = (sum(rec["wb"]) / len(rec["wb"])) if rec["wb"] else 0.0
-        charge_avg = (
-            sum(rec["charge"]) / len(rec["charge"]) if rec["charge"] else 0.0
-        )
+        charge_avg = sum(rec["charge"]) / len(rec["charge"]) if rec["charge"] else 0.0
         discharge_avg = (
-            sum(rec["discharge"]) / len(rec["discharge"])
-            if rec["discharge"]
-            else 0.0
+            sum(rec["discharge"]) / len(rec["discharge"]) if rec["discharge"] else 0.0
         )
         bat_avg = discharge_avg - charge_avg
         # Battery correction: +bat_avg reconstructs house load before battery action.
@@ -160,7 +156,7 @@ def as_float(v, default=None):
         return default
     try:
         return float(v)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return default
 
 

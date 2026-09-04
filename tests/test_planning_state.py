@@ -4,15 +4,15 @@ from __future__ import annotations
 
 import pytest
 
-from custom_components.battery_strategy.optimizer_state import (
-    load_state_document,
-    save_state_document,
-)
 from custom_components.battery_strategy.planning_state import (
     STATE_SCHEMA_VERSION,
     PlanningOwnerState,
     PlanningStateStore,
     StalePlanningStateLease,
+)
+from custom_components.battery_strategy.state_document import (
+    load_state_document,
+    save_state_document,
 )
 from tests.planning_runtime_helpers import settings_from_values
 

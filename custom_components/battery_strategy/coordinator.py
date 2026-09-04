@@ -163,7 +163,7 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         self._soc_control_ready = last_known_soc_pct is not None
         self._soc_recovered = False
         self._last_valid_soc_at = (
-            dt.datetime.now(dt.timezone.utc) if last_known_soc_pct is not None else None
+            dt.datetime.now(dt.UTC) if last_known_soc_pct is not None else None
         )
         self._actuator = HomeAssistantZendureActuator(
             hass,
@@ -208,7 +208,7 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         self._manual_mode = mode
         self._manual_power_w = max(0.0, float(power_w))
         if duration_min > 0:
-            self._manual_until = dt.datetime.now(dt.timezone.utc) + dt.timedelta(
+            self._manual_until = dt.datetime.now(dt.UTC) + dt.timedelta(
                 minutes=duration_min
             )
         else:
@@ -287,12 +287,12 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             return self.data or {}
         if (
             self._manual_until is not None
-            and dt.datetime.now(dt.timezone.utc) >= self._manual_until
+            and dt.datetime.now(dt.UTC) >= self._manual_until
         ):
             self.clear_manual_override()
 
         options = self._strategy_options()
-        now = dt.datetime.now(dt.timezone.utc)
+        now = dt.datetime.now(dt.UTC)
         inputs = self._live_measurements(int(now.timestamp() * 1000))
         local_now = now.astimezone(ZoneInfo(self.hass.config.time_zone))
         self._load_components = collect_load_components(
@@ -330,7 +330,8 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
                     load_component_features=self._load_components.features,
                 )
             )
-        except Exception as err:  # noqa: BLE001 - collection must not stop control.
+        # Feature persistence is diagnostic and must not interrupt live control.
+        except Exception as err:
             finalized_features = ()
             self._feature_store.last_error = f"{type(err).__name__}: {err}"
             LOGGER.warning("Feature-store aggregation failed: %s", err)
@@ -483,7 +484,7 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             return
         self._weather_refresh_key = key
         local_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
-        start_ms = int(local_start.astimezone(dt.timezone.utc).timestamp() * 1000)
+        start_ms = int(local_start.astimezone(dt.UTC).timestamp() * 1000)
         start_ms = start_ms // SLOT_MS * SLOT_MS
         slots = tuple(
             SlotKey(start_ms + index * SLOT_MS, start_ms + (index + 1) * SLOT_MS)
@@ -513,7 +514,8 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
                     "Weather refresh failed; using bounded estimated cache: %s",
                     self._weather_error,
                 )
-        except Exception as err:  # noqa: BLE001 - weather is optional input.
+        # Weather is optional; planning receives explicit missing-data quality.
+        except Exception as err:
             self._weather = ()
             self._weather_error = f"{type(err).__name__}: {err}"
             self._planning_pipeline.set_forecast_environment(
@@ -522,7 +524,7 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
                 self._load_components.drivers,
                 self._load_components.specs,
             )
-            LOGGER.warning("Shadow weather refresh failed: %s", err)
+            LOGGER.warning("Weather refresh failed without usable cache: %s", err)
 
     def _current_price_ct(self, now: dt.datetime) -> float | None:
         """Return the configured Tibber Prices value normalized to ct/kWh."""
@@ -545,17 +547,17 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
                 start = dt.datetime.fromisoformat(str(start_raw).replace("Z", "+00:00"))
                 price_value = float(price_raw)
                 price_ct = price_value if price_value >= 2.0 else price_value * 100.0
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 continue
             if start.tzinfo is None:
-                start = start.replace(tzinfo=dt.timezone.utc)
+                start = start.replace(tzinfo=dt.UTC)
             if start <= now and (selected is None or start > selected[0]):
                 selected = (start, price_ct)
         if selected is not None:
             return selected[1]
         try:
             value = float(state.state)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             return None
         unit = str(state.attributes.get("unit_of_measurement") or "").lower()
         return value if "ct" in unit else value * 100.0
@@ -750,13 +752,15 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         entity_id = self.entry.data.get(CONF_BATTERY_SOC_ENTITY)
         if entity_id:
             state = self.hass.states.get(entity_id)
-            if (
-                state is not None
-                and state.state not in ("unknown", "unavailable", "none", "")
+            if state is not None and state.state not in (
+                "unknown",
+                "unavailable",
+                "none",
+                "",
             ):
                 try:
                     value = float(state.state)
-                except (TypeError, ValueError):
+                except TypeError, ValueError:
                     value = None
                 if value is not None and 0.0 <= value <= 100.0:
                     was_control_ready = self._soc_control_ready
@@ -765,14 +769,12 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
                     self._soc_recovered = not was_control_ready
                     # Event-driven integrations may not rewrite an unchanged
                     # value. Availability, not state age, defines validity.
-                    self._last_valid_soc_at = dt.datetime.now(dt.timezone.utc)
+                    self._last_valid_soc_at = dt.datetime.now(dt.UTC)
                     return value
-        last_valid_soc_at = getattr(
-            self, "_last_valid_soc_at", dt.datetime.now(dt.timezone.utc)
-        )
+        last_valid_soc_at = getattr(self, "_last_valid_soc_at", dt.datetime.now(dt.UTC))
         if self._last_known_soc_pct is not None:
             age_s = (
-                (dt.datetime.now(dt.timezone.utc) - last_valid_soc_at).total_seconds()
+                (dt.datetime.now(dt.UTC) - last_valid_soc_at).total_seconds()
                 if last_valid_soc_at is not None
                 else float("inf")
             )
@@ -822,22 +824,24 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             self._ev_control_ready = True
             return 0.0
         state = self.hass.states.get(entity_id)
-        if (
-            state is not None
-            and state.state not in ("unknown", "unavailable", "none", "")
+        if state is not None and state.state not in (
+            "unknown",
+            "unavailable",
+            "none",
+            "",
         ):
             try:
                 value = max(0.0, self._raw_power_w(entity_id))
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 value = None
             if value is not None:
                 self._last_known_ev_power_w = value
                 # EV meters may publish only changes. A valid available state
                 # remains authoritative even when its value is unchanged.
-                self._last_valid_ev_at = dt.datetime.now(dt.timezone.utc)
+                self._last_valid_ev_at = dt.datetime.now(dt.UTC)
                 self._ev_control_ready = True
                 return value
-        now = dt.datetime.now(dt.timezone.utc)
+        now = dt.datetime.now(dt.UTC)
         if (
             self._last_valid_ev_at is not None
             and (now - self._last_valid_ev_at).total_seconds()
@@ -856,13 +860,13 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         return self._raw_power_w(entity_id, default)
 
     def _raw_power_w(self, entity_id: str, default: float = 0.0) -> float:
-        """Return a power entity in watts, preserving legacy unitless sensors."""
+        """Return a power entity in watts, preserving unitless-source semantics."""
         state = self.hass.states.get(entity_id)
         if state is None or state.state in ("unknown", "unavailable", "none", ""):
             return default
         try:
             raw = float(state.state)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             return default
         unit = str(state.attributes.get("unit_of_measurement") or "W").strip().lower()
         if unit == "kw":
@@ -883,7 +887,7 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             return default
         try:
             return float(state.state)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             return default
 
     def _state_value(self, config_key: str) -> str:
@@ -910,15 +914,13 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
     def _state_age_s(self, entity_id: str) -> float:
         """Return seconds since a state changed."""
         reported_at = self._state_reported_at(entity_id)
-        return max(
-            0.0, (dt.datetime.now(dt.timezone.utc) - reported_at).total_seconds()
-        )
+        return max(0.0, (dt.datetime.now(dt.UTC) - reported_at).total_seconds())
 
     def _state_reported_at(self, entity_id: str) -> dt.datetime:
         """Return the source timestamp for one Home Assistant state."""
         state = self.hass.states.get(entity_id)
         if state is None:
-            return dt.datetime.min.replace(tzinfo=dt.timezone.utc)
+            return dt.datetime.min.replace(tzinfo=dt.UTC)
         reported_at = (
             getattr(state, "last_reported", None)
             or getattr(state, "last_updated", None)
@@ -927,7 +929,7 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         if reported_at is None:
             # Home Assistant State always supplies timestamps. Lightweight test
             # doubles without them represent a freshly captured state.
-            return dt.datetime.now(dt.timezone.utc)
+            return dt.datetime.now(dt.UTC)
         return reported_at
 
     def _state_available(self, entity_id: str) -> bool:
@@ -1002,7 +1004,7 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             state = self.hass.states.get(entity_id) if entity_id else None
             try:
                 value = float(state.state)
-            except (AttributeError, TypeError, ValueError):
+            except AttributeError, TypeError, ValueError:
                 return None, None
             if value < 0.0 or state.state in ("unknown", "unavailable", "none", ""):
                 return None, None
@@ -1015,7 +1017,7 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         if store is None:
             return
         snapshot = self._compiler_runtime.storage_snapshot(
-            saved_at_ms=int(dt.datetime.now(dt.timezone.utc).timestamp() * 1000),
+            saved_at_ms=int(dt.datetime.now(dt.UTC).timestamp() * 1000),
             energy_totals=self._battery_energy_totals(),
             clean_shutdown=clean_shutdown,
         )
@@ -1037,7 +1039,7 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
                 self.last_actuation = ActuationResult(
                     command.command_id,
                     False,
-                    int(dt.datetime.now(dt.timezone.utc).timestamp() * 1000),
+                    int(dt.datetime.now(dt.UTC).timestamp() * 1000),
                     "unloading_no_write",
                 )
                 return
@@ -1053,7 +1055,7 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
     @staticmethod
     def _safe_idle_command(reason: str) -> BatteryCommand:
         """Create a short-lived generic zero command for disable and fail-safe paths."""
-        now_ms = int(dt.datetime.now(dt.timezone.utc).timestamp() * 1000)
+        now_ms = int(dt.datetime.now(dt.UTC).timestamp() * 1000)
         return BatteryCommand(
             command_id=f"safety:{reason}:{now_ms}",
             directive_id="safety",
@@ -1073,7 +1075,8 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         ):
             try:
                 stopped = await self._async_zero_limits_once(blocking=True)
-            except Exception:  # noqa: BLE001 - a rejected unload must restore control.
+            # Refuse unload if the hardware cannot be stopped safely.
+            except Exception:
                 self._unloading = False
                 self._planner.abort_shutdown()
                 LOGGER.exception(

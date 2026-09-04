@@ -39,7 +39,7 @@ def _ledger(series: dict, prices: list[dict]) -> SavingsLedger:
         TariffInterval(item["dt"], item["price_eur"]) for item in prices
     ]
     return SavingsLedger(
-        config=SavingsConfig(dt.timezone.utc, 60, ENTITIES),
+        config=SavingsConfig(dt.UTC, 60, ENTITIES),
         history_reader=lambda entity_ids, cutoff: {
             entity_id: [
                 item for item in role_series.get(entity_id, []) if item[0] >= cutoff
@@ -51,7 +51,7 @@ def _ledger(series: dict, prices: list[dict]) -> SavingsLedger:
 
 
 def test_grid_charge_is_costed_and_pv_charge_remains_free():
-    start = dt.datetime(2026, 9, 2, tzinfo=dt.timezone.utc)
+    start = dt.datetime(2026, 9, 2, tzinfo=dt.UTC)
     start_ts = int(start.timestamp() * 1000)
     event_ts = start_ts + 900_000
     prices = [{"dt": start, "price_eur": 0.20}]
@@ -101,9 +101,7 @@ def test_grid_charge_is_costed_and_pv_charge_remains_free():
 
 
 def test_missing_prices_do_not_advance_counter_tracker():
-    now = int(
-        dt.datetime(2026, 9, 2, 12, tzinfo=dt.timezone.utc).timestamp() * 1000
-    )
+    now = int(dt.datetime(2026, 9, 2, 12, tzinfo=dt.UTC).timestamp() * 1000)
     state = SavingsState(
         tracker={
             "last_ts": now - 900_000,

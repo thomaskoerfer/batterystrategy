@@ -44,7 +44,7 @@ def build_pv_forecast(
         raise ValueError("PV targets must match requested grid")
     timezone = ZoneInfo(config.timezone)
     now_local = dt.datetime.fromtimestamp(
-        request.as_of_ms / 1000.0, tz=dt.timezone.utc
+        request.as_of_ms / 1000.0, tz=dt.UTC
     ).astimezone(timezone)
     preliminary = [
         (
@@ -102,18 +102,24 @@ def build_pv_forecast(
         int(max((sample.ts_s for sample in samples), default=0.0) * 1000),
     )
     return PvForecast(
-        f"slot-profile-{request.as_of_ms}-pv", request.as_of_ms, cutoff, "slot-profile-pv-v1", slots
+        f"slot-profile-{request.as_of_ms}-pv",
+        request.as_of_ms,
+        cutoff,
+        "slot-profile-pv-v1",
+        slots,
     )
 
 
-def _forecast_pv_w(samples, target, timezone, weather_factor, slot_bias, inverter_kw) -> float:
+def _forecast_pv_w(
+    samples, target, timezone, weather_factor, slot_bias, inverter_kw
+) -> float:
     target_slot = _slot_index(target)
     target_is_weekend = target.weekday() >= 5
     same_slot, same_weektype = [], []
     for sample in samples[-6000:]:
-        sample_local = dt.datetime.fromtimestamp(
-            sample.ts_s, tz=dt.timezone.utc
-        ).astimezone(timezone)
+        sample_local = dt.datetime.fromtimestamp(sample.ts_s, tz=dt.UTC).astimezone(
+            timezone
+        )
         if (
             not sample.pv_valid
             or (not sample.has_valid_live_power and sample.pv_w <= 1.0)

@@ -88,13 +88,11 @@ def build_fresh_planning_result(
                 operator_data.get("mode") or operator_data.get("planned_mode") or "idle"
             )
         ),
-        current_power_w=int(
-            round(
-                _float(
-                    operator_data.get(
-                        "recommended_power_w",
-                        operator_data.get("planned_power_w", 0),
-                    )
+        current_power_w=round(
+            _float(
+                operator_data.get(
+                    "recommended_power_w",
+                    operator_data.get("planned_power_w", 0),
                 )
             )
         ),
@@ -154,7 +152,7 @@ def result_from_persisted_output(
     timezone: dt.tzinfo,
     now_ms: int,
 ) -> PlanningResult:
-    """Restore a result; legacy/invalid snapshots retain display data but fail closed."""
+    """Restore a result; older or invalid snapshots remain display-only."""
     display_data = {
         key: value
         for key, value in output.items()
@@ -166,7 +164,7 @@ def result_from_persisted_output(
             PERSISTED_POLICY_KEY
         ) != _execution_policy(options):
             battery_plan = None
-    except (KeyError, TypeError, ValueError):
+    except KeyError, TypeError, ValueError:
         battery_plan = None
     return build_planning_result(
         battery_plan,
@@ -208,12 +206,8 @@ def operator_plan_from_output(
     return StrategyPlan(
         points=points,
         current_mode=mode,
-        current_power_w=int(
-            round(
-                _float(
-                    output.get("recommended_power_w", output.get("planned_power_w", 0))
-                )
-            )
+        current_power_w=round(
+            _float(output.get("recommended_power_w", output.get("planned_power_w", 0)))
         ),
         reason=str(output.get("reason") or "planning_pipeline"),
         daily_costs=daily_costs,
@@ -442,15 +436,15 @@ def _points_from_output(
                 .date()
                 .isoformat(),
                 price_ct=_at(price, ts_ms),
-                load_fc_w=int(round(_at(load, ts_ms))),
-                pv_fc_w=int(round(_at(pv, ts_ms))),
-                grid_import_fc_w=int(round(_at(grid_import, ts_ms))),
-                grid_export_fc_w=int(round(_at(grid_export, ts_ms))),
-                grid_net_fc_w=int(round(_at(grid_net, ts_ms))),
+                load_fc_w=round(_at(load, ts_ms)),
+                pv_fc_w=round(_at(pv, ts_ms)),
+                grid_import_fc_w=round(_at(grid_import, ts_ms)),
+                grid_export_fc_w=round(_at(grid_export, ts_ms)),
+                grid_net_fc_w=round(_at(grid_net, ts_ms)),
                 mode=mode,
-                power_w=int(round(abs(pow_w))),
-                charge_fc_w=int(round(ch)),
-                discharge_fc_w=int(round(dis)),
+                power_w=round(abs(pow_w)),
+                charge_fc_w=round(ch),
+                discharge_fc_w=round(dis),
                 soc_pct=round(
                     _exact(soc, ts_ms)
                     if ts_ms in soc
@@ -458,9 +452,9 @@ def _points_from_output(
                     2,
                 ),
                 discharge_budget_kwh=round(_exact(discharge_budget, ts_ms), 3),
-                pv_charge_fc_w=int(round(pv_charge_w)),
-                grid_charge_fc_w=int(round(grid_charge_w)),
-                required_charge_fc_w=int(round(required_charge_w)),
+                pv_charge_fc_w=round(pv_charge_w),
+                grid_charge_fc_w=round(grid_charge_w),
+                required_charge_fc_w=round(required_charge_w),
             )
         )
     return [point for point in points if point.ts_ms + SLOT_MS > now_ms]
@@ -473,7 +467,7 @@ def _series(raw: object) -> dict[int, float]:
             continue
         try:
             result[int(float(item[0]))] = float(item[1])
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             continue
     return result
 
@@ -518,14 +512,14 @@ def _mode_to_command(mode: str) -> str:
 def _float(value: object, default: float = 0.0) -> float:
     try:
         return float(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return default
 
 
 def _maybe_float(value: object) -> float | None:
     try:
         return float(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
 
 

@@ -7,13 +7,13 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).parents[1]
-LAYERS = (
+COMPONENT_GUIDES = (
     "data-feature-store",
     "forecasting",
     "market-context",
     "optimization",
-        "planning-service",
-        "planning-runtime",
+    "planning-service",
+    "planning-runtime",
     "plan-compiler",
     "live-control",
     "actuation",
@@ -38,7 +38,8 @@ class ArchitectureDocumentationTests(unittest.TestCase):
         index = (ROOT / "docs" / "README.md").read_text(encoding="utf-8")
         architecture = (ROOT / "ARCHITECTURE.md").read_text(encoding="utf-8")
 
-        for layer in LAYERS:
+        self.assertIn("The five production layers are:", architecture)
+        for layer in COMPONENT_GUIDES:
             with self.subTest(layer=layer):
                 layer_dir = ROOT / "docs" / layer
                 readme = layer_dir / "README.md"
@@ -57,7 +58,7 @@ class ArchitectureDocumentationTests(unittest.TestCase):
                 self.assertIn(f"docs/{layer}/README.md", architecture)
 
     def test_public_layer_guidance_has_no_concrete_setup_references(self):
-        for layer in LAYERS:
+        for layer in COMPONENT_GUIDES:
             for filename in ("README.md", "AGENTS.md"):
                 path = ROOT / "docs" / layer / filename
                 text = path.read_text(encoding="utf-8")

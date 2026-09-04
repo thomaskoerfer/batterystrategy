@@ -61,7 +61,7 @@ def _as_float(value) -> float | None:
     try:
         parsed = float(value)
         return parsed if math.isfinite(parsed) else None
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
 
 
@@ -116,11 +116,9 @@ class PlanningPipelineAdapter:
             else None
         )
         try:
-            self._timezone = (
-                ZoneInfo(str(hass.config.time_zone)) if hass else dt.timezone.utc
-            )
-        except (KeyError, ValueError):
-            self._timezone = dt.timezone.utc
+            self._timezone = ZoneInfo(str(hass.config.time_zone)) if hass else dt.UTC
+        except KeyError, ValueError:
+            self._timezone = dt.UTC
         self._forecast_history: tuple[HistoricalFeatureSlot, ...] = ()
         self._forecast_weather: tuple[WeatherSlot, ...] = ()
         self._forecast_drivers: tuple[LoadDriverSnapshot, ...] = ()
@@ -207,7 +205,7 @@ class PlanningPipelineAdapter:
         from . import planning_pipeline
 
         # Executor work survives config-entry cancellation. Serialize persistence
-        # so an old and a new coordinator cannot write the same state file together.
+        # so two coordinators cannot write the same state file together.
         with _PLANNING_RUN_LOCK:
             if runtime_context is None or self._state_store is None:
                 raise RuntimeError("planning capture and state store are required")
@@ -215,7 +213,7 @@ class PlanningPipelineAdapter:
             if self._hass is not None:
                 try:
                     captured_at = dt.datetime.fromtimestamp(
-                        runtime.captured_at_s, tz=dt.timezone.utc
+                        runtime.captured_at_s, tz=dt.UTC
                     )
                     series = read_recorder_series(
                         self._hass,
@@ -274,14 +272,12 @@ class PlanningPipelineAdapter:
         settings = PlanningRuntimeSettings.from_options(options, self._timezone)
         tariffs = TariffSchedule.from_provider_rows(provider_prices, settings.timezone)
         local_now = dt.datetime.fromtimestamp(
-            inputs.captured_at_ms / 1000.0, dt.timezone.utc
+            inputs.captured_at_ms / 1000.0, dt.UTC
         ).astimezone(settings.timezone)
         current_day_tariffs = TariffSchedule(
             tariffs.for_dates({local_now.date().isoformat()})
         )
-        current_price = current_day_tariffs.price_eur_at(
-            inputs.captured_at_ms / 1000.0
-        )
+        current_price = current_day_tariffs.price_eur_at(inputs.captured_at_ms / 1000.0)
         current_price_ct = current_price * 100.0 if current_price is not None else None
         if current_price_ct is None and price_state is not None:
             current_price_raw = _as_float(price_state.state)
@@ -339,9 +335,7 @@ class PlanningPipelineAdapter:
             battery_soc_pct=_as_float(inputs.soc_pct),
             battery_min_soc_pct=float(options.min_soc_pct),
             ev_charge_w=(
-                ev_charge_w
-                if ev_charge_w >= options.ev_active_threshold_w
-                else 0.0
+                ev_charge_w if ev_charge_w >= options.ev_active_threshold_w else 0.0
             ),
             heat_pump_power_w=0.0,
             pv_next_hour_kwh=0.0,
@@ -409,6 +403,7 @@ class PlanningPipelineAdapter:
     ) -> PlanningHistory:
         signed_battery = series.get(_RecorderRole.BATTERY_SIGNED_POWER, ())
         raw_prices = series.get(_RecorderRole.PRICE_RAW, ())
+
         def non_negative(role):
             return tuple(
                 (timestamp, max(0.0, value))
@@ -427,12 +422,8 @@ class PlanningPipelineAdapter:
                 HistoryRole.GRID_EXPORT_POWER_W: non_negative(
                     _RecorderRole.GRID_EXPORT
                 ),
-                HistoryRole.PV_GENERATION_POWER_W: non_negative(
-                    _RecorderRole.PV_POWER
-                ),
-                HistoryRole.BATTERY_SOC_PCT: non_negative(
-                    _RecorderRole.BATTERY_SOC
-                ),
+                HistoryRole.PV_GENERATION_POWER_W: non_negative(_RecorderRole.PV_POWER),
+                HistoryRole.BATTERY_SOC_PCT: non_negative(_RecorderRole.BATTERY_SOC),
                 HistoryRole.BATTERY_INPUT_ENERGY_KWH: non_negative(
                     _RecorderRole.BATTERY_INPUT_ENERGY
                 ),
@@ -440,16 +431,12 @@ class PlanningPipelineAdapter:
                     _RecorderRole.BATTERY_OUTPUT_ENERGY
                 ),
                 HistoryRole.BATTERY_CHARGE_POWER_W: tuple(
-                    (timestamp, max(0.0, -value))
-                    for timestamp, value in signed_battery
+                    (timestamp, max(0.0, -value)) for timestamp, value in signed_battery
                 ),
                 HistoryRole.BATTERY_DISCHARGE_POWER_W: tuple(
-                    (timestamp, max(0.0, value))
-                    for timestamp, value in signed_battery
+                    (timestamp, max(0.0, value)) for timestamp, value in signed_battery
                 ),
-                HistoryRole.EV_CHARGE_POWER_W: non_negative(
-                    _RecorderRole.EV_POWER
-                ),
+                HistoryRole.EV_CHARGE_POWER_W: non_negative(_RecorderRole.EV_POWER),
             },
             captured_at_ms=captured_at_ms,
         )
@@ -471,9 +458,13 @@ class PlanningPipelineAdapter:
     def _price_scale(self, entity_id: str | None) -> float:
         """Normalize Recorder price history to EUR/kWh at the HA seam."""
         state = self._hass.states.get(entity_id) if entity_id else None
-        unit = str(
-            state.attributes.get("unit_of_measurement") if state is not None else ""
-        ).lower().replace(" ", "")
+        unit = (
+            str(
+                state.attributes.get("unit_of_measurement") if state is not None else ""
+            )
+            .lower()
+            .replace(" ", "")
+        )
         if "ct/" in unit or "cent/" in unit:
             return 0.01
         if ("eur/" in unit or "€/" in unit) and "mwh" in unit:

@@ -10,7 +10,7 @@ from custom_components.battery_strategy.history_adapter import read_recorder_ser
 
 
 def test_recorder_adapter_maps_roles_and_units_through_public_history_api():
-    timestamp = dt.datetime(2026, 9, 2, 10, tzinfo=dt.timezone.utc)
+    timestamp = dt.datetime(2026, 9, 2, 10, tzinfo=dt.UTC)
     state = SimpleNamespace(last_updated=timestamp, state="1.25")
     with patch(
         "homeassistant.components.recorder.history.get_significant_states",
@@ -31,7 +31,7 @@ def test_recorder_adapter_maps_roles_and_units_through_public_history_api():
 
 
 def test_recorder_adapter_excludes_non_numeric_states():
-    timestamp = dt.datetime(2026, 9, 2, 10, tzinfo=dt.timezone.utc)
+    timestamp = dt.datetime(2026, 9, 2, 10, tzinfo=dt.UTC)
     states = [
         SimpleNamespace(last_updated=timestamp, state="unknown"),
         SimpleNamespace(last_updated=timestamp, state="2.0"),
@@ -52,7 +52,7 @@ def test_recorder_adapter_excludes_non_numeric_states():
 
 
 def test_recorder_adapter_defensively_excludes_states_after_snapshot():
-    captured_at = dt.datetime(2026, 9, 2, 10, tzinfo=dt.timezone.utc)
+    captured_at = dt.datetime(2026, 9, 2, 10, tzinfo=dt.UTC)
     states = [
         SimpleNamespace(last_updated=captured_at, state="2.0"),
         SimpleNamespace(

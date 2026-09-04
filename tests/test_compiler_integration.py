@@ -72,9 +72,7 @@ def _options() -> StrategyOptions:
 
 
 def test_compiler_publishes_grid_charge_directive():
-    start_ms = int(
-        dt.datetime(2026, 9, 2, 12, tzinfo=dt.timezone.utc).timestamp() * 1000
-    )
+    start_ms = int(dt.datetime(2026, 9, 2, 12, tzinfo=dt.UTC).timestamp() * 1000)
     plan = StrategyPlan(
         points=[
             _point(
@@ -106,9 +104,7 @@ def test_compiler_publishes_grid_charge_directive():
 
 
 def test_compiler_preserves_discharge_progress_and_budget():
-    start_ms = int(
-        dt.datetime(2026, 9, 2, 18, tzinfo=dt.timezone.utc).timestamp() * 1000
-    )
+    start_ms = int(dt.datetime(2026, 9, 2, 18, tzinfo=dt.UTC).timestamp() * 1000)
     plan = StrategyPlan(
         points=[
             _point(
@@ -154,7 +150,7 @@ def _inputs(*, soc_pct: float = 50.0) -> LiveMeasurements:
     return LiveMeasurements(0, 500.0, 0.0, 0.0, 0.0, 0.0, 0.0, soc_pct)
 
 
-def test_cutover_compiler_owns_progress_and_replan_latch():
+def test_compiler_owns_progress_and_replan_latch():
     start_ms = 1_800_000_000_000
     first_plan = StrategyPlan(
         [_point(start_ms, discharge_w=1200, discharge_budget_kwh=0.6)],
@@ -174,7 +170,7 @@ def test_cutover_compiler_owns_progress_and_replan_latch():
     first_contract = canonical_plan(first_plan, options, start_ms)
     reduced_contract = canonical_plan(reduced_plan, options, start_ms + 60_000)
     first = runtime.compile(first_contract, options, _inputs(), start_ms)
-    started = dt.datetime.fromtimestamp(start_ms / 1000, dt.timezone.utc)
+    started = dt.datetime.fromtimestamp(start_ms / 1000, dt.UTC)
     runtime.account(started, 1000.0)
     runtime.account(started + dt.timedelta(minutes=6), 1000.0)
     reduced = runtime.compile(reduced_contract, options, _inputs(), start_ms + 60_000)
@@ -185,7 +181,7 @@ def test_cutover_compiler_owns_progress_and_replan_latch():
     assert reopened.discharge_budget_remaining_kwh == 0.1
 
 
-def test_cutover_compiler_fails_closed_without_plan():
+def test_compiler_fails_closed_without_plan():
     runtime = PlanCompilerRuntime()
     directive = runtime.compile(None, _options(), _inputs(), 1_800_000_000_000)
 

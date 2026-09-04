@@ -1,4 +1,4 @@
-"""Phase-7 regression guards for removed transitional implementations."""
+"""Regression guards for authoritative architecture boundaries."""
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ ROOT = Path(__file__).parents[1]
 PACKAGE = ROOT / "custom_components" / "battery_strategy"
 
 
-def test_completed_shadow_and_legacy_optimizer_modules_are_absent():
+def test_alternate_decision_implementations_are_absent():
     obsolete = (
         "optimizer_shadow.py",
         "forecast_shadow_runner.py",
@@ -176,7 +176,7 @@ def test_runtime_settings_preserve_established_zero_value_fallbacks():
 
 
 def test_future_zero_and_negative_prices_are_preserved():
-    start = dt.datetime(2027, 1, 15, 10, 15, tzinfo=dt.timezone.utc)
+    start = dt.datetime(2027, 1, 15, 10, 15, tzinfo=dt.UTC)
     tariffs = TariffSchedule.from_provider_rows(
         [
             {"start_time": start.isoformat(), "price": -0.10},
@@ -192,9 +192,7 @@ def test_future_zero_and_negative_prices_are_preserved():
 
 
 def test_planning_runtime_detaches_mutable_provider_values():
-    provider_rows = [
-        {"start_time": "2027-01-15T10:00:00+00:00", "price": 0.10}
-    ]
+    provider_rows = [{"start_time": "2027-01-15T10:00:00+00:00", "price": 0.10}]
     runtime = runtime_snapshot(
         provider_prices=provider_rows,
         history_series={HistoryRole.PV_GENERATION_POWER_W: [(100.0, 1250.0)]},
@@ -208,15 +206,11 @@ def test_planning_runtime_detaches_mutable_provider_values():
 
 
 def test_direct_snapshot_construction_normalizes_mutable_containers():
-    interval = TariffInterval(
-        dt.datetime(2027, 1, 15, 10, tzinfo=dt.timezone.utc), 0.20
-    )
+    interval = TariffInterval(dt.datetime(2027, 1, 15, 10, tzinfo=dt.UTC), 0.20)
     interval_values = [interval]
     schedule = TariffSchedule(interval_values)
     series_values = [(100.0, 1250.0)]
-    history = PlanningHistory(
-        {HistoryRole.PV_GENERATION_POWER_W: series_values}
-    )
+    history = PlanningHistory({HistoryRole.PV_GENERATION_POWER_W: series_values})
     runtime = runtime_snapshot()
     replaced = replace(runtime, forecast_weather=[])
 
@@ -267,7 +261,7 @@ def test_non_finite_prices_and_observations_are_rejected():
 
 
 def test_captured_time_selects_the_exact_quarter_boundary_price():
-    boundary = dt.datetime(2027, 1, 15, 10, 15, tzinfo=dt.timezone.utc)
+    boundary = dt.datetime(2027, 1, 15, 10, 15, tzinfo=dt.UTC)
     tariffs = TariffSchedule.from_provider_rows(
         [
             {"start_time": "2027-01-15T10:00:00+00:00", "price": 0.10},
@@ -321,9 +315,7 @@ def test_stale_planning_result_cannot_replace_adapter_cache(monkeypatch, tmp_pat
         measurements(0, 0, 0, 0, 0, 50),
         options,
         force=True,
-        runtime_context=planning_adapter.PlanningCapture(
-            runtime_snapshot(), {}, {}
-        ),
+        runtime_context=planning_adapter.PlanningCapture(runtime_snapshot(), {}, {}),
     )
 
     assert result is previous
@@ -358,9 +350,7 @@ def test_stale_planning_result_records_changed_options_without_retry_loop(
         measurements(0, 0, 0, 0, 0, 50),
         new_options,
         force=True,
-        runtime_context=planning_adapter.PlanningCapture(
-            runtime_snapshot(), {}, {}
-        ),
+        runtime_context=planning_adapter.PlanningCapture(runtime_snapshot(), {}, {}),
     )
 
     assert result.battery_plan is None

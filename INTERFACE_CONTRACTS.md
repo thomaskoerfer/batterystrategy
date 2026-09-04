@@ -7,17 +7,16 @@ interfaces; projection and persistence models are not executable substitutes.
 
 ## Contract status
 
-These contracts are binding design constraints for new code and for code moved
-across a layer boundary during the architecture migration. They are the initial
-baseline for the target architecture, not an assertion that every decision in
-the baseline is permanently correct. Existing production code is only required
-to conform after the corresponding migration gate has been completed.
+These contracts are binding design constraints for all production code. They
+are the approved baseline, not an assertion that every decision in the baseline
+is permanently correct. Code that does not conform is a defect unless an
+approved impact analysis explicitly changes the contract.
 
 Contracts may change when implementation experience, operational evidence or
 new requirements show that a boundary is incomplete or wrong. A contract must
 not be bypassed locally to accommodate such a finding. Change the contract
 deliberately, document the impact, update affected producers and consumers, and
-then migrate them through the normal release gates.
+then carry them through the normal release gates.
 
 Every semantic contract change follows four explicit states: **Proposed**,
 **Approved**, **Implemented** and **Observed**. An impact analysis is required but
@@ -145,7 +144,7 @@ they are never silently treated as measured zero.
 forecast grids must match exactly. Battery state cannot be newer than the
 problem's `as_of_ms`.
 
-Phase 5 proposes additive `CommercialPolicy` fields for export opportunity,
+`CommercialPolicy` includes explicit fields for export opportunity,
 the optional discharge feasibility floor, independent PV/grid/discharge
 permissions and PV-recovery confidence/reserve. These make existing hidden
 optimizer inputs explicit without changing units or plan/live ownership. Their
@@ -325,12 +324,12 @@ enforced by repository tests.
   changes.
 - Removing a field follows the expand-and-contract pattern: introduce the
   replacement, migrate and observe all consumers, then remove the old field in
-  a later phase.
-- Producers and consumers receive contract tests from both sides. A layer is not
-  cut over until old and new boundary outputs pass historical golden-master and
-  live shadow comparisons.
-- Shadow components may emit contract values and diagnostics only. They cannot
-  obtain a `BatteryActuator` reference.
+  a later release.
+- Producers and consumers receive contract tests from both sides. A changed
+  boundary is not released until baseline and candidate outputs pass historical
+  golden-master and live non-authoritative comparison checks.
+- Evaluation components may emit contract values and diagnostics only. They
+  cannot obtain a `BatteryActuator` reference.
 - Contract types do not expose persistence serialization directly. Storage and
   diagnostics adapters own conversion to JSON or Home Assistant attributes.
 
@@ -349,10 +348,11 @@ applicable item:
    safety behavior change? If not, how is parity demonstrated?
 5. **Compatibility:** Is the change additive or breaking? Is a schema-version
    bump, dual-read/dual-write period or backfill required?
-6. **Verification:** Which contract tests, historical scenarios, shadow metrics
-   and live acceptance checks prove the change?
-7. **Rollout and rollback:** In which migration phase is it introduced, and how
-   can the previous contract and implementation be restored safely?
+6. **Verification:** Which contract tests, historical scenarios,
+   non-authoritative live comparison metrics and acceptance checks prove the
+   change?
+7. **Rollout and rollback:** In which release is it introduced, and how can the
+   previous contract and implementation be restored safely?
 
 The impact analysis is a decision record, not ceremony: links to tests,
 backtests or operational evidence are preferred over speculative prose. A
