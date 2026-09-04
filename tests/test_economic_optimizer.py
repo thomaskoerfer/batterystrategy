@@ -264,6 +264,7 @@ def test_pure_optimizer_matches_current_economic_kernel(prices, loads, pv, soc):
     )
     settings = planning_pipeline.PlanningRuntime.from_mapping(
         {
+            "captured_at_ms": 1_800_000_000_000,
             "battery_capacity_kwh": 6.0,
             "min_soc_pct": 10.0,
             "max_soc_pct": 100.0,

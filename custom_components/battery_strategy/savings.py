@@ -7,6 +7,10 @@ import datetime as dt
 import statistics
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .planning_state import SavingsState
 
 Series = list[tuple[float, float]]
 HistoryReader = Callable[[Iterable[str], float], dict[str, Series]]
@@ -104,13 +108,15 @@ class SavingsLedger:
             "saving_eur": 0.0,
         }
 
-    def update(self, state: dict, now_ts: float) -> tuple[dict, float, float]:
+    def update(self, state: SavingsState, now_ts: float) -> tuple[dict, float, float]:
         """Stamp new measured charge/discharge deltas at contemporaneous prices."""
         local_now = self._local_datetime(now_ts)
         today = local_now.date().isoformat()
-        tracker = state.setdefault("savings_tracker", {})
-        daily = state.setdefault("actual_daily_savings", {})
-        archived = float(state.get("actual_savings_archived_eur", 0.0))
+        state.tracker_was_persisted = True
+        state.archived_was_persisted = True
+        tracker = state.tracker
+        daily = state.actual_daily
+        archived = float(state.archived_eur)
         last_ts = float(tracker.get("last_ts", 0.0))
         last_input_kwh = tracker.get("last_input_kwh")
         last_output_kwh = tracker.get("last_output_kwh")
@@ -299,7 +305,7 @@ class SavingsLedger:
         ).isoformat()
         for day in sorted(key for key in list(daily) if key < trim_before):
             archived += float(daily.pop(day, {}).get("saving_eur", 0.0))
-        state["actual_savings_archived_eur"] = round(archived, 4)
+        state.archived_eur = round(archived, 4)
         today_saving = float(daily.get(today, {}).get("saving_eur", 0.0))
         lifetime = archived + sum(
             float(record.get("saving_eur", 0.0)) for record in daily.values()

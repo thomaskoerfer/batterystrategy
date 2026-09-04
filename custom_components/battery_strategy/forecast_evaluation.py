@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import datetime as dt
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .planning_state import ForecastLearningState
 
 BIAS_ALPHA = 0.12
 SLOT_BIAS_ALPHA = 0.08
@@ -47,7 +50,7 @@ def _mean(items, key):
 
 
 def update_forecast_evaluation(
-    state,
+    state: ForecastLearningState,
     *,
     now_ts,
     local_timezone,
@@ -55,20 +58,18 @@ def update_forecast_evaluation(
     retention_days,
 ) -> ForecastEvaluationSummary:
     """Mature predictions and update only forecast-owned learning state."""
-    due = [item for item in state["predictions"] if item.get("target_ts", 0) <= now_ts]
-    state["predictions"] = [
-        item for item in state["predictions"] if item.get("target_ts", 0) > now_ts
+    due = [item for item in state.predictions if item.get("target_ts", 0) <= now_ts]
+    state.predictions = [
+        item for item in state.predictions if item.get("target_ts", 0) > now_ts
     ][-1200:]
 
     for prediction in due:
         end_ts = prediction["target_ts"]
         start_ts = end_ts - 3600
         slot = _slot_index(dt.datetime.fromtimestamp(end_ts, tz=local_timezone))
-        pv_avg = _average(state["samples"], start_ts, end_ts, "pv_w")
-        load_avg = _average(state["samples"], start_ts, end_ts, "load_w")
-        price_target = _average(
-            state["samples"], end_ts - 900, end_ts + 900, "price_ct"
-        )
+        pv_avg = _average(state.samples, start_ts, end_ts, "pv_w")
+        load_avg = _average(state.samples, start_ts, end_ts, "load_w")
+        price_target = _average(state.samples, end_ts - 900, end_ts + 900, "price_ct")
         if pv_avg is None or load_avg is None or price_target is None:
             continue
 
@@ -80,14 +81,13 @@ def update_forecast_evaluation(
         pv_prediction = max(0.05, float(prediction.get("pv_pred_kwh", 0.0)))
         if pv_actual > 0.02:
             pv_ratio = _clamp(pv_actual / pv_prediction, 0.7, 1.3)
-            state["pv_bias"] = _clamp(
-                (1.0 - BIAS_ALPHA) * float(state.get("pv_bias", 1.0))
-                + BIAS_ALPHA * pv_ratio,
+            state.pv_bias = _clamp(
+                (1.0 - BIAS_ALPHA) * float(state.pv_bias) + BIAS_ALPHA * pv_ratio,
                 0.5,
                 1.6,
             )
-            previous = state["pv_bias_slots"][slot]
-            state["pv_bias_slots"][slot] = _clamp(
+            previous = state.pv_bias_slots[slot]
+            state.pv_bias_slots[slot] = _clamp(
                 (1.0 - SLOT_BIAS_ALPHA) * previous + SLOT_BIAS_ALPHA * pv_ratio,
                 0.5,
                 1.6,
@@ -95,14 +95,13 @@ def update_forecast_evaluation(
 
         load_prediction = max(0.2, float(prediction.get("load_pred_kwh", 0.0)))
         load_ratio = _clamp(load_actual / load_prediction, 0.75, 1.25)
-        state["load_bias"] = _clamp(
-            (1.0 - BIAS_ALPHA) * float(state.get("load_bias", 1.0))
-            + BIAS_ALPHA * load_ratio,
+        state.load_bias = _clamp(
+            (1.0 - BIAS_ALPHA) * float(state.load_bias) + BIAS_ALPHA * load_ratio,
             0.6,
             1.6,
         )
-        previous = state["load_bias_slots"][slot]
-        state["load_bias_slots"][slot] = _clamp(
+        previous = state.load_bias_slots[slot]
+        state.load_bias_slots[slot] = _clamp(
             (1.0 - SLOT_BIAS_ALPHA) * previous + SLOT_BIAS_ALPHA * load_ratio,
             0.6,
             1.6,
@@ -118,26 +117,26 @@ def update_forecast_evaluation(
                 prediction.get("price_ct", 0.0) * round_trip_efficiency > price_target
             )
 
-        state["backtests"].append(
+        state.backtests.append(
             {
                 "ts": end_ts,
                 "pv_mae": pv_error,
                 "load_mae": load_error,
                 "success": bool(success),
-                "pv_bias_after": round(float(state.get("pv_bias", 1.0)), 4),
-                "load_bias_after": round(float(state.get("load_bias", 1.0)), 4),
+                "pv_bias_after": round(float(state.pv_bias), 4),
+                "load_bias_after": round(float(state.load_bias), 4),
             }
         )
 
     cutoff = now_ts - retention_days * 86400
-    state["backtests"] = [
-        item for item in state["backtests"] if item.get("ts", 0) >= cutoff
-    ][-8000:]
+    state.backtests = [item for item in state.backtests if item.get("ts", 0) >= cutoff][
+        -8000:
+    ]
     last_24h = tuple(
-        item for item in state["backtests"] if item.get("ts", 0) >= now_ts - 86400
+        item for item in state.backtests if item.get("ts", 0) >= now_ts - 86400
     )
     last_7d = tuple(
-        item for item in state["backtests"] if item.get("ts", 0) >= now_ts - 7 * 86400
+        item for item in state.backtests if item.get("ts", 0) >= now_ts - 7 * 86400
     )
     hit_rate = (
         100.0 * sum(1 for item in last_24h if item.get("success")) / len(last_24h)

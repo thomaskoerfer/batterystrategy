@@ -6,10 +6,12 @@ import datetime as dt
 
 import pytest
 
+from custom_components.battery_strategy import planning_result
 from custom_components.battery_strategy.models import StrategyOptions
 from custom_components.battery_strategy.plan_models import PlanPoint, StrategyPlan
 from custom_components.battery_strategy.planning_result import (
     PERSISTED_PLAN_KEY,
+    build_fresh_planning_result,
     build_planning_result,
     persisted_output,
     result_from_persisted_output,
@@ -71,6 +73,22 @@ def test_canonical_plan_round_trips_without_using_operator_profiles():
 
     assert restored.battery_plan == result.battery_plan
     assert restored.operator_plan.points[0].discharge_fc_w == 800
+
+
+def test_restore_uses_canonical_soc_when_active_profile_point_is_missing():
+    result, options, start_ms = _result_fixture()
+    stored = persisted_output(result, options)
+    stored["profile_today_soc"] = [[start_ms + 900_000, 12.5]]
+
+    restored = result_from_persisted_output(
+        stored,
+        options,
+        timezone=dt.timezone.utc,
+        now_ms=start_ms + 60_000,
+    )
+
+    assert restored.operator_plan.points[0].ts_ms == start_ms
+    assert restored.operator_plan.points[0].soc_pct == 50.0
 
 
 def test_legacy_operator_snapshot_remains_visible_but_cannot_authorize_control():
@@ -138,3 +156,67 @@ def test_planning_result_collections_are_immutable():
         result.operator_data["profile_48h_price"][0][1] = 99.0
     with pytest.raises(TypeError):
         result.operator_plan.daily_costs["2027-01-15"] = object()
+
+
+def test_fresh_projection_has_restore_parser_parity_without_calling_it(monkeypatch):
+    restored_shape, _, start_ms = _result_fixture()
+    plan = restored_shape.battery_plan
+    assert plan is not None
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("display restore parser entered fresh planning")
+
+    monkeypatch.setattr(planning_result, "operator_plan_from_output", forbidden)
+    fresh = build_fresh_planning_result(
+        plan,
+        restored_shape.operator_plan.points,
+        restored_shape.operator_plan.daily_costs,
+        dict(restored_shape.operator_data),
+        now_ms=start_ms,
+        override_active=False,
+    )
+
+    assert fresh.battery_plan is plan
+    assert fresh.operator_plan == restored_shape.operator_plan
+    assert fresh.operator_data == restored_shape.operator_data
+
+
+def test_restore_requires_explicit_observation_time():
+    result, options, _ = _result_fixture()
+
+    with pytest.raises(TypeError):
+        result_from_persisted_output(
+            persisted_output(result, options),
+            options,
+            timezone=dt.timezone.utc,
+        )
+
+
+def test_restore_does_not_borrow_next_slot_power_for_active_idle_slot():
+    start_ms = 1_788_084_000_000
+    output = {
+        "profile_48h_house_fc_power": [
+            [start_ms, 0.0],
+            [start_ms + 900_000, 2000.0],
+        ],
+        "profile_48h_charge_fc_power": [
+            [start_ms, 0.0],
+            [start_ms + 900_000, 0.0],
+        ],
+        "profile_48h_discharge_fc_power": [
+            [start_ms, 0.0],
+            [start_ms + 900_000, 1967.7],
+        ],
+        "profile_today_power": [[start_ms + 900_000, -1967.7]],
+    }
+
+    plan = planning_result.operator_plan_from_output(
+        output,
+        timezone=dt.timezone.utc,
+        now_ms=start_ms + 60_000,
+        override_active=False,
+    )
+
+    assert plan.points[0].ts_ms == start_ms
+    assert plan.points[0].power_w == 0
+    assert plan.points[0].mode == "idle"

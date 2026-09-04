@@ -35,6 +35,7 @@ from .planning_result import (
     persisted_output,
     result_from_persisted_output,
 )
+from .planning_state import PLANNING_STATE_FILENAME, PlanningStateStore
 
 CACHE_TTL_S = 240
 SLOT_MS = 15 * 60 * 1000
@@ -45,14 +46,26 @@ LOGGER = logging.getLogger(__name__)
 class PlanningPipelineAdapter:
     """Adapt Home Assistant snapshots to the planning application pipeline."""
 
-    def __init__(self, hass=None, entry=None) -> None:
+    def __init__(
+        self,
+        hass=None,
+        entry=None,
+        state_store: PlanningStateStore | None = None,
+    ) -> None:
         """Initialize adapter cache."""
         self._hass = hass
         self._entry = entry
-        self._last_run_ts = 0.0
+        self._last_run_monotonic = 0.0
         self._last_output: dict | None = None
         self._last_result: PlanningResult | None = None
         self._last_options: StrategyOptions | None = None
+        self._state_store = state_store or (
+            PlanningStateStore.claim(
+                f"{hass.config.config_dir.rstrip('/')}/{PLANNING_STATE_FILENAME}"
+            )
+            if hass is not None
+            else None
+        )
         try:
             self._timezone = (
                 ZoneInfo(str(hass.config.time_zone)) if hass else dt.timezone.utc
@@ -83,10 +96,12 @@ class PlanningPipelineAdapter:
         self, inputs: LiveMeasurements, options: StrategyOptions
     ) -> PlanningResult:
         """Return the cached plan without running the optimizer."""
-        del inputs
         if self._last_result is None:
             self._last_result = result_from_persisted_output(
-                self._last_output or {}, options, timezone=self._timezone
+                self._last_output or {},
+                options,
+                timezone=self._timezone,
+                now_ms=inputs.captured_at_ms,
             )
             # The persistence codec has already verified this exact policy.
             # Remember it so a later option change invalidates the cached plan.
@@ -118,7 +133,7 @@ class PlanningPipelineAdapter:
             force
             or self._last_output is None
             or self._last_options != options
-            or time.time() - self._last_run_ts >= CACHE_TTL_S
+            or time.monotonic() - self._last_run_monotonic >= CACHE_TTL_S
         )
 
     def run(
@@ -134,12 +149,12 @@ class PlanningPipelineAdapter:
                 self._timezone = ZoneInfo(str(runtime_context["timezone"]))
             except (KeyError, ValueError):
                 self._timezone = dt.timezone.utc
-        now = time.time()
+        cache_now = time.monotonic()
         if (
             not force
             and self._last_output is not None
             and self._last_options == options
-            and now - self._last_run_ts < CACHE_TTL_S
+            and cache_now - self._last_run_monotonic < CACHE_TTL_S
         ):
             return self.cached_result(inputs, options)
 
@@ -152,21 +167,35 @@ class PlanningPipelineAdapter:
                 runtime_context = dict(runtime_context)
                 if self._hass is not None:
                     try:
+                        captured_at = dt.datetime.fromtimestamp(
+                            int(runtime_context["captured_at_ms"]) / 1000.0,
+                            tz=dt.timezone.utc,
+                        )
                         runtime_context["history_series"] = read_recorder_series(
                             self._hass,
                             runtime_context.get("entity_map") or {},
                             runtime_context.get("entity_scale") or {},
-                            start_time=dt.datetime.now(dt.timezone.utc)
-                            - dt.timedelta(hours=49),
+                            start_time=captured_at - dt.timedelta(hours=49),
+                            end_time=captured_at,
                         )
                     except Exception as err:  # Recorder failure must not stop control.
                         LOGGER.warning("Recorder history snapshot failed: %s", err)
                         runtime_context["history_series"] = {}
-            result = planning_pipeline.run(runtime_context)
+            runtime = planning_pipeline.PlanningRuntime.from_mapping(runtime_context)
+            try:
+                result = planning_pipeline.run(runtime)
+            except planning_pipeline.StalePlanningResult:
+                # A newer lifecycle already persisted a result. Treat this run as
+                # observed so completion refreshes cannot create a retry loop.
+                fallback = self.cached_result(inputs, options)
+                self._last_result = fallback
+                self._last_options = options
+                self._last_run_monotonic = time.monotonic()
+                return fallback
         self._last_result = result
         self._last_output = persisted_output(result, options)
         self._last_options = options
-        self._last_run_ts = now
+        self._last_run_monotonic = cache_now
         return self.cached_result(inputs, options)
 
     def runtime_context(
@@ -217,6 +246,8 @@ class PlanningPipelineAdapter:
         ev_entity = data.get(CONF_EV_POWER_ENTITY)
         pv_entity = data.get(CONF_PV_POWER_ENTITY)
         return {
+            "captured_at_ms": int(inputs.captured_at_ms),
+            "state_store": self._state_store,
             "config_dir": self._hass.config.config_dir,
             "latitude": self._hass.config.latitude,
             "longitude": self._hass.config.longitude,
@@ -280,6 +311,11 @@ class PlanningPipelineAdapter:
 
     def age_s(self) -> float | None:
         """Return seconds since the last optimizer run."""
-        if self._last_run_ts <= 0.0:
+        if self._last_run_monotonic <= 0.0:
             return None
-        return max(0.0, time.time() - self._last_run_ts)
+        return max(0.0, time.monotonic() - self._last_run_monotonic)
+
+    def revoke_state_writer(self) -> None:
+        """Close state publication for this unloaded coordinator generation."""
+        if self._state_store is not None:
+            self._state_store.revoke()

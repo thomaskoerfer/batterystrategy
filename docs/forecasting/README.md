@@ -32,6 +32,14 @@ The combined `ForecastBundle` is constructed before optimization. Forecasting
 does not know prices, battery SoC, battery constraints, terminal value or a
 battery plan.
 
+Production uses concrete configured implementations of both forecast
+contracts. The application supplies immutable run-local model configuration,
+then a policy-free composer invokes the load and PV owners independently and
+only combines their results into `ForecastBundle`. Current calibration inputs
+remain application configuration because the approved contracts do not expose
+them; moving them into contract data requires a separate impact analysis and
+owner approval.
+
 ## Load components
 
 The whole-house target always excludes EV charging. Independently metered loads

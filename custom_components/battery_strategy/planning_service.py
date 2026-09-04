@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 
+from .const import COMMAND_IDLE, COMMAND_INPUT, COMMAND_OUTPUT
 from .contracts import (
     BatteryConstraints,
     BatteryPlan,
@@ -14,6 +15,7 @@ from .contracts import (
 from .economic_optimizer import OPTIMIZER_VERSION
 from .market_context import MarketContextService
 from .optimization_problem import optimize_snapshot
+from .plan_models import DailyCost, PlanPoint
 
 
 @dataclass(frozen=True)
@@ -42,6 +44,8 @@ class PlanningPublication:
 
     battery_plan: BatteryPlan | None
     data: Mapping[str, object]
+    operator_points: tuple[PlanPoint, ...]
+    operator_daily_costs: Mapping[str, DailyCost]
 
 
 class PlanningService:
@@ -107,6 +111,8 @@ class PlanningService:
                     "daily_costs": {},
                     "optimizer_source": OPTIMIZER_VERSION,
                 },
+                (),
+                {},
             )
 
         _, candidate = optimize_snapshot(
@@ -140,6 +146,7 @@ class PlanningService:
             raise ValueError("pure plan and forecast grids differ")
 
         points = []
+        operator_points = []
         daily: dict[str, dict[str, float]] = {}
         slot_hours = self._settings.slot_hours
         export_value = self._settings.export_opportunity_ct_per_kwh
@@ -171,35 +178,64 @@ class PlanningService:
                 0.0, discharge_kwh - net_load_kwh
             )
             power_w = (charge_kwh - discharge_kwh) / slot_hours * 1000.0
-            points.append(
-                {
-                    "ts_ms": plan_slot.slot.start_ms,
-                    "date": date,
-                    "price_ct": round(price_ct, 3),
-                    "soc_pct": round(plan_slot.expected_soc_start_pct, 2),
-                    "power_w": round(power_w, 1),
-                    "charge_fc_w": round(charge_kwh / slot_hours * 1000.0, 1),
-                    "pv_charge_fc_w": round(pv_charge_kwh / slot_hours * 1000.0, 1),
-                    "grid_charge_fc_w": round(grid_charge_kwh / slot_hours * 1000.0, 1),
-                    "required_charge_fc_w": round(
-                        plan_slot.required_charge_kwh / slot_hours * 1000.0, 1
-                    ),
-                    "discharge_fc_w": round(discharge_kwh / slot_hours * 1000.0, 1),
-                    "discharge_budget_kwh": round(plan_slot.discharge_budget_kwh, 3),
-                    "mode": plan_slot.mode.value,
-                    "load_fc_w": round(load_kwh / slot_hours * 1000.0, 1),
-                    "pv_fc_w": round(pv_kwh / slot_hours * 1000.0, 1),
-                    "discharge_eligible_fc_w": round(
-                        net_load_kwh / slot_hours * 1000.0, 1
-                    ),
-                    "grid_import_fc_w": round(grid_import_kwh / slot_hours * 1000.0, 1),
-                    "grid_export_fc_w": round(grid_export_kwh / slot_hours * 1000.0, 1),
-                    "grid_net_fc_w": round(
-                        (grid_import_kwh - grid_export_kwh) / slot_hours * 1000.0,
-                        1,
-                    ),
-                }
+            charge_w = charge_kwh / slot_hours * 1000.0
+            discharge_w = discharge_kwh / slot_hours * 1000.0
+            load_w = load_kwh / slot_hours * 1000.0
+            pv_w = pv_kwh / slot_hours * 1000.0
+            grid_import_w = grid_import_kwh / slot_hours * 1000.0
+            grid_export_w = grid_export_kwh / slot_hours * 1000.0
+            grid_net_w = grid_import_w - grid_export_w
+            operator_point = PlanPoint(
+                ts_ms=plan_slot.slot.start_ms,
+                date=date,
+                price_ct=round(price_ct, 3),
+                load_fc_w=_operator_w(load_w),
+                pv_fc_w=_operator_w(pv_w),
+                grid_import_fc_w=_operator_w(grid_import_w),
+                grid_export_fc_w=_operator_w(grid_export_w),
+                grid_net_fc_w=_operator_w(grid_net_w),
+                mode=(
+                    COMMAND_INPUT
+                    if charge_w > 0.0
+                    else COMMAND_OUTPUT
+                    if discharge_w > 0.0
+                    else COMMAND_IDLE
+                ),
+                power_w=_operator_w(abs(power_w)),
+                charge_fc_w=_operator_w(charge_w),
+                discharge_fc_w=_operator_w(discharge_w),
+                soc_pct=round(plan_slot.expected_soc_start_pct, 2),
+                discharge_budget_kwh=round(plan_slot.discharge_budget_kwh, 3),
+                pv_charge_fc_w=_operator_w(pv_charge_kwh / slot_hours * 1000.0),
+                grid_charge_fc_w=_operator_w(grid_charge_kwh / slot_hours * 1000.0),
+                required_charge_fc_w=_operator_w(
+                    plan_slot.required_charge_kwh / slot_hours * 1000.0
+                ),
             )
+            point = {
+                "ts_ms": plan_slot.slot.start_ms,
+                "date": date,
+                "price_ct": round(price_ct, 3),
+                "soc_pct": round(plan_slot.expected_soc_start_pct, 2),
+                "power_w": round(power_w, 1),
+                "charge_fc_w": round(charge_w, 1),
+                "pv_charge_fc_w": round(pv_charge_kwh / slot_hours * 1000.0, 1),
+                "grid_charge_fc_w": round(grid_charge_kwh / slot_hours * 1000.0, 1),
+                "required_charge_fc_w": round(
+                    plan_slot.required_charge_kwh / slot_hours * 1000.0, 1
+                ),
+                "discharge_fc_w": round(discharge_w, 1),
+                "discharge_budget_kwh": round(plan_slot.discharge_budget_kwh, 3),
+                "mode": plan_slot.mode.value,
+                "load_fc_w": round(load_w, 1),
+                "pv_fc_w": round(pv_w, 1),
+                "discharge_eligible_fc_w": round(net_load_kwh / slot_hours * 1000.0, 1),
+                "grid_import_fc_w": round(grid_import_w, 1),
+                "grid_export_fc_w": round(grid_export_w, 1),
+                "grid_net_fc_w": round(grid_net_w, 1),
+            }
+            points.append(point)
+            operator_points.append(operator_point)
             values = daily.setdefault(date, {"base": 0.0, "with_bat": 0.0})
             values["base"] += (
                 net_load_kwh * price_ct - surplus_kwh * export_value
@@ -244,4 +280,15 @@ class PlanningService:
                 "optimizer_source": candidate.optimizer_version,
             }
         )
-        return PlanningPublication(candidate, result)
+        operator_daily_costs = {
+            date: DailyCost(values["base_eur"], values["with_bat_eur"])
+            for date, values in daily_costs.items()
+        }
+        return PlanningPublication(
+            candidate, result, tuple(operator_points), operator_daily_costs
+        )
+
+
+def _operator_w(value: float) -> int:
+    """Match the established one-decimal publication then integer projection."""
+    return round(round(float(value), 1))

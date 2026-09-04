@@ -7,7 +7,9 @@ guidance before changing orchestration.
 
 Compose explicit market, forecast, battery and configuration inputs, invoke the
 pure optimizer and return its canonical `BatteryPlan` with separate
-non-authoritative publication metadata.
+typed operator points, typed daily costs and non-authoritative publication
+metadata. Build fresh projections from typed plan values, never by parsing the
+publication dictionary.
 
 ## Forbidden
 

@@ -11,6 +11,7 @@ def read_recorder_series(
     entity_scale: dict[str, float],
     *,
     start_time: dt.datetime,
+    end_time: dt.datetime,
 ) -> dict[str, tuple[tuple[float, float], ...]]:
     """Read normalized numeric history through Home Assistant's public API."""
     from homeassistant.components.recorder import history
@@ -21,6 +22,7 @@ def read_recorder_series(
     states = history.get_significant_states(
         hass,
         start_time,
+        end_time=end_time,
         entity_ids=sorted(set(mapped.values())),
         include_start_time_state=True,
         significant_changes_only=False,
@@ -35,6 +37,8 @@ def read_recorder_series(
                 timestamp = state.last_updated.timestamp()
                 value = float(state.state) * scale
             except (AttributeError, TypeError, ValueError):
+                continue
+            if timestamp > end_time.timestamp():
                 continue
             values.append((timestamp, value))
         result[role] = tuple(values)

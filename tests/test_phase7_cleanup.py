@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import datetime as dt
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 
+from custom_components.battery_strategy import planning_adapter, planning_pipeline
+from custom_components.battery_strategy.models import StrategyOptions
 from custom_components.battery_strategy.planning_runtime import PlanningRuntime
+from tests.live_contract_helpers import measurements
 
 ROOT = Path(__file__).parents[1]
 PACKAGE = ROOT / "custom_components" / "battery_strategy"
@@ -68,6 +73,7 @@ def test_planning_pipeline_uses_owned_application_boundaries_without_facades():
 def test_planning_runtime_snapshots_are_immutable_and_isolated():
     first = PlanningRuntime.from_mapping(
         {
+            "captured_at_ms": 1_800_000_000_000,
             "timezone": "Europe/Berlin",
             "battery_capacity_kwh": 6.0,
             "states": {"battery_soc": 42.0},
@@ -75,6 +81,7 @@ def test_planning_runtime_snapshots_are_immutable_and_isolated():
     )
     second = PlanningRuntime.from_mapping(
         {
+            "captured_at_ms": 1_800_000_000_000,
             "timezone": "UTC",
             "battery_capacity_kwh": 10.0,
             "states": {"battery_soc": 81.0},
@@ -87,6 +94,120 @@ def test_planning_runtime_snapshots_are_immutable_and_isolated():
     assert second.states["battery_soc"] == 81.0
     with pytest.raises(TypeError):
         first.states["battery_soc"] = 50.0
+
+
+def test_planning_runtime_deep_freezes_ha_owned_values():
+    nested = {"attributes": {"values": [1, {"flag": True}]}}
+    runtime = PlanningRuntime.from_mapping(
+        {
+            "captured_at_ms": 1_800_000_000_000,
+            "states": nested,
+            "price_intervals": [{"nested": {"values": [1, 2]}}],
+        }
+    )
+    nested["attributes"]["values"].append(3)
+
+    assert runtime.states["attributes"]["values"] == (1, {"flag": True})
+    assert runtime.price_intervals[0]["nested"]["values"] == (1, 2)
+    with pytest.raises(TypeError):
+        runtime.states["attributes"]["values"][1]["flag"] = False
+
+
+def test_captured_time_selects_the_exact_quarter_boundary_price():
+    boundary = dt.datetime(2027, 1, 15, 10, 15, tzinfo=dt.timezone.utc)
+    runtime = PlanningRuntime.from_mapping(
+        {
+            "captured_at_ms": int(boundary.timestamp() * 1000),
+            "timezone": "UTC",
+            "states": {},
+            "price_intervals": [
+                {"start_time": "2027-01-15T10:00:00+00:00", "price": 0.10},
+                {"start_time": "2027-01-15T10:15:00+00:00", "price": 0.20},
+            ],
+        }
+    )
+
+    assert planning_pipeline.collect_inputs(runtime)["p_now"] == 20.0
+
+
+def test_planning_path_has_no_wall_clock_after_adapter_capture():
+    paths = (
+        "planning_pipeline.py",
+        "planning_runtime.py",
+        "planning_state.py",
+        "planning_result.py",
+        "runtime_measurements.py",
+        "forecast_application.py",
+        "planning_service.py",
+        "plan_presentation.py",
+    )
+    source = "\n".join((PACKAGE / path).read_text(encoding="utf-8") for path in paths)
+
+    assert "datetime.now(" not in source
+    assert "dt.datetime.now(" not in source
+    assert "time.time(" not in source
+
+
+def test_stale_planning_result_cannot_replace_adapter_cache(monkeypatch):
+    adapter = planning_adapter.PlanningPipelineAdapter()
+    options = StrategyOptions()
+    previous = planning_adapter.result_from_persisted_output(
+        {"timestamp": "2027-01-15T10:15:00+00:00"},
+        options,
+        timezone=ZoneInfo("Europe/Berlin"),
+        now_ms=1_800_000_000_000,
+    )
+    adapter._last_result = previous
+    adapter._last_output = {"timestamp": "2027-01-15T10:15:00+00:00"}
+    adapter._last_options = options
+
+    def stale(_runtime):
+        raise planning_pipeline.StalePlanningResult
+
+    monkeypatch.setattr(planning_pipeline, "run", stale)
+    monkeypatch.setattr(planning_adapter.time, "monotonic", lambda: 123.0)
+    result = adapter.run(
+        measurements(0, 0, 0, 0, 0, 50),
+        options,
+        force=True,
+        runtime_context={"captured_at_ms": 1_800_000_000_000},
+    )
+
+    assert result is previous
+    assert adapter._last_output == {"timestamp": "2027-01-15T10:15:00+00:00"}
+    assert adapter._last_run_monotonic == 123.0
+
+
+def test_stale_planning_result_records_changed_options_without_retry_loop(monkeypatch):
+    adapter = planning_adapter.PlanningPipelineAdapter()
+    old_options = StrategyOptions()
+    new_options = StrategyOptions(grid_charging="price_sensitive")
+    previous = planning_adapter.result_from_persisted_output(
+        {"timestamp": "2027-01-15T10:15:00+00:00"},
+        old_options,
+        timezone=ZoneInfo("Europe/Berlin"),
+        now_ms=1_800_000_000_000,
+    )
+    adapter._last_result = previous
+    adapter._last_output = {"timestamp": "2027-01-15T10:15:00+00:00"}
+    adapter._last_options = old_options
+
+    def stale(_runtime):
+        raise planning_pipeline.StalePlanningResult
+
+    monkeypatch.setattr(planning_pipeline, "run", stale)
+    monkeypatch.setattr(planning_adapter.time, "monotonic", lambda: 123.0)
+    result = adapter.run(
+        measurements(0, 0, 0, 0, 0, 50),
+        new_options,
+        force=True,
+        runtime_context={"captured_at_ms": 1_800_000_000_000},
+    )
+
+    assert result.battery_plan is None
+    assert adapter._last_result is result
+    assert adapter._last_options == new_options
+    assert adapter.needs_run(new_options) is False
 
 
 def test_planning_service_does_not_duplicate_optimizer_version():

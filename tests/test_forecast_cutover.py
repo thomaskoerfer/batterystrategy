@@ -15,9 +15,16 @@ from custom_components.battery_strategy.contracts import (
     DataQuality,
     HistoricalFeatureSlot,
     LoadForecastContext,
+    PvPlant,
     SlotKey,
+    WeatherSlot,
 )
-from custom_components.battery_strategy.forecasting import FeatureStoreForecastNotReady
+from custom_components.battery_strategy.forecasting import (
+    FeatureStoreForecastNotReady,
+    ForecastModelConfig,
+    build_feature_store_forecast,
+    weather_targets,
+)
 from custom_components.battery_strategy.optimizer_state import save_state_document
 from custom_components.battery_strategy.planning_state import STATE_SCHEMA_VERSION
 
@@ -60,7 +67,10 @@ class ForecastProductionTests(unittest.TestCase):
         ]
         self.history = self._history(8)
         self.runtime = planning_pipeline.PlanningRuntime.from_mapping(
-            {"timezone": "Europe/Berlin"}
+            {
+                "captured_at_ms": int(self.start.timestamp() * 1000),
+                "timezone": "Europe/Berlin",
+            }
         )
 
     def _history(self, days: int):
@@ -92,26 +102,29 @@ class ForecastProductionTests(unittest.TestCase):
             )
         return tuple(slots)
 
-    def _forecast(self, history=None):
-        targets = planning_pipeline.build_forecast_targets(self.intervals, 0.8)
-        return planning_pipeline.build_production_forecast(
+    def _forecast(self, history=None, *, context=None, plant=None):
+        request = planning_pipeline.forecast_request(
             self.intervals,
-            targets,
-            now_local=self.start,
-            weather_factor=0.8,
-            forecast_tomorrow_kwh=None,
-            load_bias=1.0,
-            load_bias_slots=[1.0] * 96,
-            pv_bias_slots=[1.0] * 96,
-            pv_now_actual_w=600.0,
-            pv_global_bias=1.0,
-            pv_capacity_kwp=2.3,
-            pv_inverter_kw=2.0,
-            history=self.history if history is None else history,
-            context=LoadForecastContext(400.0),
-            weather=(),
-            component_specs=(),
+            captured_at_ms=int(self.start.timestamp() * 1000),
+            timezone="Europe/Berlin",
         )
+        result = planning_pipeline.ProductionForecastModule().forecast(
+            request,
+            self.history if history is None else history,
+            context or LoadForecastContext(400.0),
+            (),
+            plant or PvPlant(2.3, 2.0),
+            planning_pipeline.ProductionForecastConfig(
+                load_bias=1.0,
+                load_slot_biases=(1.0,) * 96,
+                pv_global_bias=1.0,
+                pv_slot_biases=(1.0,) * 96,
+                current_weather_factor=0.8,
+                current_pv_w=600.0,
+                tomorrow_energy_kwh=None,
+            ),
+        )
+        return result.bundle, result.diagnostics
 
     def test_feature_store_is_the_only_production_source(self):
         bundle, summary = self._forecast()
@@ -120,6 +133,75 @@ class ForecastProductionTests(unittest.TestCase):
         self.assertEqual(len(bundle.load.slots), 16)
         self.assertEqual(len(bundle.pv.slots), 16)
         self.assertGreaterEqual(summary["load_usable_slots"], 7 * 96)
+
+    def test_contract_forecasters_are_independent_and_composer_only_combines(self):
+        bundle, _ = self._forecast()
+        self.assertEqual(len(bundle.load.slots), len(bundle.pv.slots))
+        self.assertEqual(
+            tuple(slot.slot for slot in bundle.load.slots),
+            tuple(slot.slot for slot in bundle.pv.slots),
+        )
+        changed_plant, _ = self._forecast(plant=PvPlant(0.1, 0.1))
+        self.assertEqual(changed_plant.load, bundle.load)
+        changed_load, _ = self._forecast(context=LoadForecastContext(1600.0))
+        self.assertEqual(changed_load.pv, bundle.pv)
+
+    def test_composed_forecasters_preserve_feature_store_output_exactly(self):
+        request = planning_pipeline.forecast_request(
+            self.intervals,
+            captured_at_ms=int(self.start.timestamp() * 1000),
+            timezone="Europe/Berlin",
+        )
+        config = ForecastModelConfig(
+            timezone="Europe/Berlin",
+            load_bias=1.0,
+            load_slot_biases=(1.0,) * 96,
+            pv_global_bias=1.0,
+            pv_slot_biases=(1.0,) * 96,
+            current_weather_factor=0.8,
+            current_pv_w=600.0,
+            tomorrow_date=(self.start.date() + dt.timedelta(days=1)).isoformat(),
+            tomorrow_energy_kwh=None,
+            pv_capacity_kwp=2.3,
+            pv_inverter_kw=2.0,
+        )
+        expected = build_feature_store_forecast(
+            request,
+            self.history,
+            weather_targets(request, (), 0.8),
+            LoadForecastContext(400.0),
+            config,
+        )
+        actual, _ = self._forecast()
+
+        self.assertEqual(actual, expected)
+
+    def test_weather_targets_preserve_last_quarter_hourly_alignment(self):
+        request = planning_pipeline.forecast_request(
+            self.intervals[:4],
+            captured_at_ms=int(self.start.timestamp() * 1000),
+            timezone="Europe/Berlin",
+        )
+        weather = tuple(
+            WeatherSlot(slot, shortwave_radiation_w_m2=100.0 * (index + 1))
+            for index, slot in enumerate(request.slots)
+        )
+
+        targets = weather_targets(request, weather, 0.5)
+
+        self.assertEqual(len({target.weather_factor for target in targets}), 1)
+        self.assertEqual(
+            targets[0].weather_factor,
+            planning_pipeline.weather_factor_from_cloud_rad(0.0, 400.0),
+        )
+
+    def test_per_run_forecast_observations_are_not_constructor_state(self):
+        module_init = inspect.signature(planning_pipeline.ProductionForecastModule)
+        self.assertEqual(len(module_init.parameters), 0)
+        forecast_parameters = inspect.signature(
+            planning_pipeline.ProductionForecastModule.forecast
+        ).parameters
+        self.assertIn("config", forecast_parameters)
 
     def test_future_history_is_not_visible_to_forecast(self):
         baseline, _ = self._forecast()
@@ -175,12 +257,17 @@ class ForecastProductionTests(unittest.TestCase):
                 },
             )
             runtime = planning_pipeline.PlanningRuntime.from_mapping(
-                {"config_dir": temp_dir, "timezone": "Europe/Berlin"}
+                {
+                    "captured_at_ms": int(self.start.timestamp() * 1000),
+                    "config_dir": temp_dir,
+                    "timezone": "Europe/Berlin",
+                }
             )
-            data = planning_pipeline.load_state(runtime)
-        self.assertNotIn("forecast_shadow_trace", data)
-        self.assertNotIn("forecast_parity_trace", data)
-        self.assertEqual(data["state_schema"], STATE_SCHEMA_VERSION)
+            state = runtime.state_store.load(runtime)
+            document = runtime.state_store.to_document(state)
+        self.assertNotIn("forecast_shadow_trace", document)
+        self.assertNotIn("forecast_parity_trace", document)
+        self.assertEqual(document["state_schema"], STATE_SCHEMA_VERSION)
 
 
 if __name__ == "__main__":

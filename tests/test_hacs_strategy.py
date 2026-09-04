@@ -263,6 +263,7 @@ class HacsStrategyTests(unittest.TestCase):
 
     def _optimizer_runtime_context(self):
         return {
+            "captured_at_ms": 1_800_000_000_000,
             "battery_capacity_kwh": TEST_CAPACITY_KWH,
             "min_soc_pct": TEST_MIN_SOC_PCT,
             "max_soc_pct": TEST_MAX_SOC_PCT,
@@ -370,14 +371,21 @@ class HacsStrategyTests(unittest.TestCase):
 
     def test_optimizer_history_normalizes_mapped_power_units(self):
         runtime = planning_pipeline.PlanningRuntime.from_mapping(
-            {"history_series": {"pv_power": ((100.0, 1250.0),)}}
+            {
+                "captured_at_ms": 1_800_000_000_000,
+                "history_series": {"pv_power": ((100.0, 1250.0),)},
+            }
         )
         result = planning_pipeline.fetch_sensor_series_many(runtime, ["pv_power"], 0.0)
         self.assertEqual(result["pv_power"], [(100.0, 1250.0)])
 
     def test_optimizer_history_does_not_fall_back_to_local_sqlite(self):
         runtime = planning_pipeline.PlanningRuntime.from_mapping(
-            {"states": {"grid_import": 123.0}, "history_series": {}}
+            {
+                "captured_at_ms": 1_800_000_000_000,
+                "states": {"grid_import": 123.0},
+                "history_series": {},
+            }
         )
         states = planning_pipeline.get_latest_states(
             runtime, ["grid_import", "missing_sensor"]
@@ -580,6 +588,10 @@ class HacsStrategyTests(unittest.TestCase):
                 events.append("prepare")
                 return True
 
+            @staticmethod
+            def finalize_unload():
+                events.append("finalize")
+
         class ConfigEntries:
             @staticmethod
             async def async_unload_platforms(entry, platforms):
@@ -591,7 +603,7 @@ class HacsStrategyTests(unittest.TestCase):
             config_entries=ConfigEntries(),
         )
         self.assertTrue(asyncio.run(async_unload_entry(hass, entry)))
-        self.assertEqual(events, ["prepare", "platforms"])
+        self.assertEqual(events, ["prepare", "platforms", "finalize"])
 
     def test_failed_platform_unload_restores_coordinator_runtime(self):
         events = []

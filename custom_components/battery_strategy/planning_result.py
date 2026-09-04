@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import datetime as dt
-import time
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from types import MappingProxyType
@@ -56,12 +55,81 @@ def build_planning_result(
         battery_plan=battery_plan,
         operator_plan=operator_plan_from_output(
             operator_data,
+            battery_plan=battery_plan,
             timezone=timezone,
             now_ms=now_ms,
             override_active=override_active,
         ),
         operator_data=operator_data,
     )
+
+
+def build_fresh_planning_result(
+    battery_plan: BatteryPlan,
+    operator_points: tuple[PlanPoint, ...],
+    operator_daily_costs: Mapping[str, DailyCost],
+    operator_data: dict[str, object],
+    *,
+    now_ms: int,
+    override_active: bool,
+) -> PlanningResult:
+    """Build a fresh projection directly from canonical typed planning output."""
+    points = tuple(point for point in operator_points if point.ts_ms + SLOT_MS > now_ms)
+    dates = tuple(dict.fromkeys(point.date for point in points))
+    daily_costs = {
+        date: operator_daily_costs[date]
+        for date in dates[:2]
+        if date in operator_daily_costs
+    }
+    operator_plan = StrategyPlan(
+        points=points,
+        current_mode=_mode_to_command(
+            str(
+                operator_data.get("mode") or operator_data.get("planned_mode") or "idle"
+            )
+        ),
+        current_power_w=int(
+            round(
+                _float(
+                    operator_data.get(
+                        "recommended_power_w",
+                        operator_data.get("planned_power_w", 0),
+                    )
+                )
+            )
+        ),
+        reason=str(operator_data.get("reason") or "planning_pipeline"),
+        daily_costs=daily_costs,
+        price_stats={
+            "min": _maybe_float(operator_data.get("price_min_ct")),
+            "max": _maybe_float(operator_data.get("price_max_ct")),
+            "avg": _maybe_float(operator_data.get("price_avg_ct")),
+            "p_low": _maybe_float(operator_data.get("price_low_ct")),
+            "p_high": _maybe_float(operator_data.get("price_high_ct")),
+            "terminal_value_ct": _maybe_float(operator_data.get("terminal_value_ct")),
+            "discharge_floor_ct": _maybe_float(operator_data.get("discharge_floor_ct")),
+        },
+        load_forecast_next_1h_kwh=_float(
+            operator_data.get("load_forecast_next_1h_kwh")
+        ),
+        pv_forecast_corrected_next_1h_kwh=_float(
+            operator_data.get("pv_forecast_corrected_next_1h_kwh")
+        ),
+        net_load_forecast_next_1h_kwh=_float(
+            operator_data.get("net_load_forecast_next_1h_kwh")
+        ),
+        grid_import_forecast_next_1h_kwh=_float(
+            operator_data.get("grid_import_forecast_next_1h_kwh")
+        ),
+        grid_export_forecast_next_1h_kwh=_float(
+            operator_data.get("grid_export_forecast_next_1h_kwh")
+        ),
+        virtual_soc_end_tomorrow_pct=_float(
+            operator_data.get("virtual_soc_end_tomorrow_pct")
+        ),
+        override_active=override_active,
+    )
+    return PlanningResult(battery_plan, operator_plan, operator_data)
 
 
 def persisted_output(
@@ -84,7 +152,7 @@ def result_from_persisted_output(
     options: StrategyOptions,
     *,
     timezone: dt.tzinfo,
-    now_ms: int | None = None,
+    now_ms: int,
 ) -> PlanningResult:
     """Restore a result; legacy/invalid snapshots retain display data but fail closed."""
     display_data = {
@@ -104,7 +172,7 @@ def result_from_persisted_output(
         battery_plan,
         display_data,
         timezone=timezone,
-        now_ms=int(time.time() * 1000) if now_ms is None else now_ms,
+        now_ms=now_ms,
         override_active=options.manual_mode != "off",
     )
 
@@ -112,12 +180,15 @@ def result_from_persisted_output(
 def operator_plan_from_output(
     output: Mapping[str, object],
     *,
+    battery_plan: BatteryPlan | None = None,
     timezone: dt.tzinfo,
     now_ms: int,
     override_active: bool,
 ) -> StrategyPlan:
     """Project persisted/operator data into the stable Home Assistant plan model."""
-    points = _points_from_output(output, now_ms=now_ms, timezone=timezone)
+    points = _points_from_output(
+        output, battery_plan=battery_plan, now_ms=now_ms, timezone=timezone
+    )
     today = _date_from_points(points, 0)
     tomorrow = _date_from_points(points, 1)
     daily_costs = {}
@@ -269,6 +340,7 @@ def _execution_policy(options: StrategyOptions) -> dict[str, object]:
 def _points_from_output(
     output: Mapping[str, object],
     *,
+    battery_plan: BatteryPlan | None = None,
     now_ms: int,
     timezone: dt.tzinfo,
 ) -> list[PlanPoint]:
@@ -279,6 +351,11 @@ def _points_from_output(
     soc = _merge_series(
         _series(output.get("profile_today_soc")),
         _series(output.get("profile_tomorrow_soc")),
+    )
+    canonical_soc = (
+        {slot.slot.start_ms: slot.expected_soc_start_pct for slot in battery_plan.slots}
+        if battery_plan is not None
+        else {}
     )
     power = _merge_series(
         _series(output.get("profile_today_power")),
@@ -337,22 +414,26 @@ def _points_from_output(
     )
     points = []
     for ts_ms in timestamps:
-        ch = _at(charge, ts_ms)
-        dis = _at(discharge, ts_ms)
+        ch = _exact(charge, ts_ms)
+        dis = _exact(discharge, ts_ms)
         forecast_surplus_w = max(0.0, _at(pv, ts_ms) - _at(load, ts_ms))
         explicit_sources = bool(pv_charge or grid_charge or required_charge)
         pv_charge_w = (
-            _at(pv_charge, ts_ms) if explicit_sources else min(ch, forecast_surplus_w)
+            _exact(pv_charge, ts_ms)
+            if explicit_sources
+            else min(ch, forecast_surplus_w)
         )
         grid_charge_w = (
-            _at(grid_charge, ts_ms) if explicit_sources else max(0.0, ch - pv_charge_w)
+            _exact(grid_charge, ts_ms)
+            if explicit_sources
+            else max(0.0, ch - pv_charge_w)
         )
         required_charge_w = (
-            _at(required_charge, ts_ms)
+            _exact(required_charge, ts_ms)
             if explicit_sources
             else (ch if grid_charge_w > 0.0 else 0.0)
         )
-        pow_w = _at(power, ts_ms) or max(ch, dis)
+        pow_w = _exact(power, ts_ms) or max(ch, dis)
         mode = COMMAND_INPUT if ch > 0 else COMMAND_OUTPUT if dis > 0 else COMMAND_IDLE
         points.append(
             PlanPoint(
@@ -370,8 +451,13 @@ def _points_from_output(
                 power_w=int(round(abs(pow_w))),
                 charge_fc_w=int(round(ch)),
                 discharge_fc_w=int(round(dis)),
-                soc_pct=round(_at(soc, ts_ms), 2),
-                discharge_budget_kwh=round(_at(discharge_budget, ts_ms), 3),
+                soc_pct=round(
+                    _exact(soc, ts_ms)
+                    if ts_ms in soc
+                    else canonical_soc.get(ts_ms, _at(soc, ts_ms)),
+                    2,
+                ),
+                discharge_budget_kwh=round(_exact(discharge_budget, ts_ms), 3),
                 pv_charge_fc_w=int(round(pv_charge_w)),
                 grid_charge_fc_w=int(round(grid_charge_w)),
                 required_charge_fc_w=int(round(required_charge_w)),
@@ -406,6 +492,11 @@ def _at(series: dict[int, float], ts_ms: int) -> float:
         return 0.0
     best = min(series, key=lambda item_ts: abs(item_ts - ts_ms))
     return float(series[best]) if abs(best - ts_ms) <= 20 * 60 * 1000 else 0.0
+
+
+def _exact(series: dict[int, float], ts_ms: int) -> float:
+    """Return slot-bound plan data without borrowing an adjacent action."""
+    return float(series.get(ts_ms, 0.0))
 
 
 def _date_from_points(points: list[PlanPoint], index: int) -> str | None:

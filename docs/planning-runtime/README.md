@@ -17,7 +17,9 @@ respective components.
 The adapter captures live inputs, configured strategy options, finalized
 feature history, weather and device-component context. `PlanningRuntime`
 validates and freezes that complete snapshot for exactly one refresh. No
-runtime input or configuration is written to module globals.
+runtime input or configuration is written to module globals. Its required
+`captured_at_ms` is the sole observation time for all downstream cutoffs,
+slot selection, forecast generation and persistence ordering.
 
 The runtime is split by application responsibility:
 
@@ -45,8 +47,13 @@ diagnostics, profiles and measured-savings projection. Only the canonical plan
 may authorize compilation; presentation mappings are never converted back into
 an executable plan. It does not expose a command-line or stdout JSON protocol.
 
-The serialized planning state uses schema 10 and stores the canonical plan next
-to operator data. Schema-9 display data remains readable after upgrade, but it
+The serialized planning state uses schema 11 and stores the canonical plan next
+to operator data. `PlanningStateStore` is the sole migration, validation and
+atomic-write owner. It exposes separate typed owner state for forecast learning,
+simulation, market enrichment, savings and publication without splitting the
+on-disk document. A lifecycle lease and captured-time check prevent an obsolete
+coordinator or older planning run from overwriting newer state. Schema-9/10
+display data remains readable after upgrade, but it
 cannot authorize control and fails closed until the optimizer publishes a new
 canonical plan. Invalid plans and plans built with different physical battery
 constraints follow the same rule. This is a one-time data migration, not an

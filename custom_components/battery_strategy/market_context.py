@@ -14,7 +14,11 @@ import math
 import statistics
 import urllib.parse
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 from urllib.request import Request, urlopen
+
+if TYPE_CHECKING:
+    from .planning_state import MarketState
 
 
 @dataclass(frozen=True)
@@ -168,10 +172,10 @@ class MarketContextService:
         return None
 
     def get_eex_day_context(
-        self, state: dict, local_now: dt.datetime
+        self, state: MarketState, local_now: dt.datetime
     ) -> dict[str, dict]:
         """Return cached EEX day products, refreshing them when needed."""
-        cache = state.setdefault("eex_cache", {})
+        cache = state.eex_cache
         fetched_at = float(cache.get("fetched_at_ts", 0.0) or 0.0)
         if (
             cache.get("days")

@@ -8,6 +8,10 @@ from types import MappingProxyType
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from .component_config import LoadComponentSpec
+from .contracts import HistoricalFeatureSlot, LoadForecastContext, WeatherSlot
+from .planning_state import PLANNING_STATE_FILENAME, PlanningStateStore
+
 
 @dataclass(frozen=True, slots=True)
 class PlanningRuntimeSettings:
@@ -33,7 +37,7 @@ class PlanningRuntimeSettings:
 
     @property
     def state_file(self) -> str:
-        return f"{self.config_dir.rstrip('/')}/battery_strategy_optimizer_state.json"
+        return f"{self.config_dir.rstrip('/')}/{PLANNING_STATE_FILENAME}"
 
     @property
     def min_energy_kwh(self) -> float:
@@ -65,18 +69,30 @@ class PlanningRuntimeSettings:
 class PlanningRuntime:
     """Complete immutable data snapshot for one planning refresh."""
 
+    captured_at_ms: int
     settings: PlanningRuntimeSettings
+    state_store: PlanningStateStore
     states: Mapping[str, Any]
     history_series: Mapping[str, tuple[tuple[float, float], ...]]
     price_intervals: tuple[Mapping[str, Any], ...]
-    forecast_history: tuple[Any, ...]
-    forecast_weather: tuple[Any, ...]
-    forecast_context: Any
-    forecast_component_specs: tuple[Any, ...]
+    forecast_history: tuple[HistoricalFeatureSlot, ...]
+    forecast_weather: tuple[WeatherSlot, ...]
+    forecast_context: LoadForecastContext | None
+    forecast_component_specs: tuple[LoadComponentSpec, ...]
+
+    @property
+    def captured_at_s(self) -> float:
+        """Return the single adapter-captured run time in epoch seconds."""
+        return self.captured_at_ms / 1000.0
 
     @classmethod
     def from_mapping(cls, context: Mapping[str, Any]) -> PlanningRuntime:
         """Validate and freeze the adapter-owned runtime mapping."""
+        if "captured_at_ms" not in context:
+            raise ValueError("planning runtime requires captured_at_ms")
+        captured_at_ms = int(context["captured_at_ms"])
+        if captured_at_ms < 0:
+            raise ValueError("captured_at_ms must be non-negative")
         capacity = max(0.5, float(context.get("battery_capacity_kwh") or 6.0))
         min_soc = max(0.0, min(100.0, float(context.get("min_soc_pct") or 0.0)))
         max_soc = max(min_soc, min(100.0, float(context.get("max_soc_pct") or 100.0)))
@@ -129,7 +145,12 @@ class PlanningRuntime:
                 0.1, float(context.get("pv_inverter_power_kw") or pv_capacity)
             ),
         )
-        states = MappingProxyType(dict(context.get("states") or {}))
+        states = MappingProxyType(
+            {
+                str(key): _deep_freeze(value)
+                for key, value in (context.get("states") or {}).items()
+            }
+        )
         history = MappingProxyType(
             {
                 key: tuple((float(ts), float(value)) for ts, value in values)
@@ -137,11 +158,18 @@ class PlanningRuntime:
             }
         )
         prices = tuple(
-            MappingProxyType(dict(item))
+            MappingProxyType(
+                {str(key): _deep_freeze(value) for key, value in item.items()}
+            )
             for item in (context.get("price_intervals") or ())
         )
+        state_store = context.get("state_store")
+        if not isinstance(state_store, PlanningStateStore):
+            state_store = PlanningStateStore(settings.state_file)
         return cls(
+            captured_at_ms=captured_at_ms,
             settings=settings,
+            state_store=state_store,
             states=states,
             history_series=history,
             price_intervals=prices,
@@ -152,3 +180,16 @@ class PlanningRuntime:
                 context.get("forecast_component_specs") or ()
             ),
         )
+
+
+def _deep_freeze(value: Any) -> Any:
+    """Detach and recursively freeze mutable values owned by Home Assistant."""
+    if isinstance(value, Mapping):
+        return MappingProxyType(
+            {str(key): _deep_freeze(item) for key, item in value.items()}
+        )
+    if isinstance(value, (list, tuple)):
+        return tuple(_deep_freeze(item) for item in value)
+    if isinstance(value, (set, frozenset)):
+        return frozenset(_deep_freeze(item) for item in value)
+    return value

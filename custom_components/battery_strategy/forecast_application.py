@@ -4,13 +4,25 @@ from __future__ import annotations
 
 import datetime as dt
 import time
+from dataclasses import dataclass
+from zoneinfo import ZoneInfo
 
-from .contracts import ForecastRequest, LoadForecastContext, SlotKey
+from .component_config import LoadComponentSpec
+from .contracts import (
+    ForecastBundle,
+    ForecastRequest,
+    HistoricalFeatureSlot,
+    LoadForecastContext,
+    PvPlant,
+    SlotKey,
+    WeatherSlot,
+)
 from .forecasting import (
+    ConfiguredLoadForecaster,
+    ConfiguredPvForecaster,
     FeatureStoreForecastNotReady,
+    ForecastComposer,
     ForecastModelConfig,
-    ForecastTargetInput,
-    build_feature_store_forecast,
     feature_store_forecast_readiness,
 )
 
@@ -94,30 +106,107 @@ def weather_snapshot(runtime, now_ts_ms):
     }
 
 
-def build_production_forecast(
-    intervals,
-    targets,
-    *,
-    now_local,
-    weather_factor,
-    forecast_tomorrow_kwh,
-    load_bias,
-    load_bias_slots,
-    pv_bias_slots,
-    pv_now_actual_w,
-    pv_global_bias,
-    pv_capacity_kwp,
-    pv_inverter_kw,
-    history,
-    context,
-    weather,
-    component_specs,
-):
-    """Build the sole production forecast from finalized feature history."""
-    started = time.perf_counter()
-    request = ForecastRequest(
-        as_of_ms=int(now_local.timestamp() * 1000),
-        timezone=str(getattr(now_local.tzinfo, "key", now_local.tzinfo)),
+@dataclass(frozen=True, slots=True)
+class ProductionForecastConfig:
+    """Application-owned per-run parity inputs absent from current contracts."""
+
+    load_bias: float
+    load_slot_biases: tuple[float, ...]
+    pv_global_bias: float
+    pv_slot_biases: tuple[float, ...]
+    current_weather_factor: float
+    current_pv_w: float | None
+    tomorrow_energy_kwh: float | None
+
+
+@dataclass(frozen=True, slots=True)
+class ProductionForecastResult:
+    """Forecast output plus non-authoritative evaluation metadata."""
+
+    bundle: ForecastBundle
+    diagnostics: dict[str, object]
+
+
+class ProductionForecastModule:
+    """Narrow legacy bridge for exact current production forecast behavior."""
+
+    def forecast(
+        self,
+        request: ForecastRequest,
+        history: tuple[HistoricalFeatureSlot, ...],
+        context: LoadForecastContext,
+        weather: tuple[WeatherSlot, ...],
+        plant: PvPlant,
+        config: ProductionForecastConfig,
+        component_specs: tuple[LoadComponentSpec, ...] = (),
+    ) -> ProductionForecastResult:
+        started = time.perf_counter()
+        eligible = tuple(
+            item for item in history if item.slot.end_ms <= request.as_of_ms
+        )
+        readiness = feature_store_forecast_readiness(
+            eligible, component_specs=component_specs
+        )
+        if not readiness.ready:
+            raise FeatureStoreForecastNotReady(readiness.reason or "not_ready")
+
+        tomorrow_date = (
+            dt.datetime.fromtimestamp(
+                request.slots[0].start_ms / 1000.0, dt.timezone.utc
+            )
+            .astimezone(ZoneInfo(request.timezone))
+            .date()
+            + dt.timedelta(days=1)
+        ).isoformat()
+        model_config = ForecastModelConfig(
+            timezone=request.timezone,
+            load_bias=float(config.load_bias),
+            load_slot_biases=tuple(config.load_slot_biases),
+            pv_global_bias=float(config.pv_global_bias),
+            pv_slot_biases=tuple(config.pv_slot_biases),
+            current_weather_factor=float(config.current_weather_factor),
+            current_pv_w=(
+                None
+                if config.current_pv_w is None
+                else max(0.0, float(config.current_pv_w))
+            ),
+            tomorrow_date=tomorrow_date,
+            tomorrow_energy_kwh=config.tomorrow_energy_kwh,
+            pv_capacity_kwp=plant.generator_kwp,
+            pv_inverter_kw=plant.inverter_kw,
+        )
+        bundle = ForecastComposer(
+            ConfiguredLoadForecaster(
+                model_config.load_config(),
+                config.current_weather_factor,
+                component_specs,
+            ),
+            ConfiguredPvForecaster(
+                model_config.pv_config(),
+                config.current_weather_factor,
+            ),
+        ).compose(request, eligible, context, weather, plant)
+        diagnostics = {
+            "source": "feature_store",
+            "slot_count": len(request.slots),
+            "runtime_ms": round((time.perf_counter() - started) * 1000.0, 3),
+            "model_version": (f"{bundle.load.model_version}+{bundle.pv.model_version}"),
+            "history_slot_count": readiness.history_slots,
+            "load_usable_slots": readiness.load_usable_slots,
+            "pv_usable_slots": readiness.pv_usable_slots,
+            "component_usable_slots": readiness.component_usable_slots,
+            "history_span_days": readiness.history_span_days,
+        }
+        return ProductionForecastResult(bundle, diagnostics)
+
+
+def forecast_request(
+    intervals, *, captured_at_ms: int, timezone: str
+) -> ForecastRequest:
+    """Create the contract request from one captured planning grid."""
+    return ForecastRequest(
+        as_of_ms=int(captured_at_ms),
+        timezone=timezone,
         slots=tuple(
             SlotKey(
                 int(item["dt"].timestamp() * 1000),
@@ -126,71 +215,3 @@ def build_production_forecast(
             for item in intervals
         ),
     )
-    immutable_history = tuple(history)
-    forecast_context = context
-    if not isinstance(forecast_context, LoadForecastContext):
-        raise FeatureStoreForecastNotReady("missing_current_load_context")
-    immutable_weather = tuple(weather)
-    immutable_component_specs = tuple(component_specs)
-    config = ForecastModelConfig(
-        timezone=request.timezone,
-        load_bias=float(load_bias),
-        load_slot_biases=tuple(float(value) for value in load_bias_slots),
-        pv_global_bias=float(pv_global_bias),
-        pv_slot_biases=tuple(float(value) for value in pv_bias_slots),
-        current_weather_factor=float(weather_factor),
-        current_pv_w=(
-            None if pv_now_actual_w is None else max(0.0, float(pv_now_actual_w))
-        ),
-        tomorrow_date=(intervals[0]["dt"].date() + dt.timedelta(days=1)).isoformat(),
-        tomorrow_energy_kwh=(
-            None if forecast_tomorrow_kwh is None else float(forecast_tomorrow_kwh)
-        ),
-        pv_capacity_kwp=float(pv_capacity_kwp),
-        pv_inverter_kw=float(pv_inverter_kw),
-    )
-    readiness = feature_store_forecast_readiness(
-        tuple(
-            item for item in immutable_history if item.slot.end_ms <= request.as_of_ms
-        ),
-        component_specs=immutable_component_specs,
-    )
-    forecast = build_feature_store_forecast(
-        request,
-        immutable_history,
-        tuple(targets),
-        forecast_context,
-        config,
-        weather=immutable_weather,
-        component_specs=immutable_component_specs,
-    )
-    load_w = [slot.energy.p50_kwh / SLOT_H * 1000.0 for slot in forecast.load.slots]
-    pv_w = [slot.energy.p50_kwh / SLOT_H * 1000.0 for slot in forecast.pv.slots]
-    if len(load_w) != len(intervals) or len(pv_w) != len(intervals):
-        raise ValueError("production forecast does not match requested slot grid")
-    diagnostics = {
-        "source": "feature_store",
-        "slot_count": len(request.slots),
-        "runtime_ms": round((time.perf_counter() - started) * 1000.0, 3),
-        "model_version": f"{forecast.load.model_version}+{forecast.pv.model_version}",
-        "history_slot_count": readiness.history_slots,
-        "load_usable_slots": readiness.load_usable_slots,
-        "pv_usable_slots": readiness.pv_usable_slots,
-        "component_usable_slots": readiness.component_usable_slots,
-        "history_span_days": readiness.history_span_days,
-    }
-    return forecast, diagnostics
-
-
-def build_forecast_targets(intervals, weather_factor, weather_hourly=None):
-    """Build the weather-aligned target grid at the composition boundary."""
-    targets = []
-    for item in intervals:
-        hour_key = item["dt"].replace(minute=0, second=0, microsecond=0).isoformat()
-        slot_weather_factor = float(
-            (weather_hourly or {})
-            .get(hour_key, {})
-            .get("weather_factor", weather_factor)
-        )
-        targets.append(ForecastTargetInput(item["dt"], slot_weather_factor))
-    return tuple(targets)

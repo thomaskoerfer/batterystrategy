@@ -90,9 +90,9 @@ from .load_components import (
 )
 from .models import StrategyOptions
 from .operator_projection import build_operator_projection
-from .optimizer_state import last_known_soc_pct
 from .planner import BackgroundPlanner
 from .planning_adapter import PlanningPipelineAdapter
+from .planning_state import PlanningStateStore
 from .strategy import DeterministicLiveController
 from .weather import OpenMeteoWeatherProvider
 
@@ -111,7 +111,8 @@ UNLOAD_STOP_POLL_S = 0.5
 
 def _load_last_known_soc_pct(path: Path) -> float | None:
     """Load the most recent valid real battery SoC from optimizer state."""
-    return last_known_soc_pct(path)
+    value, _ = PlanningStateStore(str(path)).runtime_snapshot()
+    return value
 
 
 class BatteryStrategyCoordinator(DataUpdateCoordinator):
@@ -128,6 +129,7 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         feature_history=(),
         compiler_runtime_store: CompilerRuntimeStore | None = None,
         restored_compiler_runtime: CompilerRuntimeSnapshot | None = None,
+        planning_state_store: PlanningStateStore | None = None,
     ):
         """Initialize coordinator."""
         super().__init__(
@@ -141,7 +143,9 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         self._manual_power_w = 0.0
         self._manual_until: dt.datetime | None = None
         self._feature_history = tuple(feature_history)
-        self._planning_pipeline = PlanningPipelineAdapter(hass, entry)
+        self._planning_pipeline = PlanningPipelineAdapter(
+            hass, entry, planning_state_store
+        )
         self._planning_pipeline.hydrate_output(last_optimizer_output)
         self._planner = BackgroundPlanner(
             hass, self._planning_pipeline, self.async_request_refresh
@@ -1101,6 +1105,10 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
                 pass
         await self._planner.async_shutdown()
         return True
+
+    def finalize_unload(self) -> None:
+        """Revoke state writes after all entry platforms accepted unload."""
+        self._planning_pipeline.revoke_state_writer()
 
     async def async_abort_unload(self) -> None:
         """Restore retained runtime ownership after platform unload rejection."""

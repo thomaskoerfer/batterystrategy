@@ -14,7 +14,8 @@ are not an acceptable form of contract evolution.
 ## Safety invariant
 
 There is exactly one battery actuation path. Evaluation and diagnostics never
-receive an actuator reference. Only the live controller may call the actuator.
+receive an actuator reference. The pure live controller returns a validated
+command; only the Home Assistant coordinator calls the actuator.
 
 ## Target data flow
 
@@ -214,11 +215,18 @@ slot while live PV-follow remains available. The coordinator retains HA
 lifecycle, scheduling and the single actuator call; this extraction does not
 change the compiler or live-control contracts.
 
-Planning state schema 10 stores the canonical `BatteryPlan` beside operator
-data. Older or malformed display snapshots remain readable but fail closed for
-control until a fresh optimizer result exists. `planning_result.py` owns this
-single persistence codec and the separation between canonical intent and
-operator projection.
+Planning state schema 11 stores the canonical `BatteryPlan` beside operator
+data. `PlanningStateStore` owns one atomic document while exposing typed,
+domain-owned forecast, simulation, market, savings and publication state to the
+planning application. Older or malformed display snapshots remain readable but
+fail closed for control until a fresh optimizer result exists.
+`planning_result.py` owns the canonical-plan codec and keeps fresh typed
+projection separate from the display-only restore parser.
+
+Every planning refresh has exactly one adapter-captured `captured_at_ms`.
+Planning, history cutoffs, price selection, forecast generation and persistence
+ordering derive time from that snapshot; downstream planning modules do not
+read the wall clock.
 
 Configuration defaults and numeric constraints are owned once in
 `config_definitions.py`; profile-aware entry validation is owned by

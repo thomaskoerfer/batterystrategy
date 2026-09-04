@@ -15,6 +15,10 @@
   entry runtime data and register integration services at domain setup.
 - Return `PlanningResult` from the planning pipeline. Preserve the canonical
   `BatteryPlan` for the compiler and keep operator data non-authoritative.
+- Require one adapter-captured `captured_at_ms`; downstream planning code must
+  derive all time decisions from it.
+- Keep one `PlanningStateStore` as the atomic persistence owner and mutate only
+  the typed owner state belonging to the current component.
 
 ## Forbidden
 
@@ -29,6 +33,7 @@
   or expose large changing profile attributes to Recorder.
 - Reconstruct a `BatteryPlan` or compiler permission from `StrategyPlan`,
   profiles, diagnostics or persisted display-only data.
+- Read the wall clock after the adapter has captured the planning runtime.
 
 ## Required checks
 

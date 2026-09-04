@@ -6,7 +6,9 @@ rules before working on this layer.
 ## Allowed
 
 Own deterministic load and PV prediction, uncertainty, model quality and named
-load-component composition from normalized feature and weather inputs.
+load-component composition from normalized feature and weather inputs. Keep
+concrete `LoadForecaster` and `PvForecaster` implementations independent; their
+composer may only invoke them and construct `ForecastBundle`.
 
 ## Forbidden
 

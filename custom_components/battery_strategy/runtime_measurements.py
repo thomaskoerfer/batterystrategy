@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import datetime as dt
-
 E_PRICE_CURRENT = "price_current"
 E_PRICE_EUR = "price_eur"
 E_GRID_IMPORT = "grid_import"
@@ -36,7 +34,7 @@ def fetch_sensor_series_many(runtime, entity_ids, cutoff_ts):
         entity_id: [
             (float(timestamp), float(value))
             for timestamp, value in runtime.history_series.get(entity_id, ())
-            if float(timestamp) >= cutoff
+            if cutoff <= float(timestamp) <= runtime.captured_at_s
         ]
         for entity_id in entity_ids
     }
@@ -48,7 +46,7 @@ def fetch_sensor_series(runtime, entity_id, cutoff_ts):
 
 
 def fetch_net_actual_profile(runtime, hours=48):
-    cutoff_ts = dt.datetime.now(dt.timezone.utc).timestamp() - hours * 3600
+    cutoff_ts = runtime.captured_at_s - hours * 3600
     series_map = fetch_sensor_series_many(
         runtime,
         [
@@ -76,7 +74,7 @@ def fetch_net_actual_profile(runtime, hours=48):
 
 
 def fetch_pv_actual_profile(runtime, hours=48):
-    cutoff_ts = dt.datetime.now(dt.timezone.utc).timestamp() - hours * 3600
+    cutoff_ts = runtime.captured_at_s - hours * 3600
     pv = fetch_sensor_series_many(runtime, [E_PV_POWER], cutoff_ts)[E_PV_POWER]
     buckets = {}
     for ts, v in pv:
@@ -90,10 +88,8 @@ def fetch_pv_actual_profile(runtime, hours=48):
     return out
 
 
-def build_house_actual_profile_from_samples(samples, hours=48, now_ts=None):
-    now_ts = float(
-        now_ts if now_ts is not None else dt.datetime.now(dt.timezone.utc).timestamp()
-    )
+def build_house_actual_profile_from_samples(samples, hours=48, *, now_ts):
+    now_ts = float(now_ts)
     cutoff_ts = now_ts - hours * 3600
     buckets = {}
     for sample in samples or []:
@@ -118,11 +114,13 @@ def build_house_actual_profile_from_samples(samples, hours=48, now_ts=None):
 
 
 def fetch_house_actual_profile(runtime, hours=48, samples=None):
-    sample_profile = build_house_actual_profile_from_samples(samples, hours)
+    sample_profile = build_house_actual_profile_from_samples(
+        samples, hours, now_ts=runtime.captured_at_s
+    )
     if len(sample_profile) >= 3:
         return sample_profile
 
-    cutoff_ts = dt.datetime.now(dt.timezone.utc).timestamp() - hours * 3600
+    cutoff_ts = runtime.captured_at_s - hours * 3600
     series_map = fetch_sensor_series_many(
         runtime,
         [

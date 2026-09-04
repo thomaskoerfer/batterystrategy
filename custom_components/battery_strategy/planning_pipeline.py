@@ -4,14 +4,17 @@
 import datetime as dt
 import math
 
+from .contracts import PvPlant
 from .forecast_application import (
+    ProductionForecastConfig,
+    ProductionForecastModule,
     bootstrap_samples_from_features,
-    build_forecast_targets,
-    build_production_forecast,
+    forecast_request,
     weather_factor_from_cloud_rad,
     weather_snapshot,
 )
 from .forecast_evaluation import update_forecast_evaluation
+from .forecasting import FeatureStoreForecastNotReady
 from .market_context import MarketContextConfig, MarketContextService
 from .models import StrategyOptions
 from .plan_presentation import (
@@ -20,7 +23,7 @@ from .plan_presentation import (
     derive_planned_dispatch,
 )
 from .planning_result import (
-    build_planning_result,
+    build_fresh_planning_result,
     persisted_output,
     result_from_persisted_output,
 )
@@ -30,9 +33,7 @@ from .planning_state import (
     advance_virtual_energy,
     append_virtual_trace,
     fallback_output,
-    load_state,
     normalize_slot_biases,
-    save_state,
 )
 from .runtime_market_data import (
     build_tibber_price_index,
@@ -87,6 +88,12 @@ EEX_PROXY_MAX_BASE_RETAIL_MARKUP_CT = 28.0
 EEX_PROXY_MAX_PEAK_RETAIL_MARKUP_CT = 32.0
 EEX_PROXY_MIN_PRICE_CT = 12.0
 EEX_PROXY_MAX_PRICE_CT = 70.0
+
+
+class StalePlanningResult(RuntimeError):
+    """Raised when a newer planning refresh already owns publication."""
+
+
 # PV surplus anti-cycling thresholds
 PV_SURPLUS_START_AVG_W = 50.0
 PV_SURPLUS_MIN_SAMPLE_W = 40.0
@@ -138,7 +145,7 @@ def _planning_service(settings: PlanningRuntimeSettings) -> PlanningService:
     )
 
 
-def _update_actual_savings(runtime, data, now_ts):
+def _update_actual_savings(runtime, state, now_ts):
     """Update measured savings through its independent accounting boundary."""
     return SavingsLedger(
         config=SavingsConfig(
@@ -157,7 +164,7 @@ def _update_actual_savings(runtime, data, now_ts):
             runtime, entities, cutoff
         ),
         price_reader=lambda dates: read_tibber_intervals_for_dates(runtime, dates),
-    ).update(data, now_ts)
+    ).update(state, now_ts)
 
 
 def clamp(v, lo, hi):
@@ -208,17 +215,16 @@ def collect_inputs(runtime):
     ]
     s = get_latest_states(runtime, needed)
 
+    captured_at = runtime.captured_at_ms / 1000.0
     price_ts, price_vals = build_tibber_price_index(
         runtime,
         local_date_set_between(
             runtime.settings.timezone,
-            dt.datetime.now(dt.timezone.utc).timestamp(),
-            dt.datetime.now(dt.timezone.utc).timestamp(),
+            captured_at,
+            captured_at,
         ),
     )
-    p_now_eur = tibber_price_eur_at(
-        dt.datetime.now(dt.timezone.utc).timestamp(), price_ts, price_vals
-    )
+    p_now_eur = tibber_price_eur_at(captured_at, price_ts, price_vals)
     p_now = p_now_eur * 100.0 if p_now_eur is not None else None
     if p_now is None:
         p_now = as_float(s[E_PRICE_CURRENT], None)
@@ -234,15 +240,16 @@ def collect_inputs(runtime):
 
     cloud = as_float(s[E_WEATHER_CLOUD], None)
     rad = as_float(s[E_WEATHER_RADIATION], None)
-    weather = weather_snapshot(
-        runtime, int(dt.datetime.now(dt.timezone.utc).timestamp() * 1000)
-    )
+    weather = weather_snapshot(runtime, runtime.captured_at_ms)
     if weather:
         cloud = weather["cloud_cover"]
         rad = weather["shortwave_radiation"]
 
     future_stats = read_tibber_future_price_stats(
-        runtime, dt.datetime.now(runtime.settings.timezone)
+        runtime,
+        dt.datetime.fromtimestamp(captured_at, dt.timezone.utc).astimezone(
+            runtime.settings.timezone
+        ),
     )
     p_future_max = future_stats["max_ct"] if future_stats else p_now
 
@@ -269,20 +276,24 @@ def collect_inputs(runtime):
     }
 
 
-def run(runtime_context):
+def run(runtime: PlanningRuntime):
     """Execute one planning refresh from an explicitly captured snapshot."""
-    runtime = PlanningRuntime.from_mapping(runtime_context)
     settings = runtime.settings
-    now = dt.datetime.now(dt.timezone.utc)
+    now = dt.datetime.fromtimestamp(runtime.captured_at_ms / 1000.0, tz=dt.timezone.utc)
     now_ts = now.timestamp()
-    local_now = dt.datetime.now(settings.timezone)
+    local_now = now.astimezone(settings.timezone)
     today = local_now.date().isoformat()
     tomorrow = (local_now.date() + dt.timedelta(days=1)).isoformat()
 
-    data = load_state(runtime)
+    owner_state = runtime.state_store.load(runtime)
+    forecast_state = owner_state.forecast
+    simulation_state = owner_state.simulation
+    savings_state = owner_state.savings
     inputs = collect_inputs(runtime)
     if inputs.get("error"):
-        out = fallback_output("no_price", inputs["error"], data, now.isoformat())
+        out = fallback_output(
+            "no_price", inputs["error"], owner_state.publication, now.isoformat()
+        )
         return result_from_persisted_output(
             out,
             _result_options(settings),
@@ -302,15 +313,15 @@ def run(runtime_context):
     soc = inputs["soc"]
     if soc is not None and 0.0 <= float(soc) <= 100.0:
         soc = float(soc)
-        data["last_known_soc_pct"] = soc
+        simulation_state.last_known_soc_pct = soc
     else:
-        persisted_soc = data.get("last_known_soc_pct")
+        persisted_soc = simulation_state.last_known_soc_pct
         try:
             persisted_soc = float(persisted_soc)
         except (TypeError, ValueError):
             persisted_soc = None
         if persisted_soc is None:
-            for sample in reversed(data.get("samples") or []):
+            for sample in reversed(forecast_state.samples):
                 try:
                     sample_soc = float(sample.get("soc"))
                 except (AttributeError, TypeError, ValueError):
@@ -324,7 +335,7 @@ def run(runtime_context):
             else None
         )
         if soc is not None:
-            data["last_known_soc_pct"] = soc
+            simulation_state.last_known_soc_pct = soc
     soc_min_pct = clamp(
         float(inputs.get("soc_min_pct", settings.min_soc_pct)), 0.0, 40.0
     )
@@ -335,15 +346,19 @@ def run(runtime_context):
     cloud = inputs["cloud"]
     rad = inputs["rad"]
 
-    if len(data.get("samples", [])) < 120:
-        data["samples"] = bootstrap_samples_from_features(runtime, now_ts, days=21)
+    if len(forecast_state.samples) < 120:
+        forecast_state.samples = bootstrap_samples_from_features(
+            runtime, now_ts, days=21
+        )
 
-    data["pv_bias_slots"] = normalize_slot_biases(data.get("pv_bias_slots"), 0.5, 1.6)
-    data["load_bias_slots"] = normalize_slot_biases(
-        data.get("load_bias_slots"), 0.6, 1.6
+    forecast_state.pv_bias_slots = normalize_slot_biases(
+        forecast_state.pv_bias_slots, 0.5, 1.6
+    )
+    forecast_state.load_bias_slots = normalize_slot_biases(
+        forecast_state.load_bias_slots, 0.6, 1.6
     )
 
-    data["samples"].append(
+    forecast_state.samples.append(
         {
             "ts": now_ts,
             "load_w": house_load_w,  # canonical forecast key = house load
@@ -361,23 +376,24 @@ def run(runtime_context):
     )
 
     cutoff = now_ts - HISTORY_DAYS * 86400
-    data["samples"] = [x for x in data["samples"] if x.get("ts", 0) >= cutoff][-12000:]
+    forecast_state.samples = [
+        item for item in forecast_state.samples if item.get("ts", 0) >= cutoff
+    ][-12000:]
     (
         actual_daily_savings,
         actual_today_saving,
         actual_savings_lifetime_eur,
-    ) = _update_actual_savings(runtime, data, now_ts)
+    ) = _update_actual_savings(runtime, savings_state, now_ts)
 
     # actual_daily_savings is maintained inside the savings ledger
-    # via data["actual_daily_savings"] directly; retrieve for output helpers.
-    actual_daily_savings = data["actual_daily_savings"]
+    actual_daily_savings = savings_state.actual_daily
     actual_inventory_deliverable_kwh = None
     actual_inventory_cost_ct_per_kwh = None
     actual_today_stats = actual_daily_savings.get(today, {})
 
-    load_bias = clamp(float(data.get("load_bias", 1.0)), 0.6, 1.6)
+    load_bias = clamp(float(forecast_state.load_bias), 0.6, 1.6)
     weather_factor = weather_factor_from_cloud_rad(cloud, rad)
-    pv_bias = clamp(float(data.get("pv_bias", 1.0)), 0.5, 1.4)
+    pv_bias = clamp(float(forecast_state.pv_bias), 0.5, 1.4)
     pv_surplus_w = real_charge_follow_surplus_w(
         grid_import_w, grid_export_w, bat_in_out_w
     )
@@ -388,7 +404,7 @@ def run(runtime_context):
     net_no_battery_with_ev_now_w = net_no_battery_with_ev_w(
         grid_import_w, grid_export_w, bat_in_out_w
     )
-    pv_surplus_stable, pv_surplus_avg = recent_surplus_stable(data["samples"])
+    pv_surplus_stable, pv_surplus_avg = recent_surplus_stable(forecast_state.samples)
     rte_break_even_ct = (
         (p_now / settings.round_trip_efficiency) + settings.min_margin_ct_per_kwh
         if p_now is not None
@@ -405,7 +421,7 @@ def run(runtime_context):
     reason = "15min Tibber plan"
 
     evaluation = update_forecast_evaluation(
-        data,
+        forecast_state,
         now_ts=now_ts,
         local_timezone=local_now.tzinfo,
         round_trip_efficiency=settings.round_trip_efficiency,
@@ -416,7 +432,7 @@ def run(runtime_context):
     hit24 = evaluation.hit_rate_24h_pct
 
     market_context = _market_context_service(settings)
-    eex_days = market_context.get_eex_day_context(data, local_now)
+    eex_days = market_context.get_eex_day_context(owner_state.market, local_now)
     intervals_all = read_tibber_intervals_for_dates(runtime, {today, tomorrow})
     intervals_all, tomorrow_price_source = market_context.apply_eex_proxy_prices(
         intervals_all,
@@ -435,9 +451,9 @@ def run(runtime_context):
             settings.max_energy_kwh,
         )
     else:
-        start_e = advance_virtual_energy(settings, data, now_ts)
+        start_e = advance_virtual_energy(settings, simulation_state, now_ts)
 
-    load_bias_plan = clamp(float(data.get("load_bias", load_bias)), 0.6, 1.6)
+    load_bias_plan = clamp(float(forecast_state.load_bias), 0.6, 1.6)
     inventory_accounting_floor_ct = None
     if actual_inventory_cost_ct_per_kwh is None:
         actual_today_charge_in_kwh = float(
@@ -455,32 +471,36 @@ def run(runtime_context):
         inventory_accounting_floor_ct = (
             actual_inventory_cost_ct_per_kwh + settings.min_margin_ct_per_kwh
         )
-    forecast_targets = build_forecast_targets(
+    request = forecast_request(
         intervals,
-        weather_factor,
-        (inputs.get("weather") or {}).get("hourly"),
+        captured_at_ms=runtime.captured_at_ms,
+        timezone=str(getattr(settings.timezone, "key", settings.timezone)),
     )
-    forecast_bundle, forecast_diagnostics = build_production_forecast(
-        intervals,
-        forecast_targets,
-        now_local=local_now,
-        weather_factor=weather_factor,
-        forecast_tomorrow_kwh=pv_tomorrow_kwh,
+    if runtime.forecast_context is None:
+        raise FeatureStoreForecastNotReady("missing_current_load_context")
+    forecast_config = ProductionForecastConfig(
         load_bias=load_bias_plan,
-        load_bias_slots=data["load_bias_slots"],
-        pv_bias_slots=data["pv_bias_slots"],
-        pv_now_actual_w=max(0.0, pv_w),
+        load_slot_biases=tuple(forecast_state.load_bias_slots),
         pv_global_bias=pv_bias,
-        pv_capacity_kwp=settings.pv_capacity_kwp,
-        pv_inverter_kw=settings.pv_inverter_kw,
-        history=runtime.forecast_history,
-        context=runtime.forecast_context,
-        weather=runtime.forecast_weather,
-        component_specs=runtime.forecast_component_specs,
+        pv_slot_biases=tuple(forecast_state.pv_bias_slots),
+        current_weather_factor=weather_factor,
+        current_pv_w=max(0.0, pv_w),
+        tomorrow_energy_kwh=pv_tomorrow_kwh,
     )
+    forecast_result = ProductionForecastModule().forecast(
+        request,
+        runtime.forecast_history,
+        runtime.forecast_context,
+        runtime.forecast_weather,
+        PvPlant(settings.pv_capacity_kwp, settings.pv_inverter_kw),
+        forecast_config,
+        runtime.forecast_component_specs,
+    )
+    forecast_bundle = forecast_result.bundle
+    forecast_diagnostics = forecast_result.diagnostics
     publication = _planning_service(settings).plan(
         intervals=intervals,
-        samples=data["samples"],
+        samples=forecast_state.samples,
         start_energy_kwh=start_e,
         eex_days=eex_days,
         forecast_bundle=forecast_bundle,
@@ -507,7 +527,7 @@ def run(runtime_context):
         planned_mode, planned_power_w = derive_planned_dispatch(future_points[0])
     mode = planned_mode
     rec_w = planned_power_w
-    data["predictions"].append(
+    forecast_state.predictions.append(
         {
             "target_ts": now_ts + 3600,
             "mode": mode,
@@ -518,21 +538,21 @@ def run(runtime_context):
             "load_bias_used": load_bias,
         }
     )
-    actual_points = data.get("virtual_trace", [])
+    actual_points = simulation_state.trace
     if soc is None:
         append_virtual_trace(
-            data,
+            simulation_state,
             int(now_ts * 1000),
             today,
             (start_e / settings.battery_capacity_kwh) * 100.0,
             mode,
             rec_w,
         )
-        actual_points = data.get("virtual_trace", [])
-        data["virtual_last_ts"] = now_ts
-        data["virtual_last_mode"] = mode
-        data["virtual_last_power_w"] = rec_w
-        data["virtual_energy_kwh"] = start_e
+        actual_points = simulation_state.trace
+        simulation_state.last_ts = now_ts
+        simulation_state.last_mode = mode
+        simulation_state.last_power_w = rec_w
+        simulation_state.energy_kwh = start_e
 
     (
         forecast_today,
@@ -549,7 +569,7 @@ def run(runtime_context):
     profile_today["price"] = build_price_profile(intervals_all, today)
     profile_tomorrow["price"] = build_price_profile(intervals_all, tomorrow)
     price_obs = market_context.compute_price_quantiles(
-        data["samples"], local_now, p_now, profile_tomorrow["price"]
+        forecast_state.samples, local_now, p_now, profile_tomorrow["price"]
     )
     for k in (
         "pv_fc_power",
@@ -563,15 +583,15 @@ def run(runtime_context):
     save_today = plan.get("today", {}).get("saving_eur", 0.0) or 0.0
     save_tom = plan.get("tomorrow", {}).get("saving_eur", 0.0) or 0.0
 
-    data["daily_savings"][today] = round(save_today, 3)
+    savings_state.estimated_daily[today] = round(save_today, 3)
     cumulative = 0.0
-    for k, v in data["daily_savings"].items():
+    for k, v in savings_state.estimated_daily.items():
         if k <= today:
             cumulative += float(v)
-    keys = sorted(data["daily_savings"].keys())
+    keys = sorted(savings_state.estimated_daily)
     if len(keys) > 120:
         for k in keys[:-120]:
-            data["daily_savings"].pop(k, None)
+            savings_state.estimated_daily.pop(k, None)
 
     slot_now = slot_index_for_dt(local_now)
     eex_today = eex_days.get(today, {})
@@ -646,10 +666,10 @@ def run(runtime_context):
         "forecast_slot_count": forecast_diagnostics.get("slot_count"),
         "forecast_runtime_ms": forecast_diagnostics.get("runtime_ms"),
         "forecast_model_version": forecast_diagnostics.get("model_version"),
-        "pv_bias": round(data.get("pv_bias", 1.0), 3),
-        "load_bias": round(data.get("load_bias", 1.0), 3),
-        "pv_bias_slot_now": round(float(data["pv_bias_slots"][slot_now]), 3),
-        "load_bias_slot_now": round(float(data["load_bias_slots"][slot_now]), 3),
+        "pv_bias": round(forecast_state.pv_bias, 3),
+        "load_bias": round(forecast_state.load_bias, 3),
+        "pv_bias_slot_now": round(float(forecast_state.pv_bias_slots[slot_now]), 3),
+        "load_bias_slot_now": round(float(forecast_state.load_bias_slots[slot_now]), 3),
         "virtual_soc_start_pct": round(
             (start_e / settings.battery_capacity_kwh) * 100.0, 2
         ),
@@ -792,22 +812,24 @@ def run(runtime_context):
         ],
         "profile_48h_pv_actual_power": fetch_pv_actual_profile(runtime, 48),
         "profile_48h_house_actual_power": fetch_house_actual_profile(
-            runtime, 48, data["samples"]
+            runtime, 48, forecast_state.samples
         ),
         "profile_48h_grid_net_actual_power": fetch_net_actual_profile(runtime, 48),
         "timestamp": now.isoformat(),
     }
 
-    result = build_planning_result(
+    result = build_fresh_planning_result(
         publication.battery_plan,
+        publication.operator_points,
+        publication.operator_daily_costs,
         out,
-        timezone=settings.timezone,
         now_ms=now_ts_ms,
         override_active=False,
     )
     result_options = _result_options(settings)
-    data["last_output"] = persisted_output(result, result_options)
-    save_state(runtime, data)
+    owner_state.publication.last_output = persisted_output(result, result_options)
+    if not runtime.state_store.save(owner_state):
+        raise StalePlanningResult("newer planning result already persisted")
     return result
 
 

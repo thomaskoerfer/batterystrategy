@@ -20,7 +20,7 @@ from .coordinator import (
     OPTIMIZER_STATE_FILE,
     BatteryStrategyCoordinator,
 )
-from .optimizer_state import runtime_snapshot
+from .planning_state import PlanningStateStore
 
 PLATFORMS = [Platform.SENSOR, Platform.SELECT, Platform.SWITCH, Platform.NUMBER]
 type BatteryStrategyConfigEntry = ConfigEntry[BatteryStrategyCoordinator]
@@ -38,9 +38,11 @@ async def async_setup_entry(
     """Set up Battery Strategy from a config entry."""
     _async_remove_deprecated_entities(hass, entry)
     await hass.async_add_executor_job(_migrate_runtime_files, hass.config.config_dir)
+    planning_state_store = PlanningStateStore.claim(
+        str(Path(hass.config.path(OPTIMIZER_STATE_FILE)))
+    )
     last_known_soc_pct, last_optimizer_output = await hass.async_add_executor_job(
-        runtime_snapshot,
-        Path(hass.config.path(OPTIMIZER_STATE_FILE)),
+        planning_state_store.runtime_snapshot,
     )
     from .feature_store import CompressedFeatureStore, ExecutorFeatureStore
 
@@ -61,6 +63,7 @@ async def async_setup_entry(
         feature_history=feature_history,
         compiler_runtime_store=compiler_runtime_store,
         restored_compiler_runtime=restored_compiler_runtime,
+        planning_state_store=planning_state_store,
     )
     await coordinator.async_config_entry_first_refresh()
     entry.runtime_data = coordinator
@@ -123,6 +126,8 @@ async def async_unload_entry(
         raise
     if not unload_ok:
         await coordinator.async_abort_unload()
+    else:
+        coordinator.finalize_unload()
     return bool(unload_ok)
 
 

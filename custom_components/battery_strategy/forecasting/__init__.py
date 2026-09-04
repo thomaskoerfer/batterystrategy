@@ -6,6 +6,12 @@ from .baseline import (
     ForecastTargetInput,
     build_forecast_bundle,
 )
+from .configured import (
+    ConfiguredLoadForecaster,
+    ConfiguredPvForecaster,
+    ForecastComposer,
+    weather_targets,
+)
 from .feature_store import (
     FeatureStoreForecastNotReady,
     FeatureStoreForecastReadiness,
@@ -18,6 +24,9 @@ from .pv import PvForecastModelConfig, build_pv_forecast
 __all__ = [
     "FeatureStoreForecastNotReady",
     "FeatureStoreForecastReadiness",
+    "ConfiguredLoadForecaster",
+    "ConfiguredPvForecaster",
+    "ForecastComposer",
     "ForecastModelConfig",
     "ForecastHistorySample",
     "ForecastTargetInput",
@@ -28,4 +37,5 @@ __all__ = [
     "build_load_forecast",
     "build_pv_forecast",
     "feature_store_forecast_readiness",
+    "weather_targets",
 ]

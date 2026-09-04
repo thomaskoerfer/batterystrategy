@@ -13,7 +13,11 @@ ForecastBundle + price horizon + battery snapshot + configuration
 ```
 
 It returns `PlanningPublication`: the exact canonical `BatteryPlan` plus
-non-authoritative presentation metadata. It contains no forecast model, market
+typed operator points, typed daily costs and non-authoritative presentation
+metadata. Fresh publication constructs the typed projection directly from the
+canonical plan and aligned forecast/market values. Dictionary parsing is
+reserved for display-only startup restoration and can never authorize control.
+The service contains no forecast model, market
 network access, measured-savings accounting, live meter following or hardware
 writes. It never reconstructs executable intent from presentation data.
 

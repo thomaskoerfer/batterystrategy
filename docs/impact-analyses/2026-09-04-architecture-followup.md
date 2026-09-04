@@ -77,6 +77,41 @@ Historic form constraints that intentionally differ from runtime entity ranges
 remain explicit in the shared definition. This avoids an accidental user-facing
 behavior change while removing duplicated literals.
 
+### 5. Single captured planning time: implement
+
+The adapter now captures `captured_at_ms` once with the live measurement
+snapshot. The immutable `PlanningRuntime` requires it, and all planning-time
+price selection, history windows, forecast requests, result restoration and
+state ordering derive from that value. Recorder queries and their normalized
+results are bounded at that instant. Monotonic time remains limited to the
+adapter's cache age and is not a planning input.
+
+### 6. Concrete forecast contract implementations: implement within contracts
+
+Production forecast construction now uses independent configured
+`LoadForecaster` and `PvForecaster` implementations and a composer that only
+constructs `ForecastBundle`. The existing mathematical functions and per-run
+inputs are unchanged, with exact bundle-parity coverage. The approved forecast
+contracts are unchanged; moving calibration observations into their data model
+would require a future owner-approved impact analysis.
+
+### 7. Typed planning state ownership: implement without schema change
+
+`PlanningStateStore` now owns loading, migration, typed owner-state projection,
+serialization, startup hydration and atomic writes for the existing schema-11
+document. Forecast learning, virtual simulation, market cache, measured savings
+and publication mutate separate typed sections. A lifecycle lease and atomic
+stale-run check prevent old coordinator generations or older results from
+overwriting current state.
+
+### 8. Fresh typed operator projection: implement
+
+Fresh optimizer publication creates typed operator points and daily costs
+directly from the canonical plan and aligned forecasts. The dictionary parser
+is retained only for display hydration from persisted output. It cannot create
+executable compiler permission; only the separately persisted canonical
+`BatteryPlan` can do so.
+
 ## Contract impact
 
 Recommendation 2 changes the planning-publication interface and persisted
@@ -84,6 +119,20 @@ planning schema as described above. Recommendation 3 changes the coordinated
 in-memory compiler/live/actuator interfaces and binds restored intent to its
 authorizing policy without changing operator entity IDs. `INTERFACE_CONTRACTS.md` defines both canonical-plan
 separation and the direct live-control chain normatively.
+
+Recommendations 5-8 do not change approved interface contracts, entity IDs,
+schema-11 keys, optimizer behavior, plan-compiler semantics, live policy or the
+single actuator path.
+
+## Rollback
+
+The pre-follow-up deployment remains `0.2.0-rc.6`. Reverting this candidate to
+that release is safe because the persisted planning document remains schema 11
+with unchanged keys and meanings. Successfully unload the integration before
+replacing files; that unload explicitly revokes its state writer. If
+unload cannot complete, restart Home Assistant before installing RC6. RC6 reads
+the same canonical plan and operator data; if validation fails, control remains
+closed until a fresh optimizer run. No reverse data migration is required.
 
 ## Verification
 
@@ -97,3 +146,9 @@ separation and the direct live-control chain normatively.
 - Static guard proving no production profile-to-`BatteryPlan` reconstruction.
 - Current-slot rollover and cross-boundary energy-accounting tests.
 - Stale numeric input, fail-safe retry and unload-race regression tests.
+- Exact forecast-bundle parity through concrete load/PV contract owners.
+- Single captured-time and quarter-boundary price tests.
+- Typed state round trip, stale-run rejection and obsolete-lifecycle rejection.
+- Fresh projection parity with a guard that forbids the restore parser.
+- Active-slot restore continuity, captured Recorder upper bounds and stale-run
+  retry suppression across option changes.
