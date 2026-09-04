@@ -111,6 +111,9 @@ path. There is never a second automatic hardware writer.
   writes without changing commercial permission.
 - An invalid or expired directive, stale grid input or stale SoC produces a safe
   idle/zero outcome.
+- Change-driven battery power sensors use their source availability instead of
+  state age; an unchanged valid zero must not expire merely because the device
+  publishes only on value changes.
 
 ## Setup independence
 

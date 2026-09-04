@@ -2777,7 +2777,7 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertEqual(coordinator._battery_soc_pct(), 37.0)
         self.assertFalse(coordinator._soc_control_ready)
 
-    def test_numeric_but_stale_battery_power_is_marked_unavailable(self):
+    def test_change_driven_battery_power_remains_usable_while_available(self):
         stale_at = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=10)
         state = SimpleNamespace(
             state="0",
@@ -2785,6 +2785,24 @@ class HacsStrategyTests(unittest.TestCase):
             last_reported=stale_at,
             last_updated=stale_at,
             last_changed=stale_at,
+        )
+        coordinator = object.__new__(BatteryStrategyCoordinator)
+        coordinator.entry = SimpleNamespace(
+            data={
+                "battery_profile": BATTERY_PROFILE_GENERIC,
+                "battery_power_entity": "sensor.battery_power",
+            }
+        )
+        coordinator.hass = SimpleNamespace(
+            states=SimpleNamespace(get=lambda _entity_id: state)
+        )
+
+        self.assertTrue(coordinator._battery_measurement_available())
+
+    def test_unavailable_battery_power_is_marked_unavailable(self):
+        state = SimpleNamespace(
+            state="unavailable",
+            attributes={"unit_of_measurement": "W"},
         )
         coordinator = object.__new__(BatteryStrategyCoordinator)
         coordinator.entry = SimpleNamespace(

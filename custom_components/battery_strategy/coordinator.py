@@ -104,7 +104,6 @@ EV_POWER_BRIDGE_MAX_AGE_S = 180
 OPTIMIZER_STATE_FILE = "battery_strategy_optimizer_state.json"
 FEATURE_STORE_FILE = "battery_strategy_features.json.gz"
 GRID_INPUT_MAX_AGE_S = 30
-BATTERY_INPUT_MAX_AGE_S = 30
 UNLOAD_STOP_TIMEOUT_S = 10.0
 UNLOAD_STOP_POLL_S = 0.5
 
@@ -581,29 +580,19 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         """Return whether the battery power reconstruction has usable inputs."""
         if self.entry.data.get(CONF_BATTERY_PROFILE) != BATTERY_PROFILE_ZENDURE:
             entity = self.entry.data.get(CONF_BATTERY_POWER_ENTITY)
-            return bool(
-                entity
-                and self._state_available(entity)
-                and self._state_age_s(entity) <= BATTERY_INPUT_MAX_AGE_S
-            )
-        mode_entity = self.entry.data.get(CONF_ZENDURE_AC_MODE_ENTITY)
-        power_entities = (
+            return bool(entity and self._state_available(entity))
+
+        # Zendure MQTT power entities are change-driven: a valid unchanged zero
+        # can remain the latest state indefinitely. Their availability topics,
+        # not state age, therefore define whether reconstruction is usable.
+        entities = (
+            self.entry.data.get(CONF_ZENDURE_AC_MODE_ENTITY),
             self.entry.data.get(CONF_ZENDURE_OUTPUT_PACK_POWER_ENTITY),
             self.entry.data.get(CONF_ZENDURE_PACK_INPUT_POWER_ENTITY),
             self.entry.data.get(CONF_ZENDURE_OUTPUT_HOME_POWER_ENTITY),
             self.entry.data.get(CONF_ZENDURE_GRID_INPUT_POWER_ENTITY),
         )
-        return bool(
-            mode_entity
-            and self._state_available(mode_entity)
-            and self._state_age_s(mode_entity) <= BATTERY_INPUT_MAX_AGE_S
-            and all(
-                entity
-                and self._state_available(entity)
-                and self._state_age_s(entity) <= BATTERY_INPUT_MAX_AGE_S
-                for entity in power_entities
-            )
-        )
+        return all(entity and self._state_available(entity) for entity in entities)
 
     def _should_force_optimizer(self, now: dt.datetime) -> bool:
         """Refresh planning once before and once after the active slot boundary."""

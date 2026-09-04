@@ -145,7 +145,10 @@ read bounded Recorder history in the executor, load typed owner state, invoke
 planning, persist that state under the existing schema-11 lease, then publish.
 No optimizer, compiler, live-control, actuator, entity or persistence-schema
 semantics changed. The residual duplicate EV-history conversion was removed as
-part of enforcing the existing unit contract.
+part of enforcing the existing unit contract. Battery power availability uses
+the source integration's availability state rather than an age limit because
+change-driven MQTT sensors legitimately retain an unchanged value. Grid, SoC
+and policy-relevant EV inputs retain their bounded freshness checks.
 
 ## Contract impact
 
@@ -180,7 +183,7 @@ closed until a fresh optimizer run. No reverse data migration is required.
   malformed-state fail-closed and physical-constraint mismatch tests.
 - Static guard proving no production profile-to-`BatteryPlan` reconstruction.
 - Current-slot rollover and cross-boundary energy-accounting tests.
-- Stale numeric input, fail-safe retry and unload-race regression tests.
+- Source-aware input availability, fail-safe retry and unload-race regression tests.
 - Exact forecast-bundle parity through concrete load/PV contract owners.
 - Single captured-time and quarter-boundary price tests.
 - Typed state round trip, stale-run rejection and obsolete-lifecycle rejection.

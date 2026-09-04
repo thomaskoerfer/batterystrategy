@@ -2,6 +2,16 @@
 
 All notable changes to Battery Strategy are documented here.
 
+## [0.2.0-rc.8] - 2026-09-04
+
+### Fixed
+
+- Treat change-driven battery power entities as usable while Home Assistant
+  reports them available. This prevents unchanged MQTT values from falsely
+  expiring after 30 seconds and locking live control at zero after a restart.
+- Keep strict age checks for grid, SoC and policy-relevant EV inputs; only the
+  battery transport's availability semantics are corrected.
+
 ## [0.2.0-rc.7] - 2026-09-04
 
 ### Changed
@@ -36,7 +46,7 @@ All notable changes to Battery Strategy are documented here.
 
 ### Safety
 
-- Fail closed on stale numeric battery, SoC, grid and policy-relevant EV inputs,
+- Fail closed on unavailable battery and stale SoC, grid and policy-relevant EV inputs,
   retry unconfirmed safety stops, and reject unload while an active battery
   cannot be stopped.
 
