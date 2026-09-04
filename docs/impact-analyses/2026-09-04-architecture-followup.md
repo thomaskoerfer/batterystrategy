@@ -172,6 +172,13 @@ state and monotonic-counter reconstruction retain precedence. This changes
 restart semantics documented by the plan-compiler contract without changing
 contract types, entity IDs or persistence schema.
 
+The compiler also retains that active-slot commitment across a temporary
+missing or incomplete planner result. Such a refresh still emits a closed
+directive, but it no longer clears the commitment before the asynchronously
+computed replacement plan arrives. The operator-facing remaining-budget value
+is rounded to Wh precision; the underlying directive and live control continue
+to use the unrounded value.
+
 ## Rollback
 
 The pre-follow-up deployment remains `0.2.0-rc.6`. Reverting this candidate to

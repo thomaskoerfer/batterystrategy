@@ -160,7 +160,9 @@ class PlanCompilerRuntime:
         if plan is None:
             slot_start_ms = int(now_ms) // SLOT_MS * SLOT_MS
             self.sync_slot(slot_start_ms, now_ms, energy_totals)
-            self._state = PlanCompilationState()
+            # A planner refresh can temporarily expose no plan. Fail closed for
+            # this cycle without forgetting the active-slot commitment; a
+            # subsequent same-slot plan must not reopen discharge permission.
             self._error = "no_plan"
             return self._closed_directive(options, now_ms=now_ms)
         plan_slot = next(
@@ -174,7 +176,9 @@ class PlanCompilerRuntime:
         if plan_slot is None:
             slot_start_ms = int(now_ms) // SLOT_MS * SLOT_MS
             self.sync_slot(slot_start_ms, now_ms, energy_totals)
-            self._state = PlanCompilationState()
+            # Preserve an existing same-slot commitment while the published
+            # plan is incomplete. The closed directive still grants no
+            # commercial permission until a valid current slot returns.
             self._error = "no_current_plan_slot"
             return self._closed_directive(options, now_ms=now_ms)
         current_slot = plan_slot.slot

@@ -112,6 +112,12 @@ during later replans. Required grid charge remains closed. An exact clean
 snapshot or progress reconstructed from monotonic counters always takes
 precedence over this fallback.
 
+A temporary missing or incomplete planner result fails commercially closed for
+that refresh but does not erase an already established active-slot commitment.
+When a valid plan returns for the same slot, compilation resumes from the
+latched ceiling and measured progress. This prevents an asynchronous optimizer
+refresh from reopening permission after a restart or replan.
+
 Persistence is an application adapter and is not part of the pure compiler. The
 compiler continues to receive only `BatteryPlan`, `SlotProgress`, explicit
 `PlanCompilationState` and an issue timestamp.
@@ -147,6 +153,8 @@ Required regression scenarios include:
   disabling PV-follow;
 - missing same-slot progress prorates discharge to the unelapsed slot fraction
   while keeping grid charge closed;
+- a temporary same-slot plan gap remains closed and cannot erase or reopen the
+  latched commitment;
 - stale SoC and invalid slot identity fail closed.
 
 The production migration and rollback gate is maintained in

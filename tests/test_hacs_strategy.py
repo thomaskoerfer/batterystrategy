@@ -1383,7 +1383,7 @@ class HacsStrategyTests(unittest.TestCase):
                 max_pv_charge_power_w=2400.0,
                 max_grid_charge_power_w=0.0,
                 max_discharge_power_w=2400.0,
-                discharge_budget_remaining_kwh=0.2,
+                discharge_budget_remaining_kwh=0.123456789,
                 min_soc_pct=10.0,
                 max_soc_pct=100.0,
             ),
@@ -1391,7 +1391,7 @@ class HacsStrategyTests(unittest.TestCase):
 
         projection = operator_projection(data, dt.date.fromisoformat(today))
         self.assertEqual(projection.value("optimizer_discharge_budget"), 0.6)
-        self.assertEqual(projection.value("plan_live_discharge_budget"), 0.2)
+        self.assertEqual(projection.value("plan_live_discharge_budget"), 0.123)
 
     def _coordinator_for_strategy_enabled(self, strategy_enabled=True):
         coordinator = object.__new__(BatteryStrategyCoordinator)

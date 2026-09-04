@@ -223,6 +223,38 @@ def test_mid_slot_restart_without_snapshot_prorates_discharge_budget():
     assert replanned.discharge_budget_remaining_kwh == pytest.approx(0.3)
 
 
+def test_transient_plan_gap_preserves_prorated_discharge_commitment():
+    runtime = PlanCompilerRuntime()
+    now_ms = SLOT_START_MS + 450_000
+
+    first = runtime.compile(
+        _plan(discharge_budget_kwh=0.6),
+        _options(),
+        _measurements(captured_at_ms=now_ms),
+        now_ms,
+        (None, None),
+    )
+    unavailable = runtime.compile(
+        None,
+        _options(),
+        _measurements(captured_at_ms=now_ms + 10_000),
+        now_ms + 10_000,
+        (None, None),
+    )
+    resumed = runtime.compile(
+        _plan(discharge_budget_kwh=0.6),
+        _options(),
+        _measurements(captured_at_ms=now_ms + 20_000),
+        now_ms + 20_000,
+        (None, None),
+    )
+
+    assert first.discharge_budget_remaining_kwh == pytest.approx(0.3)
+    assert unavailable.discharge_budget_remaining_kwh == 0.0
+    assert unavailable.plan_id == "closed"
+    assert resumed.discharge_budget_remaining_kwh == pytest.approx(0.3)
+
+
 def test_running_process_resets_progress_only_at_next_slot():
     runtime = PlanCompilerRuntime()
     start = dt.datetime.fromtimestamp(SLOT_START_MS / 1000, dt.timezone.utc)

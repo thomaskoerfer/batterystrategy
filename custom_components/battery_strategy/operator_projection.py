@@ -102,7 +102,11 @@ def build_operator_projection(
         "plan_live_grid_charge_allowed": (
             "on" if directive.grid_charge_allowed else "off"
         ),
-        "plan_live_discharge_budget": directive.discharge_budget_remaining_kwh,
+        # Keep execution precision in the directive while presenting a stable,
+        # readable Wh-level value to Home Assistant and its dashboards.
+        "plan_live_discharge_budget": round(
+            directive.discharge_budget_remaining_kwh, 3
+        ),
         "optimizer_discharge_budget": _optimizer_discharge_budget_kwh(plan),
         "load_forecast_next_1h": plan.load_forecast_next_1h_kwh,
         "pv_forecast_corrected_next_1h": plan.pv_forecast_corrected_next_1h_kwh,

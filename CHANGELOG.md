@@ -2,6 +2,16 @@
 
 All notable changes to Battery Strategy are documented here.
 
+## [0.2.0-rc.10] - 2026-09-04
+
+### Fixed
+
+- Preserve an active-slot compiler commitment across temporary missing or
+  incomplete planner results. The affected refresh still fails closed, while a
+  subsequent same-slot plan can no longer reopen a prorated discharge budget.
+- Round the operator-facing remaining-discharge-budget sensor to Wh precision
+  without reducing the precision used by compilation or live control.
+
 ## [0.2.0-rc.9] - 2026-09-04
 
 ### Fixed
