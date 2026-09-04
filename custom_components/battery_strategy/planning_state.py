@@ -166,7 +166,10 @@ class PlanningStateStore:
             "state_schema": STATE_SCHEMA_VERSION,
         }
         if state.savings.tracker_was_persisted or state.savings.tracker:
-            document["savings_tracker"] = state.savings.tracker
+            tracker = dict(state.savings.tracker)
+            if tracker.get("last_ts"):
+                tracker["last_ts"] = float(tracker["last_ts"]) / 1000.0
+            document["savings_tracker"] = tracker
         if state.savings.archived_was_persisted or state.savings.archived_eur != 0.0:
             document["actual_savings_archived_eur"] = state.savings.archived_eur
         return document
@@ -327,7 +330,9 @@ def _owner_state_from_document(
         savings=SavingsState(
             estimated_daily=dict(document["daily_savings"]),
             actual_daily=dict(document["actual_daily_savings"]),
-            tracker=dict(document.get("savings_tracker") or {}),
+            tracker=_savings_tracker_from_document(
+                document.get("savings_tracker") or {}
+            ),
             archived_eur=float(document.get("actual_savings_archived_eur", 0.0)),
             tracker_was_persisted="savings_tracker" in document,
             archived_was_persisted="actual_savings_archived_eur" in document,
@@ -335,6 +340,13 @@ def _owner_state_from_document(
         publication=PublicationState(dict(document["last_output"])),
         extra={key: value for key, value in document.items() if key not in known},
     )
+
+
+def _savings_tracker_from_document(value: object) -> dict[str, Any]:
+    tracker = dict(value) if isinstance(value, dict) else {}
+    if tracker.get("last_ts"):
+        tracker["last_ts"] = int(round(float(tracker["last_ts"]) * 1000.0))
+    return tracker
 
 
 def fallback_output(mode, reason, state: PublicationState, now_iso):

@@ -136,9 +136,9 @@ historical and tariff observations are rejected before planning.
 The same review removed a residual second EV-history kW-to-W conversion and
 made planner-capture failure non-fatal to the fast live-control cycle.
 Historical timestamps now cross the planning seam exclusively as UTC epoch
-milliseconds. The legacy seconds-based savings ledger receives an explicit
-internal conversion at its call seam; persisted schema-11 timestamp meanings
-remain unchanged.
+milliseconds, including the measured-savings interface. The state-store adapter
+converts the savings tracker's existing persisted seconds value on load/save, so
+schema-11 timestamp meanings remain unchanged.
 
 The adapter preserves the required lifecycle order: capture on the event loop,
 read bounded Recorder history in the executor, load typed owner state, invoke

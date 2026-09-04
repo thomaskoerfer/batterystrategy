@@ -128,15 +128,8 @@ def _planning_service(settings: PlanningRuntimeSettings) -> PlanningService:
     )
 
 
-def _update_actual_savings(runtime, state, now_ts):
+def _update_actual_savings(runtime, state, now_ms):
     """Update measured savings through its independent accounting boundary."""
-
-    def history_seconds(roles, cutoff_s):
-        series = runtime.history.read(roles, int(float(cutoff_s) * 1000.0))
-        return {
-            role: [(timestamp_ms / 1000.0, value) for timestamp_ms, value in values]
-            for role, values in series.items()
-        }
 
     return SavingsLedger(
         config=SavingsConfig(
@@ -152,9 +145,9 @@ def _update_actual_savings(runtime, state, now_ts):
                 battery_discharge_power=HistoryRole.BATTERY_DISCHARGE_POWER_W,
             ),
         ),
-        history_reader=history_seconds,
+        history_reader=runtime.history.read,
         price_reader=runtime.tariffs.for_dates,
-    ).update(state, now_ts)
+    ).update(state, now_ms)
 
 
 def clamp(v, lo, hi):
@@ -301,7 +294,7 @@ def run(
         actual_daily_savings,
         actual_today_saving,
         actual_savings_lifetime_eur,
-    ) = _update_actual_savings(runtime, savings_state, now_ts)
+    ) = _update_actual_savings(runtime, savings_state, runtime.captured_at_ms)
 
     # actual_daily_savings is maintained inside the savings ledger
     actual_daily_savings = savings_state.actual_daily

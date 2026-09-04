@@ -52,8 +52,8 @@ def _ledger(series: dict, prices: list[dict]) -> SavingsLedger:
 
 def test_grid_charge_is_costed_and_pv_charge_remains_free():
     start = dt.datetime(2026, 9, 2, tzinfo=dt.timezone.utc)
-    start_ts = start.timestamp()
-    event_ts = start_ts + 900
+    start_ts = int(start.timestamp() * 1000)
+    event_ts = start_ts + 900_000
     prices = [{"dt": start, "price_eur": 0.20}]
 
     grid_series = {
@@ -73,7 +73,7 @@ def test_grid_charge_is_costed_and_pv_charge_remains_free():
             "savings_backfill_v1_done": True,
         }
     )
-    daily, today, _ = _ledger(grid_series, prices).update(state, event_ts + 60)
+    daily, today, _ = _ledger(grid_series, prices).update(state, event_ts + 60_000)
     record = daily[start.date().isoformat()]
     assert record["charge_grid_kwh"] == 1.0
     assert record["charge_pv_kwh"] == 0.0
@@ -90,7 +90,9 @@ def test_grid_charge_is_costed_and_pv_charge_remains_free():
             "savings_backfill_v1_done": True,
         }
     )
-    pv_daily, pv_today, _ = _ledger(pv_series, prices).update(pv_state, event_ts + 60)
+    pv_daily, pv_today, _ = _ledger(pv_series, prices).update(
+        pv_state, event_ts + 60_000
+    )
     pv_record = pv_daily[start.date().isoformat()]
     assert pv_record["charge_grid_kwh"] == 0.0
     assert pv_record["charge_pv_kwh"] == 1.0
@@ -99,19 +101,21 @@ def test_grid_charge_is_costed_and_pv_charge_remains_free():
 
 
 def test_missing_prices_do_not_advance_counter_tracker():
-    now = dt.datetime(2026, 9, 2, 12, tzinfo=dt.timezone.utc).timestamp()
+    now = int(
+        dt.datetime(2026, 9, 2, 12, tzinfo=dt.timezone.utc).timestamp() * 1000
+    )
     state = SavingsState(
         tracker={
-            "last_ts": now - 900,
+            "last_ts": now - 900_000,
             "last_input_kwh": 10.0,
             "last_output_kwh": 4.0,
             "savings_backfill_v1_done": True,
         }
     )
     series = {
-        "battery_input": [(now - 900, 10.0), (now, 11.0)],
-        "battery_output": [(now - 900, 4.0)],
+        "battery_input": [(now - 900_000, 10.0), (now, 11.0)],
+        "battery_output": [(now - 900_000, 4.0)],
     }
     _ledger(series, []).update(state, now)
-    assert state.tracker["last_ts"] == now - 900
+    assert state.tracker["last_ts"] == now - 900_000
     assert state.tracker["last_input_kwh"] == 10.0

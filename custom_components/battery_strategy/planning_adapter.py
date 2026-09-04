@@ -410,7 +410,8 @@ class PlanningPipelineAdapter:
             price_values = [float(value) for _, value in raw_prices]
             price_history_scale = (
                 0.01
-                if price_values and statistics.median(price_values) > 2.0
+                if price_values
+                and statistics.median(abs(value) for value in price_values) > 2.0
                 else 1.0
             )
 
@@ -483,6 +484,8 @@ class PlanningPipelineAdapter:
             return 0.01
         if ("eur/" in unit or "€/" in unit) and "mwh" in unit:
             return 0.001
+        if ("eur/" in unit or "€/" in unit) and "kwh" in unit:
+            return 1.0
         current = _as_float(state.state) if state is not None else None
         if current is None:
             return None

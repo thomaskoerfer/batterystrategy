@@ -40,6 +40,10 @@ def test_store_round_trip_preserves_schema_11_keys_and_unknown_salvage(tmp_path)
         "eex_cache": {},
         "daily_savings": {},
         "actual_daily_savings": {},
+        "savings_tracker": {
+            "last_ts": 1_800_000_000.0,
+            "last_input_kwh": 10.0,
+        },
         "last_output": {},
         "state_schema": STATE_SCHEMA_VERSION,
         "unknown_retained_key": {"value": 7},
@@ -49,6 +53,7 @@ def test_store_round_trip_preserves_schema_11_keys_and_unknown_salvage(tmp_path)
     state = _load(store, 1_800_000_000_000)
 
     assert isinstance(state, PlanningOwnerState)
+    assert state.savings.tracker["last_ts"] == 1_800_000_000_000
     assert store.save(state)
     assert load_state_document(path) == source
 

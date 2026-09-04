@@ -14,8 +14,8 @@ from .runtime_market_data import TariffInterval
 if TYPE_CHECKING:
     from .planning_state import SavingsState
 
-Series = list[tuple[float, float]]
-HistoryReader = Callable[[Iterable[HistoryRole], float], dict[HistoryRole, Series]]
+Series = list[tuple[int, float]]
+HistoryReader = Callable[[Iterable[HistoryRole], int], dict[HistoryRole, Series]]
 PriceReader = Callable[[set[str]], Iterable[TariffInterval]]
 
 
@@ -56,30 +56,30 @@ class SavingsLedger:
         self._price_reader = price_reader
 
     @staticmethod
-    def _series_index(series: Series) -> tuple[list[float], list[float]]:
+    def _series_index(series: Series) -> tuple[list[int], list[float]]:
         return (
-            [float(timestamp) for timestamp, _ in series],
+            [int(timestamp) for timestamp, _ in series],
             [float(value) for _, value in series],
         )
 
     @staticmethod
     def _value_at_or_before(
-        index: tuple[list[float], list[float]], timestamp: float
+        index: tuple[list[int], list[float]], timestamp_ms: int
     ) -> float | None:
         timestamps, values = index
         if not timestamps:
             return None
-        position = bisect.bisect_right(timestamps, float(timestamp)) - 1
+        position = bisect.bisect_right(timestamps, int(timestamp_ms)) - 1
         return values[position] if position >= 0 else None
 
-    def _local_datetime(self, timestamp: float) -> dt.datetime:
-        return dt.datetime.fromtimestamp(float(timestamp), dt.timezone.utc).astimezone(
-            self._config.timezone
-        )
+    def _local_datetime(self, timestamp_ms: int) -> dt.datetime:
+        return dt.datetime.fromtimestamp(
+            int(timestamp_ms) / 1000.0, dt.timezone.utc
+        ).astimezone(self._config.timezone)
 
-    def _local_dates_between(self, start: float, end: float) -> set[str]:
-        start_day = self._local_datetime(start).date()
-        end_day = self._local_datetime(end).date()
+    def _local_dates_between(self, start_ms: int, end_ms: int) -> set[str]:
+        start_day = self._local_datetime(start_ms).date()
+        end_day = self._local_datetime(end_ms).date()
         dates = set()
         current = start_day
         while current <= end_day:
@@ -87,10 +87,10 @@ class SavingsLedger:
             current += dt.timedelta(days=1)
         return dates
 
-    def _price_index(self, dates: set[str]) -> tuple[list[float], list[float]]:
+    def _price_index(self, dates: set[str]) -> tuple[list[int], list[float]]:
         pairs = sorted(
             (
-                float(interval.starts_at.timestamp()),
+                int(round(interval.starts_at.timestamp() * 1000.0)),
                 float(interval.price_eur_per_kwh),
             )
             for interval in self._price_reader(dates)
@@ -111,36 +111,49 @@ class SavingsLedger:
             "saving_eur": 0.0,
         }
 
-    def update(self, state: SavingsState, now_ts: float) -> tuple[dict, float, float]:
+    def update(self, state: SavingsState, now_ms: int) -> tuple[dict, float, float]:
         """Stamp new measured charge/discharge deltas at contemporaneous prices."""
-        local_now = self._local_datetime(now_ts)
+        now_ms = int(now_ms)
+        local_now = self._local_datetime(now_ms)
         today = local_now.date().isoformat()
         state.tracker_was_persisted = True
         state.archived_was_persisted = True
         tracker = state.tracker
         daily = state.actual_daily
         archived = float(state.archived_eur)
-        last_ts = float(tracker.get("last_ts", 0.0))
+        last_ms = int(tracker.get("last_ts", 0))
         last_input_kwh = tracker.get("last_input_kwh")
         last_output_kwh = tracker.get("last_output_kwh")
-        first_run = last_ts == 0.0
+        first_run = last_ms == 0
         needs_backfill = first_run is False and not tracker.get(
             "savings_backfill_v1_done"
         )
-        midnight = dt.datetime.combine(
-            local_now.date(), dt.time.min, tzinfo=self._config.timezone
-        ).timestamp()
-        if first_run:
-            query_from = now_ts - 86400.0
-        elif needs_backfill:
-            query_from = (
+        midnight_ms = int(
+            round(
                 dt.datetime.combine(
                     local_now.date(), dt.time.min, tzinfo=self._config.timezone
+                ).timestamp()
+                * 1000.0
+            )
+        )
+        if first_run:
+            query_from_ms = now_ms - 86_400_000
+        elif needs_backfill:
+            query_from_ms = int(
+                round(
+                    (
+                        dt.datetime.combine(
+                            local_now.date(),
+                            dt.time.min,
+                            tzinfo=self._config.timezone,
+                        )
+                        - dt.timedelta(days=2)
+                    ).timestamp()
+                    * 1000.0
                 )
-                - dt.timedelta(days=2)
-            ).timestamp()
+            )
         else:
-            query_from = min(last_ts - 120.0, midnight)
+            query_from_ms = min(last_ms - 120_000, midnight_ms)
 
         entities = self._config.entities
         series_map = self._history_reader(
@@ -153,7 +166,7 @@ class SavingsLedger:
                 entities.battery_charge_power,
                 entities.battery_discharge_power,
             ),
-            query_from,
+            query_from_ms,
         )
         price_series = series_map.get(entities.price, [])
         input_series = series_map.get(entities.battery_input_energy, [])
@@ -164,7 +177,9 @@ class SavingsLedger:
         battery_discharge_series = series_map.get(
             entities.battery_discharge_power, []
         )
-        tariff_index = self._price_index(self._local_dates_between(query_from, now_ts))
+        tariff_index = self._price_index(
+            self._local_dates_between(query_from_ms, now_ms)
+        )
 
         if first_run:
             tracker["last_input_kwh"] = (
@@ -173,7 +188,7 @@ class SavingsLedger:
             tracker["last_output_kwh"] = (
                 float(output_series[-1][1]) if output_series else None
             )
-            tracker["last_ts"] = now_ts
+            tracker["last_ts"] = now_ms
         elif tariff_index[0] or price_series:
             fallback_price_index = self._series_index(price_series)
             grid_import_index = self._series_index(grid_import_series)
@@ -195,34 +210,40 @@ class SavingsLedger:
                 input_baseline = float(input_series[0][1]) if input_series else None
                 output_baseline = float(output_series[0][1]) if output_series else None
                 daily.pop(today, None)
-            cutoff = 0.0 if needs_backfill else last_ts
+            cutoff_ms = 0 if needs_backfill else last_ms
 
-            def price_at(timestamp: float) -> float | None:
-                value = self._value_at_or_before(tariff_index, timestamp)
+            def price_at(timestamp_ms: int) -> float | None:
+                value = self._value_at_or_before(tariff_index, timestamp_ms)
                 if value is not None:
                     return value
-                value = self._value_at_or_before(fallback_price_index, timestamp)
+                value = self._value_at_or_before(fallback_price_index, timestamp_ms)
                 if value is None:
                     return None
                 return float(value)
 
-            def charge_split(delta_kwh: float, timestamp: float) -> tuple[float, float]:
+            def charge_split(
+                delta_kwh: float, timestamp_ms: int
+            ) -> tuple[float, float]:
                 grid_import = max(
                     0.0,
                     float(
-                        self._value_at_or_before(grid_import_index, timestamp) or 0.0
+                        self._value_at_or_before(grid_import_index, timestamp_ms)
+                        or 0.0
                     ),
                 )
                 grid_export = max(
                     0.0,
                     float(
-                        self._value_at_or_before(grid_export_index, timestamp) or 0.0
+                        self._value_at_or_before(grid_export_index, timestamp_ms)
+                        or 0.0
                     ),
                 )
                 charge_w = max(
                     0.0,
                     float(
-                        self._value_at_or_before(battery_charge_index, timestamp)
+                        self._value_at_or_before(
+                            battery_charge_index, timestamp_ms
+                        )
                         or 0.0
                     ),
                 )
@@ -230,7 +251,7 @@ class SavingsLedger:
                     0.0,
                     float(
                         self._value_at_or_before(
-                            battery_discharge_index, timestamp
+                            battery_discharge_index, timestamp_ms
                         )
                         or 0.0
                     ),
@@ -259,24 +280,24 @@ class SavingsLedger:
                     previous = float(previous_tracker_value)
                 if previous is None and series:
                     previous = float(series[0][1])
-                for timestamp, value in series if previous is not None else []:
-                    timestamp = float(timestamp)
+                for timestamp_ms, value in series if previous is not None else []:
+                    timestamp_ms = int(timestamp_ms)
                     value = float(value)
                     delta = value - previous
                     previous = value
-                    day = self._local_datetime(timestamp).date().isoformat()
-                    if timestamp <= cutoff and day != today:
+                    day = self._local_datetime(timestamp_ms).date().isoformat()
+                    if timestamp_ms <= cutoff_ms and day != today:
                         continue
                     if delta <= 0.0 or delta > 8.0:
                         continue
                     if backfill_days is not None and day not in backfill_days:
                         continue
-                    price = price_at(timestamp)
+                    price = price_at(timestamp_ms)
                     if price is None:
                         continue
                     record = daily.setdefault(day, self._new_day_record())
                     if charge:
-                        grid_kwh, pv_kwh = charge_split(delta, timestamp)
+                        grid_kwh, pv_kwh = charge_split(delta, timestamp_ms)
                         record["charge_grid_kwh"] += grid_kwh
                         record["charge_pv_kwh"] += pv_kwh
                         record["charge_cost_eur"] += grid_kwh * price
@@ -303,7 +324,7 @@ class SavingsLedger:
                 tracker["last_input_kwh"] = float(input_series[-1][1])
             if output_series:
                 tracker["last_output_kwh"] = float(output_series[-1][1])
-            tracker["last_ts"] = now_ts
+            tracker["last_ts"] = now_ms
         # Without any price source the tracker intentionally stays unchanged.
 
         keys = (

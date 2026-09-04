@@ -427,6 +427,26 @@ class HacsStrategyTests(unittest.TestCase):
             ],
             [(100_000, 0.25)],
         )
+        unitless_negative_cents = (
+            planning_adapter.PlanningPipelineAdapter._normalize_history(
+                {"price_raw": ((100.0, -25.0),)}, 200_000
+            )
+        )
+        self.assertEqual(
+            unitless_negative_cents.read([HistoryRole.PRICE_EUR_PER_KWH], 0)[
+                HistoryRole.PRICE_EUR_PER_KWH
+            ],
+            [(100_000, -0.25)],
+        )
+
+    def test_explicit_eur_per_kwh_history_unit_overrides_value_inference(self):
+        state = SimpleNamespace(
+            state="3.5", attributes={"unit_of_measurement": "EUR/kWh"}
+        )
+        adapter = object.__new__(planning_adapter.PlanningPipelineAdapter)
+        adapter._hass = SimpleNamespace(states=SimpleNamespace(get=lambda _id: state))
+
+        self.assertEqual(adapter._price_scale("sensor.price"), 1.0)
 
     def test_house_profile_consumes_ev_history_once_in_watts(self):
         timestamp_ms = 1_800_000_000_000
