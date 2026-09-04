@@ -37,6 +37,15 @@ class PlanningHistory:
 
     _series: Mapping[HistoryRole, tuple[tuple[float, float], ...]]
 
+    def __post_init__(self) -> None:
+        normalized = {
+            role if isinstance(role, HistoryRole) else HistoryRole(role): tuple(
+                (float(timestamp), float(value)) for timestamp, value in series
+            )
+            for role, series in self._series.items()
+        }
+        object.__setattr__(self, "_series", MappingProxyType(normalized))
+
     @classmethod
     def empty(cls) -> PlanningHistory:
         return cls(MappingProxyType({}))
@@ -58,7 +67,7 @@ class PlanningHistory:
                 for timestamp, value in series
                 if float(timestamp) <= captured_at_s
             )
-        return cls(MappingProxyType(normalized))
+        return cls(normalized)
 
     def read(
         self, roles: Iterable[HistoryRole], cutoff_ts: float
@@ -79,7 +88,8 @@ class PlanningObservations:
     grid_import_w: float
     grid_export_w: float
     pv_generation_w: float
-    battery_power_w: float
+    battery_charge_w: float
+    battery_discharge_w: float
     battery_soc_pct: float | None
     battery_min_soc_pct: float
     ev_charge_w: float
@@ -116,12 +126,21 @@ class PlanningRuntimeSettings:
         cls, options: StrategyOptions, timezone: str | ZoneInfo
     ) -> PlanningRuntimeSettings:
         zone = timezone if isinstance(timezone, ZoneInfo) else ZoneInfo(str(timezone))
-        capacity = max(0.5, float(options.battery_capacity_kwh))
-        min_soc = max(0.0, min(100.0, float(options.min_soc_pct)))
-        max_soc = max(min_soc, min(100.0, float(options.max_soc_pct)))
-        max_charge = max(0.0, float(options.max_charge_power_w))
-        max_discharge = max(0.0, float(options.max_discharge_power_w))
-        rte = max(0.01, min(1.0, float(options.round_trip_efficiency)))
+        capacity = max(0.5, float(options.battery_capacity_kwh or 6.0))
+        min_soc = max(0.0, min(100.0, float(options.min_soc_pct or 0.0)))
+        max_soc = max(
+            min_soc, min(100.0, float(options.max_soc_pct or 100.0))
+        )
+        fallback_power = max(
+            float(options.max_charge_power_w), float(options.max_discharge_power_w)
+        ) or 2400.0
+        max_charge = max(0.0, float(options.max_charge_power_w or fallback_power))
+        max_discharge = max(
+            0.0, float(options.max_discharge_power_w or fallback_power)
+        )
+        rte = max(
+            0.01, min(1.0, float(options.round_trip_efficiency or 0.8))
+        )
         pv_capacity = max(0.1, float(options.pv_capacity_kwp) or 1.0)
         discharge_mode = str(options.discharge)
         return cls(
@@ -135,7 +154,9 @@ class PlanningRuntimeSettings:
             grid_charging_allowed=str(options.grid_charging) != "off",
             discharge_allowed=discharge_mode != "off",
             discharge_mode=discharge_mode,
-            planning_horizon_h=max(1, min(48, int(options.planning_horizon_h))),
+            planning_horizon_h=max(
+                1, min(48, int(options.planning_horizon_h or 48))
+            ),
             round_trip_efficiency=rte,
             min_margin_ct_per_kwh=max(0.0, float(options.min_margin_ct_per_kwh)),
             export_opportunity_ct_per_kwh=max(
@@ -190,6 +211,11 @@ class PlanningRuntime:
     def __post_init__(self) -> None:
         if self.captured_at_ms < 0:
             raise ValueError("captured_at_ms must be non-negative")
+        object.__setattr__(self, "forecast_history", tuple(self.forecast_history))
+        object.__setattr__(self, "forecast_weather", tuple(self.forecast_weather))
+        object.__setattr__(
+            self, "forecast_component_specs", tuple(self.forecast_component_specs)
+        )
 
     @property
     def captured_at_s(self) -> float:

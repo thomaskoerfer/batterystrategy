@@ -385,6 +385,54 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertEqual(context.recorder_scales[HistoryRole.PV_POWER], 1000.0)
         self.assertEqual(context.recorder_scales[HistoryRole.EV_POWER], 1000.0)
 
+    def test_optimizer_current_price_ignores_stale_prior_day_tariff(self):
+        captured = dt.datetime(2027, 1, 15, 10, 15, tzinfo=dt.timezone.utc)
+        price_state = SimpleNamespace(
+            state="31.5",
+            attributes={
+                "data": [
+                    {
+                        "start_time": "2027-01-14T23:45:00+00:00",
+                        "price": 0.99,
+                    }
+                ]
+            },
+        )
+
+        class Registry:
+            @staticmethod
+            def async_get_entity_id(_platform, _domain, unique_id):
+                return f"sensor.{unique_id}"
+
+        class FakeHass:
+            config = SimpleNamespace(
+                config_dir="/config",
+                latitude=50.9,
+                longitude=6.1,
+                time_zone="UTC",
+            )
+            states = SimpleNamespace(
+                get=lambda entity_id: price_state
+                if entity_id == "sensor.price"
+                else None
+            )
+
+        entry = SimpleNamespace(
+            entry_id="entry-1",
+            data={"price_entity": "sensor.price"},
+            options={},
+        )
+        adapter = planning_adapter.PlanningPipelineAdapter(FakeHass(), entry)
+        with patch.object(planning_adapter.er, "async_get", return_value=Registry()):
+            context = adapter.runtime_context(
+                measurements(0, 0, 0, 0, 0, 50, captured_at_ms=int(captured.timestamp() * 1000)),
+                StrategyOptions(),
+            )
+
+        self.assertEqual(
+            context.snapshot.observations.current_price_ct_per_kwh, 31.5
+        )
+
     def test_optimizer_history_normalizes_mapped_power_units(self):
         runtime = runtime_snapshot(
             history_series={HistoryRole.PV_POWER: ((100.0, 1250.0),)},

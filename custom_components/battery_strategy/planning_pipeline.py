@@ -218,12 +218,16 @@ def run(
         )
 
     p_now = observations.current_price_ct_per_kwh
-    p_future_max = observations.future_max_price_ct_per_kwh or p_now
+    p_future_max = (
+        observations.future_max_price_ct_per_kwh
+        if observations.future_max_price_ct_per_kwh is not None
+        else p_now
+    )
     grid_import_w = observations.grid_import_w
     grid_export_w = observations.grid_export_w
     pv_w = observations.pv_generation_w
     wallbox_w = observations.ev_charge_w
-    bat_in_out_w = observations.battery_power_w
+    bat_in_out_w = observations.battery_discharge_w - observations.battery_charge_w
     house_load_total_w = max(0.0, grid_import_w + pv_w + bat_in_out_w - grid_export_w)
     house_load_w = max(0.0, house_load_total_w - wallbox_w)
     soc = observations.battery_soc_pct

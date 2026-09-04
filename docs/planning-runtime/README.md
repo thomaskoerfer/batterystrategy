@@ -24,6 +24,11 @@ runtime input or configuration is written to module globals. Its required
 `captured_at_ms` is the sole observation time for all downstream cutoffs,
 slot selection, forecast generation and persistence ordering.
 
+Battery charge and discharge remain separate non-negative observation fields;
+the orchestration derives a signed legacy calculation value only at its point of
+use. Provider metadata cannot redefine the authority of normalized retail
+tariffs.
+
 The runtime is split by application responsibility:
 
 - `runtime_measurements.py` provides role-keyed bounded history views and
@@ -52,7 +57,7 @@ an executable plan. It does not expose a command-line or stdout JSON protocol.
 
 Recorder entity resolution remains private to `PlanningCapture`. The adapter
 completes the snapshot with Recorder history in the executor, then loads owner
-state, invokes the pure planning orchestration, saves owner state and only then
+state, invokes the planning orchestration, saves owner state and only then
 publishes the result. This preserves Home Assistant's event-loop boundary and
 keeps persistence lifecycle and leases out of planning inputs.
 

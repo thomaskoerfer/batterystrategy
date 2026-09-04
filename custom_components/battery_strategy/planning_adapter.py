@@ -250,13 +250,18 @@ class PlanningPipelineAdapter:
         )
         settings = PlanningRuntimeSettings.from_options(options, self._timezone)
         tariffs = TariffSchedule.from_provider_rows(provider_prices, settings.timezone)
-        current_price = tariffs.price_eur_at(inputs.captured_at_ms / 1000.0)
-        current_price_ct = current_price * 100.0 if current_price is not None else None
-        if current_price_ct is None and price_state is not None:
-            current_price_ct = _as_float(price_state.state)
         local_now = dt.datetime.fromtimestamp(
             inputs.captured_at_ms / 1000.0, dt.timezone.utc
         ).astimezone(settings.timezone)
+        current_day_tariffs = TariffSchedule(
+            tariffs.for_dates({local_now.date().isoformat()})
+        )
+        current_price = current_day_tariffs.price_eur_at(
+            inputs.captured_at_ms / 1000.0
+        )
+        current_price_ct = current_price * 100.0 if current_price is not None else None
+        if current_price_ct is None and price_state is not None:
+            current_price_ct = _as_float(price_state.state)
         future_stats = tariffs.future_price_stats(local_now)
         future_max_price_ct = (
             future_stats["max_ct"] if future_stats is not None else current_price_ct
@@ -296,7 +301,8 @@ class PlanningPipelineAdapter:
             grid_import_w=float(inputs.grid_import_w),
             grid_export_w=float(inputs.grid_export_w),
             pv_generation_w=float(inputs.pv_generation_w),
-            battery_power_w=float(battery_power_w),
+            battery_charge_w=float(inputs.battery_charge_w),
+            battery_discharge_w=float(inputs.battery_discharge_w),
             battery_soc_pct=float(inputs.soc_pct),
             battery_min_soc_pct=float(options.min_soc_pct),
             ev_charge_w=(

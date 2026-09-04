@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+from dataclasses import replace
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -12,10 +13,14 @@ from custom_components.battery_strategy import planning_adapter, planning_pipeli
 from custom_components.battery_strategy.models import StrategyOptions
 from custom_components.battery_strategy.planning_runtime import (
     HistoryRole,
+    PlanningHistory,
     PlanningObservations,
 )
 from custom_components.battery_strategy.planning_state import PlanningStateStore
-from custom_components.battery_strategy.runtime_market_data import TariffSchedule
+from custom_components.battery_strategy.runtime_market_data import (
+    TariffInterval,
+    TariffSchedule,
+)
 from tests.live_contract_helpers import measurements
 from tests.planning_runtime_helpers import runtime_snapshot, settings_from_values
 
@@ -82,15 +87,41 @@ def test_planning_runtime_snapshots_are_immutable_and_isolated():
             timezone="Europe/Berlin", battery_capacity_kwh=6.0
         ),
         observations=PlanningObservations(
-            20.0, 30.0, 100.0, 0.0, 0.0, 0.0, 42.0, 5.0,
-            0.0, 0.0, 0.0, None, 50.0, 0.0,
+            current_price_ct_per_kwh=20.0,
+            future_max_price_ct_per_kwh=30.0,
+            grid_import_w=100.0,
+            grid_export_w=0.0,
+            pv_generation_w=0.0,
+            battery_charge_w=0.0,
+            battery_discharge_w=0.0,
+            battery_soc_pct=42.0,
+            battery_min_soc_pct=5.0,
+            ev_charge_w=0.0,
+            heat_pump_power_w=0.0,
+            pv_next_hour_kwh=0.0,
+            pv_tomorrow_kwh=None,
+            cloud_cover_pct=50.0,
+            shortwave_radiation_w_m2=0.0,
         ),
     )
     second = runtime_snapshot(
         settings=settings_from_values(timezone="UTC", battery_capacity_kwh=10.0),
         observations=PlanningObservations(
-            20.0, 30.0, 100.0, 0.0, 0.0, 0.0, 81.0, 5.0,
-            0.0, 0.0, 0.0, None, 50.0, 0.0,
+            current_price_ct_per_kwh=20.0,
+            future_max_price_ct_per_kwh=30.0,
+            grid_import_w=100.0,
+            grid_export_w=0.0,
+            pv_generation_w=0.0,
+            battery_charge_w=0.0,
+            battery_discharge_w=0.0,
+            battery_soc_pct=81.0,
+            battery_min_soc_pct=5.0,
+            ev_charge_w=0.0,
+            heat_pump_power_w=0.0,
+            pv_next_hour_kwh=0.0,
+            pv_tomorrow_kwh=None,
+            cloud_cover_pct=50.0,
+            shortwave_radiation_w_m2=0.0,
         ),
     )
 
@@ -122,6 +153,40 @@ def test_planning_snapshot_excludes_adapter_and_persistence_details():
     assert "owner_state: PlanningOwnerState" in pipeline_source
 
 
+def test_runtime_settings_preserve_established_zero_value_fallbacks():
+    settings = settings_from_values(
+        battery_capacity_kwh=0.0,
+        max_soc_pct=0.0,
+        max_charge_power_w=0.0,
+        max_discharge_power_w=0.0,
+        round_trip_efficiency=0.0,
+        planning_horizon_h=0,
+    )
+
+    assert settings.battery_capacity_kwh == 6.0
+    assert settings.max_soc_pct == 100.0
+    assert settings.max_charge_power_w == 2400.0
+    assert settings.max_discharge_power_w == 2400.0
+    assert settings.round_trip_efficiency == 0.8
+    assert settings.planning_horizon_h == 48
+
+
+def test_future_zero_and_negative_prices_are_preserved():
+    start = dt.datetime(2027, 1, 15, 10, 15, tzinfo=dt.timezone.utc)
+    tariffs = TariffSchedule.from_provider_rows(
+        [
+            {"start_time": start.isoformat(), "price": -0.10},
+            {
+                "start_time": (start + dt.timedelta(minutes=15)).isoformat(),
+                "price": 0.0,
+            },
+        ],
+        ZoneInfo("UTC"),
+    )
+
+    assert tariffs.future_price_stats(start) == {"min_ct": -10.0, "max_ct": 0.0}
+
+
 def test_planning_runtime_detaches_mutable_provider_values():
     provider_rows = [
         {"start_time": "2027-01-15T10:00:00+00:00", "price": 0.10}
@@ -136,6 +201,39 @@ def test_planning_runtime_detaches_mutable_provider_values():
     assert runtime.history.read([HistoryRole.PV_POWER], 0.0) == {
         HistoryRole.PV_POWER: [(100.0, 1250.0)]
     }
+
+
+def test_direct_snapshot_construction_normalizes_mutable_containers():
+    interval = TariffInterval(
+        dt.datetime(2027, 1, 15, 10, tzinfo=dt.timezone.utc), 0.20
+    )
+    interval_values = [interval]
+    schedule = TariffSchedule(interval_values)
+    series_values = [(100.0, 1250.0)]
+    history = PlanningHistory({HistoryRole.PV_POWER: series_values})
+    runtime = runtime_snapshot()
+    replaced = replace(runtime, forecast_weather=[])
+
+    interval_values.clear()
+    series_values.clear()
+    assert schedule.intervals == (interval,)
+    assert history.read([HistoryRole.PV_POWER], 0.0)[HistoryRole.PV_POWER]
+    assert replaced.forecast_weather == ()
+
+
+def test_provider_source_metadata_cannot_change_tariff_authority():
+    schedule = TariffSchedule.from_provider_rows(
+        [
+            {
+                "start_time": "2027-01-15T10:00:00+00:00",
+                "price": 0.20,
+                "source": "untrusted-provider-label",
+            }
+        ],
+        ZoneInfo("UTC"),
+    )
+
+    assert schedule.intervals[0].source == "tibber"
 
 
 def test_captured_time_selects_the_exact_quarter_boundary_price():

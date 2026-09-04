@@ -28,6 +28,12 @@ class TariffSchedule:
 
     intervals: tuple[TariffInterval, ...] = ()
 
+    def __post_init__(self) -> None:
+        intervals = tuple(self.intervals)
+        if any(not isinstance(item, TariffInterval) for item in intervals):
+            raise TypeError("tariff schedule requires TariffInterval values")
+        object.__setattr__(self, "intervals", intervals)
+
     @classmethod
     def from_provider_rows(
         cls,
@@ -50,9 +56,7 @@ class TariffSchedule:
                 if parsed.tzinfo is None:
                     parsed = parsed.replace(tzinfo=timezone)
                 price_eur = value / 100.0 if value >= 2.0 else value
-                merged[parsed.timestamp()] = TariffInterval(
-                    parsed, price_eur, str(item.get("source", "tibber"))
-                )
+                merged[parsed.timestamp()] = TariffInterval(parsed, price_eur)
             except (AttributeError, TypeError, ValueError):
                 continue
         return cls(tuple(merged[key] for key in sorted(merged)))

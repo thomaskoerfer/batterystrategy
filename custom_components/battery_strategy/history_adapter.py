@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import datetime as dt
 
+from .planning_runtime import HistoryRole
+
 
 def read_recorder_series(
     hass,
-    entity_map: dict[str, str],
-    entity_scale: dict[str, float],
+    entity_map: dict[HistoryRole, str],
+    entity_scale: dict[HistoryRole, float],
     *,
     start_time: dt.datetime,
     end_time: dt.datetime,
-) -> dict[str, tuple[tuple[float, float], ...]]:
+) -> dict[HistoryRole, tuple[tuple[float, float], ...]]:
     """Read normalized numeric history through Home Assistant's public API."""
     from homeassistant.components.recorder import history
 
@@ -28,7 +30,7 @@ def read_recorder_series(
         significant_changes_only=False,
         no_attributes=True,
     )
-    result: dict[str, tuple[tuple[float, float], ...]] = {}
+    result: dict[HistoryRole, tuple[tuple[float, float], ...]] = {}
     for role, entity_id in mapped.items():
         scale = float(entity_scale.get(role, 1.0))
         values = []

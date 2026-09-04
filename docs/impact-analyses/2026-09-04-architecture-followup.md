@@ -122,6 +122,12 @@ units, current-price fallback behavior and Recorder entity resolution belong to
 the Home Assistant adapter. `PlanningStateStore`, configuration paths and raw
 state mappings cannot cross into the planning snapshot.
 
+Follow-up review restored exact date-scoped current-price fallback and existing
+zero-option normalization, preserved zero/negative future prices, canonicalized
+provider tariff authority, and replaced the signed battery observation with
+separate non-negative charge and discharge flows required by the existing
+contract.
+
 The adapter preserves the required lifecycle order: capture on the event loop,
 read bounded Recorder history in the executor, load typed owner state, invoke
 planning, persist that state under the existing schema-11 lease, then publish.
