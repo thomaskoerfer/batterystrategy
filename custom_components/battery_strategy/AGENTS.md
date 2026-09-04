@@ -50,6 +50,11 @@ documented impact analysis and explicit owner approval.
 
 - Keep one hardware writer. Shadow and evaluation code never receive an
   actuator reference.
+- Apply source-aware freshness: strict report age is for continuous grid
+  feedback; available and valid change-driven SoC, EV and battery states do not
+  expire merely because their value is unchanged. Changing this rule requires
+  an independent heartbeat/timestamp contract, impact analysis and explicit
+  owner approval.
 - Keep forecasting free of prices and battery state; keep optimization free of
   Home Assistant and I/O; keep live control free of economic re-optimization.
 - Use contract types at boundaries and explicit state instead of module globals.

@@ -152,6 +152,25 @@ The existing bounded SoC and EV bridges apply only after a source becomes
 unavailable or invalid. Grid inputs retain their strict age checks because the
 live feedback loop requires current measurements.
 
+### Source-aware freshness decision
+
+The owner confirmed the RC6 freshness semantics as the intended design on
+2026-09-04. Operational evidence showed that the event-driven device adapter
+suppresses Home Assistant state writes when SoC or EV power does not change.
+Consequently, entity timestamp age cannot distinguish a healthy unchanged value
+from a disconnected source for these roles. Their validity is therefore based
+on a valid available state; the existing bounded bridge begins only after that
+state becomes unavailable or invalid. Battery power follows the same
+change-driven availability rule. Grid power remains age-bounded because it is a
+continuous control-loop input.
+
+This is a binding interpretation of the live-measurement contract, not a
+temporary compatibility exception. Reintroducing generic age limits for
+change-driven states requires an independent source heartbeat or observation
+timestamp, explicit impact analysis and owner approval. Regression tests cover
+unchanged available SoC, EV and battery values, unavailable bridge expiry and
+stale grid rejection.
+
 ## Contract impact
 
 Recommendation 2 changes the planning-publication interface and persisted

@@ -2,6 +2,14 @@
 
 All notable changes to Battery Strategy are documented here.
 
+## [Unreleased]
+
+### Documentation
+
+- Establish source-aware freshness as a binding contract: unchanged available
+  SoC, EV and battery states remain valid, while continuous grid feedback keeps
+  its strict report-age requirement.
+
 ## [0.2.0-rc.11] - 2026-09-04
 
 ### Fixed

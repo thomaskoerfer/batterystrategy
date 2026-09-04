@@ -160,6 +160,14 @@ validated `BatteryCommand`, explicit `LiveControlState` and `LiveDiagnostics`
 separate. The actuator receives that command unchanged. No second live input,
 directive or command model exists in production.
 
+The adapter evaluates freshness according to each source contract. Continuous
+grid feedback has a strict report-age limit. Change-driven SoC, EV and battery
+states remain valid while their entities are available and numerically valid;
+an unchanged value is not evidence of stale data. Availability bridges begin
+only after an entity becomes unavailable or invalid. Adding a time-based expiry
+to a change-driven source requires an independent heartbeat or observation
+timestamp plus the normal contract-change approval process.
+
 Dashboard future profiles remain canonical optimizer output. They may be joined
 to measured history at the current timestamp, but the current live command does
 not mutate future plan slots. This keeps plan diagnostics reproducible and

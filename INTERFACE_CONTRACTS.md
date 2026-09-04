@@ -235,10 +235,22 @@ semantics and examples are normative in
 `docs/plan-compiler/README.md`. They were approved by the owner on 2026-08-31.
 
 If the battery SoC source becomes unavailable, the last measured SoC remains
-the displayed estimate. After the bounded startup bridge expires, actuation and
-new optimizer runs remain blocked; the estimate is explicitly stale and must
-not be replaced by a fabricated nominal SoC. A valid recovered measurement
-forces a new optimizer run.
+the displayed estimate. After the bounded availability bridge expires,
+actuation and new optimizer runs remain blocked; the estimate is explicitly
+stale and must not be replaced by a fabricated nominal SoC. A valid recovered
+measurement forces a new optimizer run.
+
+Freshness is source-semantic, not value-semantic. SoC, EV power and battery
+power may be change-driven states: while their Home Assistant entities remain
+available and numerically valid, unchanged values remain valid regardless of
+`last_reported`, `last_updated` or `last_changed` age. Their bounded bridges
+start only when the entity becomes unavailable or invalid. Grid power is a
+continuous feedback signal and must satisfy its explicit maximum report age.
+No architecture or safety review may add a wall-clock age limit to a
+change-driven state unless its adapter contract provides an independent source
+heartbeat or observation timestamp. Such a change requires an impact analysis
+and explicit owner approval. These semantics were approved by the owner on
+2026-09-04.
 
 `PlanLiveDirective` contains every permission the live controller needs:
 allowed charge sources, required charge power and remaining energy,
