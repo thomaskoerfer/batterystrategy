@@ -2,7 +2,7 @@
 
 All notable changes to Battery Strategy are documented here.
 
-## [Unreleased]
+## [0.2.0-rc.12] - 2026-09-04
 
 ### Documentation
 
