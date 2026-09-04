@@ -24,9 +24,11 @@ runtime input or configuration is written to module globals. Its required
 `captured_at_ms` is the sole observation time for all downstream cutoffs,
 slot selection, forecast generation and persistence ordering.
 
-Battery charge and discharge remain separate non-negative observation fields;
-the orchestration derives a signed legacy calculation value only at its point of
-use. Provider metadata cannot redefine the authority of normalized retail
+Battery charge and discharge remain separate non-negative fields in current and
+historical observations; the orchestration derives a signed legacy calculation
+value only at its point of use. Historical prices are normalized to EUR/kWh,
+tariff timestamps to the Home Assistant timezone, and non-finite values are
+rejected. Provider metadata cannot redefine the authority of normalized retail
 tariffs.
 
 The runtime is split by application responsibility:

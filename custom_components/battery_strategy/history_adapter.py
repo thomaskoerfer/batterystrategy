@@ -3,18 +3,21 @@
 from __future__ import annotations
 
 import datetime as dt
+import math
+from collections.abc import Mapping
+from typing import Hashable, TypeVar
 
-from .planning_runtime import HistoryRole
+RoleT = TypeVar("RoleT", bound=Hashable)
 
 
 def read_recorder_series(
     hass,
-    entity_map: dict[HistoryRole, str],
-    entity_scale: dict[HistoryRole, float],
+    entity_map: Mapping[RoleT, str],
+    entity_scale: Mapping[RoleT, float],
     *,
     start_time: dt.datetime,
     end_time: dt.datetime,
-) -> dict[HistoryRole, tuple[tuple[float, float], ...]]:
+) -> dict[RoleT, tuple[tuple[float, float], ...]]:
     """Read normalized numeric history through Home Assistant's public API."""
     from homeassistant.components.recorder import history
 
@@ -30,7 +33,7 @@ def read_recorder_series(
         significant_changes_only=False,
         no_attributes=True,
     )
-    result: dict[HistoryRole, tuple[tuple[float, float], ...]] = {}
+    result: dict[RoleT, tuple[tuple[float, float], ...]] = {}
     for role, entity_id in mapped.items():
         scale = float(entity_scale.get(role, 1.0))
         values = []
@@ -40,7 +43,11 @@ def read_recorder_series(
                 value = float(state.state) * scale
             except (AttributeError, TypeError, ValueError):
                 continue
-            if timestamp > end_time.timestamp():
+            if (
+                timestamp > end_time.timestamp()
+                or not math.isfinite(timestamp)
+                or not math.isfinite(value)
+            ):
                 continue
             values.append((timestamp, value))
         result[role] = tuple(values)

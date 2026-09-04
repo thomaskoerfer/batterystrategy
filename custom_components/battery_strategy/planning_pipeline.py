@@ -28,7 +28,7 @@ from .planning_result import (
     persisted_output,
     result_from_persisted_output,
 )
-from .planning_runtime import PlanningRuntime, PlanningRuntimeSettings
+from .planning_runtime import HistoryRole, PlanningRuntime, PlanningRuntimeSettings
 from .planning_service import PlanningService, PlanningSettings
 from .planning_state import (
     PlanningOwnerState,
@@ -38,12 +38,6 @@ from .planning_state import (
     normalize_slot_biases,
 )
 from .runtime_measurements import (
-    E_BATTERY_INPUT_ENERGY,
-    E_BATTERY_OUTPUT_ENERGY,
-    E_BATTERY_POWER,
-    E_GRID_EXPORT,
-    E_GRID_IMPORT,
-    E_PRICE_EUR,
     fetch_house_actual_profile,
     fetch_net_actual_profile,
     fetch_pv_actual_profile,
@@ -142,12 +136,13 @@ def _update_actual_savings(runtime, state, now_ts):
             timezone=runtime.settings.timezone,
             retention_days=HISTORY_DAYS,
             entities=SavingsEntities(
-                price=E_PRICE_EUR,
-                battery_input_energy=E_BATTERY_INPUT_ENERGY,
-                battery_output_energy=E_BATTERY_OUTPUT_ENERGY,
-                grid_import=E_GRID_IMPORT,
-                grid_export=E_GRID_EXPORT,
-                battery_power=E_BATTERY_POWER,
+                price=HistoryRole.PRICE_EUR_PER_KWH,
+                battery_input_energy=HistoryRole.BATTERY_INPUT_ENERGY_KWH,
+                battery_output_energy=HistoryRole.BATTERY_OUTPUT_ENERGY_KWH,
+                grid_import=HistoryRole.GRID_IMPORT_POWER_W,
+                grid_export=HistoryRole.GRID_EXPORT_POWER_W,
+                battery_charge_power=HistoryRole.BATTERY_CHARGE_POWER_W,
+                battery_discharge_power=HistoryRole.BATTERY_DISCHARGE_POWER_W,
             ),
         ),
         history_reader=lambda entities, cutoff: fetch_sensor_series_many(

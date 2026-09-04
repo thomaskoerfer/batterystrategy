@@ -128,6 +128,12 @@ provider tariff authority, and replaced the signed battery observation with
 separate non-negative charge and discharge flows required by the existing
 contract.
 
+The final architecture review also removed the residual history-role alias
+facade. Recorder rows are normalized at the adapter into explicit unit-bearing
+roles, including separate battery charge/discharge power and EUR/kWh prices.
+Tariffs are converted to the Home Assistant timezone, and non-finite current,
+historical and tariff observations are rejected before planning.
+
 The adapter preserves the required lifecycle order: capture on the event loop,
 read bounded Recorder history in the executor, load typed owner state, invoke
 planning, persist that state under the existing schema-11 lease, then publish.

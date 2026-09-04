@@ -14,23 +14,25 @@ from custom_components.battery_strategy.savings import (
 )
 
 ENTITIES = SavingsEntities(
-    price=HistoryRole.PRICE_EUR,
-    battery_input_energy=HistoryRole.BATTERY_INPUT_ENERGY,
-    battery_output_energy=HistoryRole.BATTERY_OUTPUT_ENERGY,
-    grid_import=HistoryRole.GRID_IMPORT,
-    grid_export=HistoryRole.GRID_EXPORT,
-    battery_power=HistoryRole.BATTERY_POWER,
+    price=HistoryRole.PRICE_EUR_PER_KWH,
+    battery_input_energy=HistoryRole.BATTERY_INPUT_ENERGY_KWH,
+    battery_output_energy=HistoryRole.BATTERY_OUTPUT_ENERGY_KWH,
+    grid_import=HistoryRole.GRID_IMPORT_POWER_W,
+    grid_export=HistoryRole.GRID_EXPORT_POWER_W,
+    battery_charge_power=HistoryRole.BATTERY_CHARGE_POWER_W,
+    battery_discharge_power=HistoryRole.BATTERY_DISCHARGE_POWER_W,
 )
 
 
 def _ledger(series: dict, prices: list[dict]) -> SavingsLedger:
     aliases = {
-        "price": HistoryRole.PRICE_EUR,
-        "battery_input": HistoryRole.BATTERY_INPUT_ENERGY,
-        "battery_output": HistoryRole.BATTERY_OUTPUT_ENERGY,
-        "grid_import": HistoryRole.GRID_IMPORT,
-        "grid_export": HistoryRole.GRID_EXPORT,
-        "battery_power": HistoryRole.BATTERY_POWER,
+        "price": HistoryRole.PRICE_EUR_PER_KWH,
+        "battery_input": HistoryRole.BATTERY_INPUT_ENERGY_KWH,
+        "battery_output": HistoryRole.BATTERY_OUTPUT_ENERGY_KWH,
+        "grid_import": HistoryRole.GRID_IMPORT_POWER_W,
+        "grid_export": HistoryRole.GRID_EXPORT_POWER_W,
+        "battery_charge_power": HistoryRole.BATTERY_CHARGE_POWER_W,
+        "battery_discharge_power": HistoryRole.BATTERY_DISCHARGE_POWER_W,
     }
     role_series = {aliases[key]: value for key, value in series.items()}
     tariff_intervals = [
@@ -59,7 +61,8 @@ def test_grid_charge_is_costed_and_pv_charge_remains_free():
         "battery_output": [(start_ts, 4.0)],
         "grid_import": [(start_ts, 1000.0), (event_ts, 1000.0)],
         "grid_export": [(start_ts, 0.0), (event_ts, 0.0)],
-        "battery_power": [(start_ts, -1000.0), (event_ts, -1000.0)],
+        "battery_charge_power": [(start_ts, 1000.0), (event_ts, 1000.0)],
+        "battery_discharge_power": [(start_ts, 0.0), (event_ts, 0.0)],
         "price": [],
     }
     state = SavingsState(

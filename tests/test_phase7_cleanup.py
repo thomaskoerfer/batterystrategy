@@ -193,13 +193,13 @@ def test_planning_runtime_detaches_mutable_provider_values():
     ]
     runtime = runtime_snapshot(
         provider_prices=provider_rows,
-        history_series={HistoryRole.PV_POWER: [(100.0, 1250.0)]},
+        history_series={HistoryRole.PV_GENERATION_POWER_W: [(100.0, 1250.0)]},
     )
     provider_rows[0]["price"] = 0.99
 
     assert runtime.tariffs.intervals[0].price_eur_per_kwh == 0.10
-    assert runtime.history.read([HistoryRole.PV_POWER], 0.0) == {
-        HistoryRole.PV_POWER: [(100.0, 1250.0)]
+    assert runtime.history.read([HistoryRole.PV_GENERATION_POWER_W], 0.0) == {
+        HistoryRole.PV_GENERATION_POWER_W: [(100.0, 1250.0)]
     }
 
 
@@ -210,14 +210,18 @@ def test_direct_snapshot_construction_normalizes_mutable_containers():
     interval_values = [interval]
     schedule = TariffSchedule(interval_values)
     series_values = [(100.0, 1250.0)]
-    history = PlanningHistory({HistoryRole.PV_POWER: series_values})
+    history = PlanningHistory(
+        {HistoryRole.PV_GENERATION_POWER_W: series_values}
+    )
     runtime = runtime_snapshot()
     replaced = replace(runtime, forecast_weather=[])
 
     interval_values.clear()
     series_values.clear()
     assert schedule.intervals == (interval,)
-    assert history.read([HistoryRole.PV_POWER], 0.0)[HistoryRole.PV_POWER]
+    assert history.read([HistoryRole.PV_GENERATION_POWER_W], 0.0)[
+        HistoryRole.PV_GENERATION_POWER_W
+    ]
     assert replaced.forecast_weather == ()
 
 
@@ -234,6 +238,28 @@ def test_provider_source_metadata_cannot_change_tariff_authority():
     )
 
     assert schedule.intervals[0].source == "tibber"
+
+
+def test_tariff_timestamps_are_normalized_to_home_assistant_timezone():
+    timezone = ZoneInfo("Europe/Berlin")
+    schedule = TariffSchedule.from_provider_rows(
+        [{"start_time": "2027-01-14T23:15:00+00:00", "price": 0.20}],
+        timezone,
+    )
+
+    assert schedule.intervals[0].starts_at.isoformat() == "2027-01-15T00:15:00+01:00"
+    assert len(schedule.for_dates({"2027-01-15"})) == 1
+
+
+def test_non_finite_prices_and_observations_are_rejected():
+    schedule = TariffSchedule.from_provider_rows(
+        [{"start_time": "2027-01-15T10:00:00+00:00", "price": "nan"}],
+        ZoneInfo("UTC"),
+    )
+    assert schedule.intervals == ()
+
+    with pytest.raises(ValueError, match="finite"):
+        replace(runtime_snapshot().observations, grid_import_w=float("nan"))
 
 
 def test_captured_time_selects_the_exact_quarter_boundary_price():

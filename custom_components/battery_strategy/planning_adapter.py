@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import math
 import threading
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
+from enum import StrEnum
 from types import MappingProxyType
 from zoneinfo import ZoneInfo
 
@@ -57,9 +59,22 @@ def _as_float(value) -> float | None:
     if value in (None, "unknown", "unavailable", "none", ""):
         return None
     try:
-        return float(value)
+        parsed = float(value)
+        return parsed if math.isfinite(parsed) else None
     except (TypeError, ValueError):
         return None
+
+
+class _RecorderRole(StrEnum):
+    PRICE_RAW = "price_raw"
+    GRID_IMPORT = "grid_import"
+    GRID_EXPORT = "grid_export"
+    PV_POWER = "pv_power"
+    BATTERY_SOC = "battery_soc"
+    BATTERY_INPUT_ENERGY = "battery_input_energy"
+    BATTERY_OUTPUT_ENERGY = "battery_output_energy"
+    BATTERY_SIGNED_POWER = "battery_signed_power"
+    EV_POWER = "ev_power"
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,8 +82,8 @@ class PlanningCapture:
     """Private adapter capture awaiting executor-owned Recorder history."""
 
     snapshot: PlanningRuntime
-    recorder_entities: Mapping[HistoryRole, str]
-    recorder_scales: Mapping[HistoryRole, float]
+    recorder_entities: Mapping[_RecorderRole, str]
+    recorder_scales: Mapping[_RecorderRole, float]
 
 
 class PlanningPipelineAdapter:
@@ -204,9 +219,7 @@ class PlanningPipelineAdapter:
                         end_time=captured_at,
                     )
                     runtime = runtime.with_history(
-                        PlanningHistory.from_series(
-                            series, captured_at_s=runtime.captured_at_s
-                        )
+                        self._normalize_history(series, runtime.captured_at_s)
                     )
                 except Exception as err:  # Recorder failure must not stop control.
                     LOGGER.warning("Recorder history snapshot failed: %s", err)
@@ -329,19 +342,19 @@ class PlanningPipelineAdapter:
         ev_entity = data.get(CONF_EV_POWER_ENTITY)
         pv_entity = data.get(CONF_PV_POWER_ENTITY)
         recorder_entities = {
-            HistoryRole.PRICE_EUR: price_entity,
-            HistoryRole.GRID_IMPORT: grid_import_entity,
-            HistoryRole.GRID_EXPORT: grid_export_entity,
-            HistoryRole.PV_POWER: pv_entity,
-            HistoryRole.BATTERY_SOC: data.get(CONF_BATTERY_SOC_ENTITY),
-            HistoryRole.BATTERY_INPUT_ENERGY: data.get(
+            _RecorderRole.PRICE_RAW: price_entity,
+            _RecorderRole.GRID_IMPORT: grid_import_entity,
+            _RecorderRole.GRID_EXPORT: grid_export_entity,
+            _RecorderRole.PV_POWER: pv_entity,
+            _RecorderRole.BATTERY_SOC: data.get(CONF_BATTERY_SOC_ENTITY),
+            _RecorderRole.BATTERY_INPUT_ENERGY: data.get(
                 CONF_BATTERY_INPUT_ENERGY_ENTITY
             ),
-            HistoryRole.BATTERY_OUTPUT_ENERGY: data.get(
+            _RecorderRole.BATTERY_OUTPUT_ENERGY: data.get(
                 CONF_BATTERY_OUTPUT_ENERGY_ENTITY
             ),
-            HistoryRole.BATTERY_POWER: battery_power_entity,
-            HistoryRole.EV_POWER: ev_entity,
+            _RecorderRole.BATTERY_SIGNED_POWER: battery_power_entity,
+            _RecorderRole.EV_POWER: ev_entity,
         }
         snapshot = PlanningRuntime(
             captured_at_ms=int(inputs.captured_at_ms),
@@ -363,10 +376,59 @@ class PlanningPipelineAdapter:
             ),
             recorder_scales=MappingProxyType(
                 {
-                    HistoryRole.PV_POWER: self._power_scale(pv_entity),
-                    HistoryRole.EV_POWER: self._power_scale(ev_entity),
+                    _RecorderRole.PRICE_RAW: self._price_scale(price_entity),
+                    _RecorderRole.PV_POWER: self._power_scale(pv_entity),
+                    _RecorderRole.EV_POWER: self._power_scale(ev_entity),
                 }
             ),
+        )
+
+    @staticmethod
+    def _normalize_history(series, captured_at_s: float) -> PlanningHistory:
+        signed_battery = series.get(_RecorderRole.BATTERY_SIGNED_POWER, ())
+
+        def non_negative(role):
+            return tuple(
+                (timestamp, max(0.0, value))
+                for timestamp, value in series.get(role, ())
+            )
+
+        return PlanningHistory.from_series(
+            {
+                HistoryRole.PRICE_EUR_PER_KWH: series.get(
+                    _RecorderRole.PRICE_RAW, ()
+                ),
+                HistoryRole.GRID_IMPORT_POWER_W: non_negative(
+                    _RecorderRole.GRID_IMPORT
+                ),
+                HistoryRole.GRID_EXPORT_POWER_W: non_negative(
+                    _RecorderRole.GRID_EXPORT
+                ),
+                HistoryRole.PV_GENERATION_POWER_W: non_negative(
+                    _RecorderRole.PV_POWER
+                ),
+                HistoryRole.BATTERY_SOC_PCT: non_negative(
+                    _RecorderRole.BATTERY_SOC
+                ),
+                HistoryRole.BATTERY_INPUT_ENERGY_KWH: non_negative(
+                    _RecorderRole.BATTERY_INPUT_ENERGY
+                ),
+                HistoryRole.BATTERY_OUTPUT_ENERGY_KWH: non_negative(
+                    _RecorderRole.BATTERY_OUTPUT_ENERGY
+                ),
+                HistoryRole.BATTERY_CHARGE_POWER_W: tuple(
+                    (timestamp, max(0.0, -value))
+                    for timestamp, value in signed_battery
+                ),
+                HistoryRole.BATTERY_DISCHARGE_POWER_W: tuple(
+                    (timestamp, max(0.0, value))
+                    for timestamp, value in signed_battery
+                ),
+                HistoryRole.EV_CHARGE_POWER_W: non_negative(
+                    _RecorderRole.EV_POWER
+                ),
+            },
+            captured_at_s=captured_at_s,
         )
 
     def _power_scale(self, entity_id: str | None) -> float:
@@ -382,6 +444,19 @@ class PlanningPipelineAdapter:
             .lower()
         )
         return {"kw": 1000.0, "mw": 1_000_000.0}.get(unit, 1.0)
+
+    def _price_scale(self, entity_id: str | None) -> float:
+        """Normalize Recorder price history to EUR/kWh at the HA seam."""
+        state = self._hass.states.get(entity_id) if entity_id else None
+        unit = str(
+            state.attributes.get("unit_of_measurement") if state is not None else ""
+        ).lower().replace(" ", "")
+        if "ct/" in unit or "cent/" in unit:
+            return 0.01
+        if ("eur/" in unit or "€/" in unit) and "mwh" in unit:
+            return 0.001
+        current = _as_float(state.state) if state is not None else None
+        return 0.01 if current is not None and abs(current) > 2.0 else 1.0
 
     def age_s(self) -> float | None:
         """Return seconds since the last optimizer run."""

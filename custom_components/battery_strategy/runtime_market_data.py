@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import bisect
 import datetime as dt
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
@@ -16,6 +17,12 @@ class TariffInterval:
     starts_at: dt.datetime
     price_eur_per_kwh: float
     source: str = "tibber"
+
+    def __post_init__(self) -> None:
+        if self.starts_at.tzinfo is None:
+            raise ValueError("tariff timestamps must be timezone-aware")
+        if not math.isfinite(float(self.price_eur_per_kwh)):
+            raise ValueError("tariff prices must be finite")
 
     @property
     def timestamp(self) -> float:
@@ -55,7 +62,11 @@ class TariffSchedule:
                 )
                 if parsed.tzinfo is None:
                     parsed = parsed.replace(tzinfo=timezone)
+                else:
+                    parsed = parsed.astimezone(timezone)
                 price_eur = value / 100.0 if value >= 2.0 else value
+                if not math.isfinite(price_eur):
+                    continue
                 merged[parsed.timestamp()] = TariffInterval(parsed, price_eur)
             except (AttributeError, TypeError, ValueError):
                 continue

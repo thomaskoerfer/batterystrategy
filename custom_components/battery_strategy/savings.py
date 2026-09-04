@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import bisect
 import datetime as dt
-import statistics
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -29,7 +28,8 @@ class SavingsEntities:
     battery_output_energy: HistoryRole
     grid_import: HistoryRole
     grid_export: HistoryRole
-    battery_power: HistoryRole
+    battery_charge_power: HistoryRole
+    battery_discharge_power: HistoryRole
 
 
 @dataclass(frozen=True)
@@ -150,7 +150,8 @@ class SavingsLedger:
                 entities.battery_output_energy,
                 entities.grid_import,
                 entities.grid_export,
-                entities.battery_power,
+                entities.battery_charge_power,
+                entities.battery_discharge_power,
             ),
             query_from,
         )
@@ -159,7 +160,10 @@ class SavingsLedger:
         output_series = series_map.get(entities.battery_output_energy, [])
         grid_import_series = series_map.get(entities.grid_import, [])
         grid_export_series = series_map.get(entities.grid_export, [])
-        battery_power_series = series_map.get(entities.battery_power, [])
+        battery_charge_series = series_map.get(entities.battery_charge_power, [])
+        battery_discharge_series = series_map.get(
+            entities.battery_discharge_power, []
+        )
         tariff_index = self._price_index(self._local_dates_between(query_from, now_ts))
 
         if first_run:
@@ -171,14 +175,11 @@ class SavingsLedger:
             )
             tracker["last_ts"] = now_ts
         elif tariff_index[0] or price_series:
-            price_values = [float(value) for _, value in price_series]
-            price_is_ct = (
-                statistics.median(price_values) > 2.0 if price_values else False
-            )
             fallback_price_index = self._series_index(price_series)
             grid_import_index = self._series_index(grid_import_series)
             grid_export_index = self._series_index(grid_export_series)
-            battery_power_index = self._series_index(battery_power_series)
+            battery_charge_index = self._series_index(battery_charge_series)
+            battery_discharge_index = self._series_index(battery_discharge_series)
             if needs_backfill:
                 backfill_days = {
                     today,
@@ -203,7 +204,7 @@ class SavingsLedger:
                 value = self._value_at_or_before(fallback_price_index, timestamp)
                 if value is None:
                     return None
-                return float(value) / 100.0 if price_is_ct else float(value)
+                return float(value)
 
             def charge_split(delta_kwh: float, timestamp: float) -> tuple[float, float]:
                 grid_import = max(
@@ -218,10 +219,23 @@ class SavingsLedger:
                         self._value_at_or_before(grid_export_index, timestamp) or 0.0
                     ),
                 )
-                battery_power = float(
-                    self._value_at_or_before(battery_power_index, timestamp) or 0.0
+                charge_w = max(
+                    0.0,
+                    float(
+                        self._value_at_or_before(battery_charge_index, timestamp)
+                        or 0.0
+                    ),
                 )
-                charge_w = max(0.0, -battery_power)
+                discharge_w = max(
+                    0.0,
+                    float(
+                        self._value_at_or_before(
+                            battery_discharge_index, timestamp
+                        )
+                        or 0.0
+                    ),
+                )
+                battery_power = discharge_w - charge_w
                 export_without_battery_w = max(
                     0.0, -(grid_import - grid_export + battery_power)
                 )

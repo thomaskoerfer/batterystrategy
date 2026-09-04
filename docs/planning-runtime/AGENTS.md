@@ -6,6 +6,8 @@
   `planning_runtime.py`.
 - Convert Home Assistant states, provider aliases and units into typed domain
   observations and tariffs at the adapter seam.
+- Keep named current and historical flows non-negative and separate. Normalize
+  prices to EUR/kWh, power to W, energy to kWh and reject non-finite values.
 - Sequence existing component APIs in `planning_pipeline.py`.
 - Keep state migration/persistence in `planning_state.py`, forecast invocation
   and evaluation in their application modules, and entity/profile projection in

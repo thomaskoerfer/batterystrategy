@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from enum import StrEnum
@@ -20,15 +21,16 @@ if TYPE_CHECKING:
 class HistoryRole(StrEnum):
     """Domain roles available from normalized Recorder history."""
 
-    PRICE_EUR = "price_eur"
-    GRID_IMPORT = "grid_import"
-    GRID_EXPORT = "grid_export"
-    PV_POWER = "pv_power"
-    BATTERY_SOC = "battery_soc"
-    BATTERY_INPUT_ENERGY = "battery_input_energy"
-    BATTERY_OUTPUT_ENERGY = "battery_output_energy"
-    BATTERY_POWER = "battery_power"
-    EV_POWER = "ev_power"
+    PRICE_EUR_PER_KWH = "price_eur_per_kwh"
+    GRID_IMPORT_POWER_W = "grid_import_power_w"
+    GRID_EXPORT_POWER_W = "grid_export_power_w"
+    PV_GENERATION_POWER_W = "pv_generation_power_w"
+    BATTERY_SOC_PCT = "battery_soc_pct"
+    BATTERY_INPUT_ENERGY_KWH = "battery_input_energy_kwh"
+    BATTERY_OUTPUT_ENERGY_KWH = "battery_output_energy_kwh"
+    BATTERY_CHARGE_POWER_W = "battery_charge_power_w"
+    BATTERY_DISCHARGE_POWER_W = "battery_discharge_power_w"
+    EV_CHARGE_POWER_W = "ev_charge_power_w"
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,12 +40,22 @@ class PlanningHistory:
     _series: Mapping[HistoryRole, tuple[tuple[float, float], ...]]
 
     def __post_init__(self) -> None:
-        normalized = {
-            role if isinstance(role, HistoryRole) else HistoryRole(role): tuple(
+        normalized = {}
+        for role, series in self._series.items():
+            typed_role = role if isinstance(role, HistoryRole) else HistoryRole(role)
+            values = tuple(
                 (float(timestamp), float(value)) for timestamp, value in series
             )
-            for role, series in self._series.items()
-        }
+            if any(
+                not math.isfinite(timestamp) or not math.isfinite(value)
+                for timestamp, value in values
+            ):
+                raise ValueError("planning history values must be finite")
+            if typed_role is not HistoryRole.PRICE_EUR_PER_KWH and any(
+                value < 0.0 for _, value in values
+            ):
+                raise ValueError("named historical flows must be non-negative")
+            normalized[typed_role] = values
         object.__setattr__(self, "_series", MappingProxyType(normalized))
 
     @classmethod
@@ -98,6 +110,39 @@ class PlanningObservations:
     pv_tomorrow_kwh: float | None
     cloud_cover_pct: float
     shortwave_radiation_w_m2: float
+
+    def __post_init__(self) -> None:
+        values = (
+            self.current_price_ct_per_kwh,
+            self.future_max_price_ct_per_kwh,
+            self.grid_import_w,
+            self.grid_export_w,
+            self.pv_generation_w,
+            self.battery_charge_w,
+            self.battery_discharge_w,
+            self.battery_soc_pct,
+            self.battery_min_soc_pct,
+            self.ev_charge_w,
+            self.heat_pump_power_w,
+            self.pv_next_hour_kwh,
+            self.pv_tomorrow_kwh,
+            self.cloud_cover_pct,
+            self.shortwave_radiation_w_m2,
+        )
+        if any(value is not None and not math.isfinite(float(value)) for value in values):
+            raise ValueError("planning observations must be finite")
+        flows = (
+            self.grid_import_w,
+            self.grid_export_w,
+            self.pv_generation_w,
+            self.battery_charge_w,
+            self.battery_discharge_w,
+            self.ev_charge_w,
+            self.heat_pump_power_w,
+            self.pv_next_hour_kwh,
+        )
+        if any(float(value) < 0.0 for value in flows):
+            raise ValueError("named planning flows must be non-negative")
 
 
 @dataclass(frozen=True, slots=True)
