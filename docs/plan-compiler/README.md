@@ -102,6 +102,13 @@ Persistence is an application adapter and is not part of the pure compiler. The
 compiler continues to receive only `BatteryPlan`, `SlotProgress`, explicit
 `PlanCompilationState` and an issue timestamp.
 
+`compiler_runtime.py` is the internal execution module around that pure
+compiler. It owns active-slot identity, measured throughput, commitment state,
+and restart restoration. The Home Assistant
+coordinator supplies measurements and persists snapshots but does not recreate
+those rules. The runtime does not read prices, forecasts, Home Assistant state
+or battery hardware.
+
 ## Setup independence
 
 The compiler consumes only typed plans, progress and explicit state. It must not

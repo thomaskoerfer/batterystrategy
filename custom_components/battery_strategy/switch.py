@@ -4,14 +4,15 @@ from __future__ import annotations
 
 from homeassistant.components.switch import SwitchEntity
 
+from .config_definitions import option_default
 from .entity import BatteryStrategyEntity
 
 SWITCHES = (
-    ("strategy_enabled", "Battery Strategy Steuerung", False),
-    ("trace_enabled", "Debug Trace aufzeichnen", False),
-    ("pv_to_ev_first", "PV zuerst ins Auto", True),
-    ("discharge_during_ev_charging", "Entladung waehrend EV-Ladung erlauben", True),
-    ("battery_may_feed_ev", "Batterie darf Auto versorgen", False),
+    ("strategy_enabled", "Battery Strategy Steuerung"),
+    ("trace_enabled", "Debug Trace aufzeichnen"),
+    ("pv_to_ev_first", "PV zuerst ins Auto"),
+    ("discharge_during_ev_charging", "Entladung waehrend EV-Ladung erlauben"),
+    ("battery_may_feed_ev", "Batterie darf Auto versorgen"),
 )
 
 
@@ -19,19 +20,18 @@ async def async_setup_entry(hass, entry, async_add_entities) -> None:
     """Set up Battery Strategy switches."""
     coordinator = entry.runtime_data
     async_add_entities(
-        BatteryStrategySwitch(coordinator, key, name, default)
-        for key, name, default in SWITCHES
+        BatteryStrategySwitch(coordinator, key, name) for key, name in SWITCHES
     )
 
 
 class BatteryStrategySwitch(BatteryStrategyEntity, SwitchEntity):
     """Config-entry backed switch."""
 
-    def __init__(self, coordinator, key: str, name: str, default: bool):
+    def __init__(self, coordinator, key: str, name: str):
         """Initialize switch."""
         super().__init__(coordinator, f"control_{key}", name)
         self._key = key
-        self._default = default
+        self._default = bool(option_default(key))
 
     @property
     def is_on(self) -> bool:

@@ -23,8 +23,9 @@ documented impact analysis and explicit owner approval.
   `forecast_application.py` and `forecast_evaluation.py` call forecast-owned
   APIs; `planning_pipeline.py` only coordinates; and `plan_presentation.py`
   publishes the stable entity payload. None may own another layer's rules.
-- Plan compiler: `plan_compiler.py`; the coordinator supplies explicit plan and
-  progress state but may not recreate compiler semantics.
+- Plan compiler: `plan_compiler.py`; `compiler_runtime.py` owns active-slot
+  progress, commitment and restart continuity around it. The coordinator
+  supplies measurements but may not recreate these semantics.
 - Plan-compiler persistence adapter: `compiler_runtime_store.py`; it may store
   explicit compiler state and measured progress but may not interpret prices or
   create permission.
@@ -37,6 +38,10 @@ documented impact analysis and explicit owner approval.
 - Home Assistant operator projection: `operator_projection.py` precomputes
   entity values and non-recorded dashboard attributes once per refresh;
   `sensor.py` is a read-only entity adapter.
+- Home Assistant configuration: `config_definitions.py` owns option defaults
+  and numeric constraints, while `config_validation.py` owns profile-aware
+  validation. Flow and control-entity modules may present but not duplicate
+  those rules.
 
 ## Boundary rules
 

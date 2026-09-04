@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from homeassistant.components.select import SelectEntity
 
+from .config_definitions import option_default
 from .const import (
     DISCHARGE_LOAD,
     DISCHARGE_OFF,
@@ -22,7 +23,6 @@ SELECTS = (
     (
         "pv_charging",
         "PV-Ueberschuss laden",
-        PV_CHARGING_ON,
         {
             "Ein": PV_CHARGING_ON,
             "Aus": PV_CHARGING_OFF,
@@ -31,7 +31,6 @@ SELECTS = (
     (
         "grid_charging",
         "Netzladen",
-        GRID_CHARGING_OFF,
         {
             "Aus": GRID_CHARGING_OFF,
             "Preissensitiv": GRID_CHARGING_PRICE_SENSITIVE,
@@ -40,7 +39,6 @@ SELECTS = (
     (
         "discharge",
         "Entladen",
-        DISCHARGE_LOAD,
         {
             "Aus": DISCHARGE_OFF,
             "Bei Last": DISCHARGE_LOAD,
@@ -50,7 +48,6 @@ SELECTS = (
     (
         "manual_mode",
         "Manueller Modus",
-        MANUAL_OFF,
         {
             "Aus": MANUAL_OFF,
             "Laden": MANUAL_CHARGE,
@@ -64,19 +61,19 @@ async def async_setup_entry(hass, entry, async_add_entities) -> None:
     """Set up Battery Strategy select controls."""
     coordinator = entry.runtime_data
     async_add_entities(
-        BatteryStrategySelect(coordinator, key, name, default, options)
-        for key, name, default, options in SELECTS
+        BatteryStrategySelect(coordinator, key, name, options)
+        for key, name, options in SELECTS
     )
 
 
 class BatteryStrategySelect(BatteryStrategyEntity, SelectEntity):
     """Config-entry backed select control."""
 
-    def __init__(self, coordinator, key: str, name: str, default: str, option_map: dict[str, str]):
+    def __init__(self, coordinator, key: str, name: str, option_map: dict[str, str]):
         """Initialize select control."""
         super().__init__(coordinator, f"control_{key}", name)
         self._key = key
-        self._default = default
+        self._default = str(option_default(key))
         self._option_map = option_map
         self._reverse_map = {value: label for label, value in option_map.items()}
         self._attr_options = list(option_map)

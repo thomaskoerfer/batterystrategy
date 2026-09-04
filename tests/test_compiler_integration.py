@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 
+from custom_components.battery_strategy.compiler_runtime import PlanCompilerRuntime
 from custom_components.battery_strategy.const import (
     COMMAND_INPUT,
     COMMAND_OUTPUT,
@@ -15,7 +16,6 @@ from custom_components.battery_strategy.contracts import (
     PlanCompilationState,
     SlotProgress,
 )
-from custom_components.battery_strategy.coordinator import BatteryStrategyCoordinator
 from custom_components.battery_strategy.models import StrategyInputs, StrategyOptions
 from custom_components.battery_strategy.plan_compiler import (
     DeterministicPlanCompiler,
@@ -145,16 +145,10 @@ def test_closed_directive_has_no_automatic_permissions():
     assert directive.discharge_budget_kwh == 0.0
 
 
-def _cutover_coordinator() -> BatteryStrategyCoordinator:
-    coordinator = object.__new__(BatteryStrategyCoordinator)
-    coordinator._plan_compiler = DeterministicPlanCompiler()
-    coordinator._plan_compilation_state = PlanCompilationState()
-    coordinator._plan_compiler_error = None
-    coordinator._slot_charged_kwh = 0.0
-    coordinator._slot_discharged_kwh = 0.0
-    coordinator._compiler_progress_reconstructable = True
-    coordinator._compiler_snapshot_dirty = False
-    return coordinator
+def _compiler_runtime(start_ms: int) -> PlanCompilerRuntime:
+    runtime = PlanCompilerRuntime()
+    runtime.sync_slot(start_ms, start_ms, (None, None))
+    return runtime
 
 
 def _inputs(*, soc_pct: float = 50.0) -> StrategyInputs:
@@ -175,18 +169,14 @@ def test_cutover_compiler_owns_progress_and_replan_latch():
         800,
         "reduced",
     )
-    coordinator = _cutover_coordinator()
+    runtime = _compiler_runtime(start_ms)
 
-    first = coordinator._compile_authoritative_directive(
-        first_plan, _options(), _inputs(), start_ms
-    )
-    coordinator._slot_discharged_kwh = 0.1
-    reduced = coordinator._compile_authoritative_directive(
-        reduced_plan, _options(), _inputs(), start_ms + 60_000
-    )
-    reopened = coordinator._compile_authoritative_directive(
-        first_plan, _options(), _inputs(), start_ms + 120_000
-    )
+    first = runtime.compile(first_plan, _options(), _inputs(), start_ms)
+    started = dt.datetime.fromtimestamp(start_ms / 1000, dt.timezone.utc)
+    runtime.account(started, 1000.0)
+    runtime.account(started + dt.timedelta(minutes=6), 1000.0)
+    reduced = runtime.compile(reduced_plan, _options(), _inputs(), start_ms + 60_000)
+    reopened = runtime.compile(first_plan, _options(), _inputs(), start_ms + 120_000)
 
     assert first.discharge_budget_kwh == 0.6
     assert reduced.discharge_budget_kwh == 0.1
@@ -194,14 +184,12 @@ def test_cutover_compiler_owns_progress_and_replan_latch():
 
 
 def test_cutover_compiler_fails_closed_without_plan():
-    coordinator = _cutover_coordinator()
+    runtime = PlanCompilerRuntime()
     plan = StrategyPlan([], "idle", 0, "missing")
 
-    directive = coordinator._compile_authoritative_directive(
-        plan, _options(), _inputs(), 1_800_000_000_000
-    )
+    directive = runtime.compile(plan, _options(), _inputs(), 1_800_000_000_000)
 
-    assert coordinator._plan_compiler_error == "no_plan"
+    assert runtime.error == "no_plan"
     assert not directive.pv_charge_allowed
     assert not directive.grid_charge_allowed
     assert directive.discharge_budget_kwh == 0.0

@@ -6,6 +6,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from .config_definitions import option_default
 from .contracts import ActuationResult, BatteryCommand, CommandMode
 
 TRACKED_WRITE_MIN_INTERVAL_S = 2.2
@@ -124,7 +125,9 @@ class HomeAssistantZendureActuator:
         self._ac_mode = ac_mode
         self._input_limit = input_limit
         self._output_limit = output_limit
-        self._min_command_delta_w = min_command_delta_w or (lambda: 20.0)
+        self._min_command_delta_w = min_command_delta_w or (
+            lambda: float(option_default("min_command_delta_w"))
+        )
         self._tracker = ActuationWriteTracker()
         self._failsafe_reason: str | None = None
 

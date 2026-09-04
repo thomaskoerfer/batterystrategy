@@ -193,11 +193,21 @@ Home Assistant owns each loaded runtime through typed
 setup. The coordinator builds one immutable operator projection per refresh so
 entity property reads perform no planning, conversion or wall-clock work.
 Changing profile attributes are exposed to dashboards but excluded from
-Recorder storage. Active-slot compiler state and measured progress are stored
-through a small versioned HA adapter so a reload cannot reopen already consumed
-economic permission. If an unclean restart cannot reconstruct progress from
-monotonic battery counters, paid charge and discharge fail closed for the rest
-of that slot while live PV-follow remains available.
+Recorder storage. `compiler_runtime.py` owns active-slot commitment, measured
+progress and restart continuity behind one internal
+interface. Its state is stored through the small versioned HA adapter in
+`compiler_runtime_store.py` so a reload cannot reopen already consumed economic
+permission. If an unclean restart cannot reconstruct progress from monotonic
+battery counters, paid charge and discharge fail closed for the rest of that
+slot while live PV-follow remains available. The coordinator retains HA
+lifecycle, scheduling and the single actuator call; this extraction does not
+change the compiler or live-control contracts.
+
+Configuration defaults and numeric constraints are owned once in
+`config_definitions.py`; profile-aware entry validation is owned by
+`config_validation.py`. Config flows and control entities present those rules
+without duplicating them. Stored option keys, config-entry versions and entity
+identities remain stable.
 
 ## Migration plan and gates
 

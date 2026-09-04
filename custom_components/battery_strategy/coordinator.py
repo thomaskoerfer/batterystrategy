@@ -16,10 +16,12 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from .actuator import HomeAssistantZendureActuator
 from .command_trace import COMMAND_TRACE_FILE, append_command_trace
+from .compiler_runtime import PlanCompilerRuntime
 from .compiler_runtime_store import (
     CompilerRuntimeSnapshot,
     CompilerRuntimeStore,
 )
+from .config_definitions import option_default
 from .const import (
     BATTERY_PROFILE_ZENDURE,
     COMMAND_IDLE,
@@ -49,24 +51,19 @@ from .const import (
     CONF_ZENDURE_OUTPUT_LIMIT_ENTITY,
     CONF_ZENDURE_OUTPUT_PACK_POWER_ENTITY,
     CONF_ZENDURE_PACK_INPUT_POWER_ENTITY,
-    DISCHARGE_LOAD,
     DOMAIN,
-    GRID_CHARGING_OFF,
     GRID_MODE_IMPORT_EXPORT,
     GRID_MODE_SIGNED,
     GRID_MODE_THREE_PHASE,
     MANUAL_OFF,
-    PV_CHARGING_ON,
 )
 from .contracts import (
     ActuationResult,
     BatteryCommand,
     CommandMode,
     ForecastRequest,
-    PlanCompilationState,
     QualityFlag,
     SlotKey,
-    SlotProgress,
 )
 from .contracts.common import SLOT_MS
 from .feature_store import (
@@ -84,12 +81,6 @@ from .load_components import (
 from .models import StrategyCommand, StrategyInputs, StrategyOptions
 from .operator_projection import build_operator_projection
 from .optimizer_state import last_known_soc_pct
-from .plan_compiler import DeterministicPlanCompiler
-from .plan_compiler_adapter import (
-    closed_published_directive,
-    contract_plan_from_strategy_plan,
-    published_directive_from_contract,
-)
 from .plan_models import PlanLiveDirective
 from .planner import BackgroundPlanner
 from .planning_adapter import PlanningPipelineAdapter
@@ -148,20 +139,9 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             applied_at_ms=0,
             detail="not_started",
         )
-        self._active_directive_slot_id: str | None = None
-        self._active_directive_slot_end_ts_ms: int = 0
+        self._compiler_runtime = PlanCompilerRuntime(restored_compiler_runtime)
         self._last_optimizer_force_key: str | None = None
-        self._slot_charged_kwh = 0.0
-        self._slot_discharged_kwh = 0.0
-        self._plan_compiler = DeterministicPlanCompiler()
-        self._plan_compilation_state = PlanCompilationState()
         self._compiler_runtime_store = compiler_runtime_store
-        self._restored_compiler_runtime = restored_compiler_runtime
-        self._compiler_progress_reconstructable = True
-        self._compiler_snapshot_dirty = False
-        self._plan_compiler_error: str | None = None
-        self._last_live_accounting_ts: dt.datetime | None = None
-        self._last_actual_battery_power_w: float | None = None
         self._last_known_soc_pct = last_known_soc_pct
         self._soc_control_ready = last_known_soc_pct is not None
         self._soc_recovered = False
@@ -174,7 +154,9 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             str(entry.data.get(CONF_ZENDURE_INPUT_LIMIT_ENTITY, "")),
             str(entry.data.get(CONF_ZENDURE_OUTPUT_LIMIT_ENTITY, "")),
             min_command_delta_w=lambda: float(
-                self.entry.options.get("min_command_delta_w", 20.0)
+                self.entry.options.get(
+                    "min_command_delta_w", option_default("min_command_delta_w")
+                )
             ),
         )
         self._p1_update_gate = P1UpdateGate()
@@ -279,103 +261,6 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         """Apply EV and SoC policy changes without waiting for the P1 gate."""
         await self.async_request_refresh()
 
-    def _account_actual_battery_power(self, now: dt.datetime) -> None:
-        """Account measured battery energy inside the active slot."""
-        if (
-            self._last_live_accounting_ts is None
-            or self._last_actual_battery_power_w is None
-        ):
-            return
-        elapsed_h = (
-            max(0.0, (now - self._last_live_accounting_ts).total_seconds()) / 3600.0
-        )
-        if elapsed_h <= 0.0 or elapsed_h > 0.25:
-            return
-        energy_kwh = float(self._last_actual_battery_power_w) * elapsed_h / 1000.0
-        if energy_kwh < 0.0:
-            self._slot_charged_kwh += abs(energy_kwh)
-        elif energy_kwh > 0.0:
-            self._slot_discharged_kwh += energy_kwh
-
-    def _sync_slot_progress(self, slot_start_ms: int, now_ms: int) -> None:
-        """Restore or reset progress exactly once at a 15-minute boundary."""
-        slot_id = str(max(0, int(slot_start_ms)))
-        if slot_id == self._active_directive_slot_id:
-            return
-        transitioned_while_running = self._active_directive_slot_id is not None
-        self._active_directive_slot_id = slot_id
-        self._active_directive_slot_end_ts_ms = int(slot_start_ms) + SLOT_MS
-        self._slot_charged_kwh = 0.0
-        self._slot_discharged_kwh = 0.0
-        self._plan_compilation_state = PlanCompilationState()
-        self._compiler_progress_reconstructable = True
-
-        restored = self._restored_compiler_runtime
-        self._restored_compiler_runtime = None
-        if (
-            restored is not None
-            and restored.compilation_state.slot is not None
-            and restored.compilation_state.slot.start_ms == int(slot_start_ms)
-            and now_ms < restored.compilation_state.slot.end_ms
-        ):
-            self._compiler_progress_reconstructable = self._restore_slot_progress(
-                restored
-            )
-            self._compiler_snapshot_dirty = True
-            return
-
-        # A process that observes its own slot transition has exact zero progress.
-        # A cold start in the middle of a slot cannot safely invent that fact.
-        if not transitioned_while_running and now_ms > int(slot_start_ms) + 5_000:
-            self._compiler_progress_reconstructable = False
-
-    def _compile_authoritative_directive(
-        self,
-        plan,
-        options: StrategyOptions,
-        inputs: StrategyInputs,
-        now_ms: int,
-    ) -> PlanLiveDirective:
-        """Compile the directive consumed by the established live controller."""
-        if not plan.points:
-            self._plan_compilation_state = PlanCompilationState()
-            self._plan_compiler_error = "no_plan"
-            return closed_published_directive(options)
-        if not self._compiler_progress_reconstructable:
-            self._plan_compiler_error = "slot_progress_unrecoverable"
-            return closed_published_directive(
-                options,
-                slot_start_ms=int(plan.points[0].ts_ms),
-                allow_pv_charge=True,
-            )
-        try:
-            contract_plan = contract_plan_from_strategy_plan(plan, options, now_ms)
-            current_slot = contract_plan.slots[0].slot
-            compiled, next_state = self._plan_compiler.compile(
-                contract_plan,
-                SlotProgress(
-                    slot=current_slot,
-                    charged_kwh=max(0.0, self._slot_charged_kwh),
-                    discharged_kwh=max(0.0, self._slot_discharged_kwh),
-                    soc_pct=float(inputs.soc_pct),
-                ),
-                self._plan_compilation_state,
-                issued_at_ms=now_ms,
-            )
-            if next_state != self._plan_compilation_state:
-                self._compiler_snapshot_dirty = True
-            self._plan_compilation_state = next_state
-            self._plan_compiler_error = None
-            return published_directive_from_contract(compiled, plan, options)
-        except Exception as err:  # noqa: BLE001 - control must fail closed.
-            self._plan_compilation_state = PlanCompilationState()
-            self._plan_compiler_error = f"{type(err).__name__}: {err}"
-            LOGGER.error("Plan compiler failed closed: %s", self._plan_compiler_error)
-            return closed_published_directive(
-                options,
-                slot_start_ms=int(plan.points[0].ts_ms),
-            )
-
     async def _async_update_data(self):
         """Fetch current states and calculate command."""
         if (
@@ -425,7 +310,7 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             finalized_features = ()
             self._feature_store.last_error = f"{type(err).__name__}: {err}"
             LOGGER.warning("Feature-store aggregation failed: %s", err)
-        self._account_actual_battery_power(now)
+        self._compiler_runtime.account(now, inputs.battery_power_w)
         force_optimizer = self._should_force_optimizer(now) or self._soc_recovered
         self._soc_recovered = False
         simple_command = calculate_command(inputs, options)
@@ -438,14 +323,16 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         plan, self._optimizer_attrs = self._planner.current(inputs, options)
         now_ms = int(now.timestamp() * 1000)
         slot_start_ms = int(plan.points[0].ts_ms) if plan.points else 0
-        self._sync_slot_progress(slot_start_ms, now_ms)
-        directive = self._compile_authoritative_directive(
+        self._compiler_runtime.sync_slot(
+            slot_start_ms, now_ms, self._battery_energy_totals()
+        )
+        directive = self._compiler_runtime.compile(
             plan,
             options,
             inputs,
             now_ms,
         )
-        if self._compiler_snapshot_dirty:
+        if self._compiler_runtime.snapshot_dirty:
             await self._async_persist_compiler_runtime(clean_shutdown=False)
         command = live_command_from_directive(
             directive, simple_command, inputs, options
@@ -461,8 +348,6 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         display_command = (
             command if strategy_enabled else self._disabled_display_command(command)
         )
-        self._last_actual_battery_power_w = inputs.battery_power_w
-        self._last_live_accounting_ts = now
         data = {
             "inputs": inputs,
             "options": options,
@@ -471,7 +356,7 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             "plan": plan,
             "optimizer_attrs": self._optimizer_attrs,
             "plan_to_live": directive,
-            "plan_compiler_error": self._plan_compiler_error,
+            "plan_compiler_error": self._compiler_runtime.error,
             "send_commands": strategy_enabled,
             "strategy_enabled": strategy_enabled,
             "actuation": asdict(self.last_actuation),
@@ -663,17 +548,16 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         return all(entity and self._state_available(entity) for entity in entities)
 
     def _should_force_optimizer(self, now: dt.datetime) -> bool:
-        """Return whether the optimizer should refresh around the current slot boundary."""
-        if self._active_directive_slot_end_ts_ms <= 0:
+        """Refresh planning once before and once after the active slot boundary."""
+        slot_end_ms = self._compiler_runtime.active_slot_end_ms
+        if slot_end_ms <= 0:
             return False
         now_ms = int(now.timestamp() * 1000)
         lead_ms = OPTIMIZER_PREFETCH_LEAD_S * 1000
-        if now_ms < self._active_directive_slot_end_ts_ms - lead_ms:
+        if now_ms < slot_end_ms - lead_ms:
             return False
-        phase = (
-            "expired" if now_ms >= self._active_directive_slot_end_ts_ms else "prefetch"
-        )
-        key = f"{self._active_directive_slot_id}:{self._active_directive_slot_end_ts_ms}:{phase}"
+        phase = "expired" if now_ms >= slot_end_ms else "prefetch"
+        key = f"{self._compiler_runtime.active_slot_id}:{slot_end_ms}:{phase}"
         if key == self._last_optimizer_force_key:
             return False
         self._last_optimizer_force_key = key
@@ -692,28 +576,80 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             else float(opts.get("manual_power_w", 0.0))
         )
         return StrategyOptions(
-            pv_charging=opts.get("pv_charging", PV_CHARGING_ON),
-            grid_charging=opts.get("grid_charging", GRID_CHARGING_OFF),
-            discharge=opts.get("discharge", DISCHARGE_LOAD),
-            pv_to_ev_first=bool(opts.get("pv_to_ev_first", True)),
-            discharge_during_ev_charging=bool(
-                opts.get("discharge_during_ev_charging", True)
+            pv_charging=opts.get("pv_charging", option_default("pv_charging")),
+            grid_charging=opts.get("grid_charging", option_default("grid_charging")),
+            discharge=opts.get("discharge", option_default("discharge")),
+            pv_to_ev_first=bool(
+                opts.get("pv_to_ev_first", option_default("pv_to_ev_first"))
             ),
-            battery_may_feed_ev=bool(opts.get("battery_may_feed_ev", False)),
-            ev_active_threshold_w=float(opts.get("ev_active_threshold_w", 300.0)),
-            min_soc_pct=float(opts.get("min_soc_pct", 10.0)),
-            max_soc_pct=float(opts.get("max_soc_pct", 100.0)),
-            max_charge_power_w=float(opts.get("max_charge_power_w", 2400.0)),
-            max_discharge_power_w=float(opts.get("max_discharge_power_w", 2400.0)),
-            min_command_power_w=float(opts.get("min_command_power_w", 20.0)),
-            min_command_delta_w=float(opts.get("min_command_delta_w", 5.0)),
-            round_trip_efficiency=float(opts.get("round_trip_efficiency", 0.80)),
-            min_margin_ct_per_kwh=float(opts.get("min_margin_ct_per_kwh", 2.0)),
-            planning_horizon_h=int(opts.get("planning_horizon_h", 48)),
-            feed_in_tariff_ct_per_kwh=float(opts.get("feed_in_tariff_ct_per_kwh", 0.0)),
-            battery_capacity_kwh=float(opts.get(CONF_BATTERY_CAPACITY_KWH, 6.0)),
-            pv_capacity_kwp=float(opts.get(CONF_PV_CAPACITY_KWP, 0.0)),
-            pv_inverter_power_kw=float(opts.get(CONF_PV_INVERTER_POWER_KW, 0.0)),
+            discharge_during_ev_charging=bool(
+                opts.get(
+                    "discharge_during_ev_charging",
+                    option_default("discharge_during_ev_charging"),
+                )
+            ),
+            battery_may_feed_ev=bool(
+                opts.get("battery_may_feed_ev", option_default("battery_may_feed_ev"))
+            ),
+            ev_active_threshold_w=float(
+                opts.get(
+                    "ev_active_threshold_w",
+                    option_default("ev_active_threshold_w"),
+                )
+            ),
+            min_soc_pct=float(opts.get("min_soc_pct", option_default("min_soc_pct"))),
+            max_soc_pct=float(opts.get("max_soc_pct", option_default("max_soc_pct"))),
+            max_charge_power_w=float(
+                opts.get("max_charge_power_w", option_default("max_charge_power_w"))
+            ),
+            max_discharge_power_w=float(
+                opts.get(
+                    "max_discharge_power_w",
+                    option_default("max_discharge_power_w"),
+                )
+            ),
+            min_command_power_w=float(
+                opts.get("min_command_power_w", option_default("min_command_power_w"))
+            ),
+            min_command_delta_w=float(
+                opts.get("min_command_delta_w", option_default("min_command_delta_w"))
+            ),
+            round_trip_efficiency=float(
+                opts.get(
+                    "round_trip_efficiency",
+                    option_default("round_trip_efficiency"),
+                )
+            ),
+            min_margin_ct_per_kwh=float(
+                opts.get(
+                    "min_margin_ct_per_kwh",
+                    option_default("min_margin_ct_per_kwh"),
+                )
+            ),
+            planning_horizon_h=int(
+                opts.get("planning_horizon_h", option_default("planning_horizon_h"))
+            ),
+            feed_in_tariff_ct_per_kwh=float(
+                opts.get(
+                    "feed_in_tariff_ct_per_kwh",
+                    option_default("feed_in_tariff_ct_per_kwh"),
+                )
+            ),
+            battery_capacity_kwh=float(
+                opts.get(
+                    CONF_BATTERY_CAPACITY_KWH,
+                    option_default(CONF_BATTERY_CAPACITY_KWH),
+                )
+            ),
+            pv_capacity_kwp=float(
+                opts.get(CONF_PV_CAPACITY_KWP, option_default(CONF_PV_CAPACITY_KWP))
+            ),
+            pv_inverter_power_kw=float(
+                opts.get(
+                    CONF_PV_INVERTER_POWER_KW,
+                    option_default(CONF_PV_INVERTER_POWER_KW),
+                )
+            ),
             manual_mode=manual_mode,
             manual_power_w=manual_power,
         )
@@ -958,40 +894,6 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         )
         return self.last_actuation.detail != "control_entity_unavailable"
 
-    def _restore_slot_progress(self, snapshot: CompilerRuntimeSnapshot) -> bool:
-        """Restore exact progress from a clean stop or monotonic energy counters."""
-        charged_kwh = snapshot.charged_kwh
-        discharged_kwh = snapshot.discharged_kwh
-        current_input, current_output = self._battery_energy_totals()
-        counters_exact = all(
-            value is not None
-            for value in (
-                snapshot.input_energy_kwh,
-                snapshot.output_energy_kwh,
-                current_input,
-                current_output,
-            )
-        )
-        if counters_exact:
-            assert snapshot.input_energy_kwh is not None
-            assert snapshot.output_energy_kwh is not None
-            assert current_input is not None
-            assert current_output is not None
-            if (
-                current_input + 1e-6 < snapshot.input_energy_kwh
-                or current_output + 1e-6 < snapshot.output_energy_kwh
-            ):
-                counters_exact = False
-            else:
-                charged_kwh += current_input - snapshot.input_energy_kwh
-                discharged_kwh += current_output - snapshot.output_energy_kwh
-        if not snapshot.clean_shutdown and not counters_exact:
-            return False
-        self._slot_charged_kwh = max(0.0, charged_kwh)
-        self._slot_discharged_kwh = max(0.0, discharged_kwh)
-        self._plan_compilation_state = snapshot.compilation_state
-        return True
-
     def _battery_energy_totals(self) -> tuple[float | None, float | None]:
         """Return cumulative battery charge/discharge counters when both are valid."""
         values = []
@@ -1013,21 +915,18 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
     async def _async_persist_compiler_runtime(self, *, clean_shutdown: bool) -> None:
         """Persist one compact snapshot without making persistence a compiler concern."""
         store = self._compiler_runtime_store
-        if store is None or self._plan_compilation_state.slot is None:
+        if store is None:
             return
-        input_energy_kwh, output_energy_kwh = self._battery_energy_totals()
-        snapshot = CompilerRuntimeSnapshot(
+        snapshot = self._compiler_runtime.storage_snapshot(
             saved_at_ms=int(dt.datetime.now(dt.timezone.utc).timestamp() * 1000),
-            compilation_state=self._plan_compilation_state,
-            charged_kwh=max(0.0, self._slot_charged_kwh),
-            discharged_kwh=max(0.0, self._slot_discharged_kwh),
-            input_energy_kwh=input_energy_kwh,
-            output_energy_kwh=output_energy_kwh,
+            energy_totals=self._battery_energy_totals(),
             clean_shutdown=clean_shutdown,
         )
+        if snapshot is None:
+            return
         try:
             await store.save(snapshot)
-            self._compiler_snapshot_dirty = False
+            self._compiler_runtime.mark_persisted()
         except (OSError, ValueError, TypeError) as err:
             LOGGER.warning("Could not persist active compiler progress: %s", err)
 

@@ -96,6 +96,7 @@ def test_planning_service_does_not_duplicate_optimizer_version():
 
 def test_coordinator_has_one_authoritative_plan_compiler_path():
     source = (PACKAGE / "coordinator.py").read_text(encoding="utf-8")
+    runtime = (PACKAGE / "compiler_runtime.py").read_text(encoding="utf-8")
     forbidden = (
         "plan_live_directive_from_plan",
         "_directive_with_progress",
@@ -103,10 +104,25 @@ def test_coordinator_has_one_authoritative_plan_compiler_path():
         "COMPILER_SHADOW_TRACE_FILE",
     )
     assert all(token not in source for token in forbidden)
-    assert source.count("DeterministicPlanCompiler()") == 1
+    assert "DeterministicPlanCompiler()" not in source
+    assert runtime.count("DeterministicPlanCompiler()") == 1
     strategy = (PACKAGE / "strategy.py").read_text(encoding="utf-8")
     assert "def plan_live_directive_from_plan" not in strategy
     assert "def live_command_from_plan" not in strategy
+
+
+def test_coordinator_preserves_runtime_account_compile_persist_order():
+    source = (PACKAGE / "coordinator.py").read_text(encoding="utf-8")
+    update = source[source.index("async def _async_update_data") :]
+    positions = [
+        update.index("self._compiler_runtime.account("),
+        update.index("self._compiler_runtime.sync_slot("),
+        update.index("self._compiler_runtime.compile("),
+        update.index("await self._async_persist_compiler_runtime("),
+        update.index("live_command_from_directive("),
+        update.index("await self._async_apply_command("),
+    ]
+    assert positions == sorted(positions)
 
 
 def test_actuator_is_the_only_hardware_service_writer():

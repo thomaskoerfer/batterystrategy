@@ -6,6 +6,11 @@ All notable changes to Battery Strategy are documented here.
 
 ### Changed
 
+- Isolate active-slot compiler state, measured throughput and restart recovery
+  in a dedicated runtime module while keeping scheduling and actuation in the
+  Home Assistant coordinator.
+- Centralize option defaults, numeric constraints and profile validation so
+  config flows and runtime entities no longer maintain parallel policy tables.
 - Precompute Home Assistant sensor values and profile attributes once per
   coordinator refresh; entity properties are now read-only projections.
 - Exclude all changing profile and plan-table attributes from Recorder while
@@ -25,6 +30,9 @@ All notable changes to Battery Strategy are documented here.
   closed until the next slot while PV-follow remains available.
 - Optimizer, forecast, compiler and live-control semantics are unchanged. This
   release remains local until validation and explicit deployment approval.
+- Typed planning-result and live-model convergence remain intentionally
+  deferred: both require separate impact analysis and contract approval before
+  changing persisted or live-control boundaries.
 
 ## [0.2.0-rc.6] - 2026-09-03
 

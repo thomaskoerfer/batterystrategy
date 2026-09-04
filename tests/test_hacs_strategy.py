@@ -24,6 +24,11 @@ from custom_components.battery_strategy.actuator import (
     ActuationWriteTracker,
     zendure_targets,
 )
+from custom_components.battery_strategy.compiler_runtime import PlanCompilerRuntime
+from custom_components.battery_strategy.config_definitions import (
+    NUMERIC_OPTIONS,
+    OPTION_DEFAULTS,
+)
 from custom_components.battery_strategy.const import (
     BATTERY_PROFILE_GENERIC,
     COMMAND_IDLE,
@@ -565,16 +570,12 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertEqual(events, ["prepare", "platforms"])
 
     def test_slot_progress_accounts_measured_battery_power(self):
-        coordinator = object.__new__(BatteryStrategyCoordinator)
+        runtime = PlanCompilerRuntime()
         now = dt.datetime.now(dt.timezone.utc)
-        coordinator._last_live_accounting_ts = now - dt.timedelta(seconds=36)
-        coordinator._last_actual_battery_power_w = -1000.0
-        coordinator._slot_charged_kwh = 0.0
-        coordinator._slot_discharged_kwh = 0.0
-        coordinator._compiler_snapshot_dirty = False
-        coordinator._account_actual_battery_power(now)
-        self.assertAlmostEqual(coordinator._slot_charged_kwh, 0.01, places=4)
-        self.assertEqual(coordinator._slot_discharged_kwh, 0.0)
+        runtime.account(now - dt.timedelta(seconds=36), -1000.0)
+        runtime.account(now, -1000.0)
+        self.assertAlmostEqual(runtime.charged_kwh, 0.01, places=4)
+        self.assertEqual(runtime.discharged_kwh, 0.0)
 
     def test_ev_power_dropout_bridges_then_marks_discharge_input_unsafe(self):
         now = dt.datetime.now(dt.timezone.utc)
@@ -811,9 +812,9 @@ class HacsStrategyTests(unittest.TestCase):
             reason="test",
         )
 
-        attrs = operator_projection(
-            {"plan": plan}, dt.date(2027, 1, 15)
-        ).attrs("plan_slots")
+        attrs = operator_projection({"plan": plan}, dt.date(2027, 1, 15)).attrs(
+            "plan_slots"
+        )
 
         self.assertEqual(
             attrs["rows"],
@@ -865,9 +866,9 @@ class HacsStrategyTests(unittest.TestCase):
         )
 
         encoded = json.dumps(
-            operator_projection(
-                {"plan": plan}, dt.date(2027, 1, 15)
-            ).attrs("plan_slots"),
+            operator_projection({"plan": plan}, dt.date(2027, 1, 15)).attrs(
+                "plan_slots"
+            ),
             separators=(",", ":"),
         ).encode()
 
@@ -951,9 +952,7 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertEqual(display.power_w, 0)
         self.assertEqual(display.reason, "strategy_disabled_external_control")
         plan = StrategyPlan([], COMMAND_IDLE, 0, "test")
-        projection = operator_projection(
-            {**data, "plan": plan}, dt.date(2027, 1, 15)
-        )
+        projection = operator_projection({**data, "plan": plan}, dt.date(2027, 1, 15))
         self.assertEqual(
             projection.value("command_source"),
             "external_control_strategy_disabled",
@@ -2086,11 +2085,11 @@ class HacsStrategyTests(unittest.TestCase):
             ),
             *(
                 f"switch.battery_strategy_control_{key}"
-                for key, _name, _default in battery_switch.SWITCHES
+                for key, _name in battery_switch.SWITCHES
             ),
             *(
                 f"select.battery_strategy_control_{key}"
-                for key, _name, _default, _options in battery_select.SELECTS
+                for key, _name, _options in battery_select.SELECTS
             ),
             *(
                 f"number.battery_strategy_control_{control.key}"
@@ -2116,6 +2115,36 @@ class HacsStrategyTests(unittest.TestCase):
         )
         self.assertIn("Entladebudget (kWh)", plan_table["cards"][0]["content"])
         self.assertNotIn("Entladung (W)", plan_table["cards"][0]["content"])
+
+    def test_numeric_controls_share_canonical_defaults_and_ranges(self):
+        exposed = {
+            key: definition
+            for key, definition in NUMERIC_OPTIONS.items()
+            if definition.exposed_as_entity
+        }
+        self.assertEqual(
+            {definition.key: definition for definition in battery_number.NUMBERS},
+            exposed,
+        )
+        defaults = StrategyOptions()
+        for key in exposed:
+            self.assertEqual(OPTION_DEFAULTS[key], getattr(defaults, key))
+        self.assertEqual(NUMERIC_OPTIONS["min_command_delta_w"].default, 20.0)
+        self.assertEqual(NUMERIC_OPTIONS["min_command_delta_w"].config_default, 5.0)
+        self.assertEqual(NUMERIC_OPTIONS["min_command_delta_w"].config_step, 5.0)
+        self.assertEqual(
+            config_flow._number_option_default({}, "min_command_delta_w"), 5.0
+        )
+        self.assertEqual(
+            config_flow._number_option_selector("min_command_delta_w").config["step"],
+            5.0,
+        )
+        self.assertEqual(NUMERIC_OPTIONS["ev_active_threshold_w"].maximum, 11000.0)
+        self.assertEqual(
+            NUMERIC_OPTIONS["ev_active_threshold_w"].config_maximum, 5000.0
+        )
+        self.assertEqual(NUMERIC_OPTIONS["round_trip_efficiency"].config_minimum, 0.5)
+        self.assertEqual(NUMERIC_OPTIONS["min_margin_ct_per_kwh"].config_maximum, 30.0)
 
     def test_live_discharge_budget_uses_current_soc_instead_of_stale_plan_soc(self):
         now = dt.datetime(2026, 7, 21, 20, tzinfo=dt.timezone.utc)
