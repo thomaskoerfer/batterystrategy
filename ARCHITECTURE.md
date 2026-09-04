@@ -192,9 +192,12 @@ downstream layer receives a recorder engine or depends on recorder tables.
 Forecast composition, market enrichment, optimization, planning orchestration,
 plan compilation, live policy, actuation and measured savings have explicit
 implementation owners. `planning_adapter.py` captures Home Assistant data,
-`planning_runtime.py` freezes one refresh, the `runtime_*` adapters normalize
-measurements and tariffs, and `planning_pipeline.py` coordinates the remaining
-owners without reimplementing their rules. State, forecast invocation and
+resolves provider aliases and units, and privately retains Recorder entity IDs.
+`planning_runtime.py` freezes only typed domain observations, role-keyed history,
+normalized tariffs and forecast inputs for one refresh. The snapshot contains no
+Home Assistant state mapping, entity ID, storage path or persistence service.
+`planning_pipeline.py` coordinates the remaining owners without reimplementing
+their rules. State, forecast invocation and
 evaluation, and Home Assistant presentation have separate application modules.
 The coordinator never writes hardware directly; `actuator.py` is the sole Home
 Assistant battery-service writer. There are no compatibility facades,
@@ -226,7 +229,9 @@ projection separate from the display-only restore parser.
 Every planning refresh has exactly one adapter-captured `captured_at_ms`.
 Planning, history cutoffs, price selection, forecast generation and persistence
 ordering derive time from that snapshot; downstream planning modules do not
-read the wall clock.
+read the wall clock. Recorder history is completed in the executor. The adapter
+then loads typed owner state, runs planning, persists the returned state and
+publishes the result; persistence ownership is not part of the planning snapshot.
 
 Configuration defaults and numeric constraints are owned once in
 `config_definitions.py`; profile-aware entry validation is owned by

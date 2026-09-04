@@ -3,6 +3,7 @@
 
 import datetime as dt
 import math
+from dataclasses import dataclass
 
 from .contracts import PvPlant
 from .forecast_application import (
@@ -11,7 +12,6 @@ from .forecast_application import (
     bootstrap_samples_from_features,
     forecast_request,
     weather_factor_from_cloud_rad,
-    weather_snapshot,
 )
 from .forecast_evaluation import update_forecast_evaluation
 from .forecasting import FeatureStoreForecastNotReady
@@ -23,6 +23,7 @@ from .plan_presentation import (
     derive_planned_dispatch,
 )
 from .planning_result import (
+    PlanningResult,
     build_fresh_planning_result,
     persisted_output,
     result_from_persisted_output,
@@ -30,43 +31,23 @@ from .planning_result import (
 from .planning_runtime import PlanningRuntime, PlanningRuntimeSettings
 from .planning_service import PlanningService, PlanningSettings
 from .planning_state import (
+    PlanningOwnerState,
     advance_virtual_energy,
     append_virtual_trace,
     fallback_output,
     normalize_slot_biases,
 )
-from .runtime_market_data import (
-    build_tibber_price_index,
-    local_date_set_between,
-    read_tibber_future_price_stats,
-    read_tibber_intervals_for_dates,
-    tibber_price_eur_at,
-)
 from .runtime_measurements import (
     E_BATTERY_INPUT_ENERGY,
-    E_BATTERY_MIN_SOC,
     E_BATTERY_OUTPUT_ENERGY,
     E_BATTERY_POWER,
-    E_BATTERY_SOC,
-    E_EV_POWER,
-    E_EV_STATUS,
     E_GRID_EXPORT,
     E_GRID_IMPORT,
-    E_HEAT_PUMP_POWER,
-    E_PRICE_CURRENT,
     E_PRICE_EUR,
-    E_PV_NEXT_HOUR_ENERGY,
-    E_PV_NEXT_HOUR_POWER,
-    E_PV_POWER,
-    E_PV_TOMORROW_ENERGY,
-    E_WEATHER_CLOUD,
-    E_WEATHER_RADIATION,
-    as_float,
     fetch_house_actual_profile,
     fetch_net_actual_profile,
     fetch_pv_actual_profile,
     fetch_sensor_series_many,
-    get_latest_states,
     net_no_battery_no_ev_w,
     net_no_battery_with_ev_w,
     real_charge_follow_surplus_w,
@@ -92,6 +73,15 @@ EEX_PROXY_MAX_PRICE_CT = 70.0
 
 class StalePlanningResult(RuntimeError):
     """Raised when a newer planning refresh already owns publication."""
+
+
+@dataclass(frozen=True, slots=True)
+class PlanningRunOutcome:
+    """Result and mutated owner state returned to the persistence adapter."""
+
+    result: PlanningResult
+    owner_state: PlanningOwnerState
+    persist_state: bool
 
 
 # PV surplus anti-cycling thresholds
@@ -163,7 +153,7 @@ def _update_actual_savings(runtime, state, now_ts):
         history_reader=lambda entities, cutoff: fetch_sensor_series_many(
             runtime, entities, cutoff
         ),
-        price_reader=lambda dates: read_tibber_intervals_for_dates(runtime, dates),
+        price_reader=runtime.tariffs.for_dates,
     ).update(state, now_ts)
 
 
@@ -194,89 +184,9 @@ def floor_to_quarter(dt_obj):
     return dt_obj.replace(minute=(dt_obj.minute // 15) * 15, second=0, microsecond=0)
 
 
-def collect_inputs(runtime):
-    needed = [
-        E_PRICE_CURRENT,
-        E_PRICE_EUR,
-        E_GRID_IMPORT,
-        E_GRID_EXPORT,
-        E_PV_POWER,
-        E_BATTERY_SOC,
-        E_BATTERY_MIN_SOC,
-        E_BATTERY_POWER,
-        E_PV_NEXT_HOUR_ENERGY,
-        E_PV_NEXT_HOUR_POWER,
-        E_PV_TOMORROW_ENERGY,
-        E_WEATHER_CLOUD,
-        E_WEATHER_RADIATION,
-        E_HEAT_PUMP_POWER,
-        E_EV_POWER,
-        E_EV_STATUS,
-    ]
-    s = get_latest_states(runtime, needed)
-
-    captured_at = runtime.captured_at_ms / 1000.0
-    price_ts, price_vals = build_tibber_price_index(
-        runtime,
-        local_date_set_between(
-            runtime.settings.timezone,
-            captured_at,
-            captured_at,
-        ),
-    )
-    p_now_eur = tibber_price_eur_at(captured_at, price_ts, price_vals)
-    p_now = p_now_eur * 100.0 if p_now_eur is not None else None
-    if p_now is None:
-        p_now = as_float(s[E_PRICE_CURRENT], None)
-    if p_now is None:
-        p_now_eur = as_float(s[E_PRICE_EUR], None)
-        p_now = p_now_eur * 100.0 if p_now_eur is not None else None
-    if p_now is None:
-        return {"error": "No current price available"}
-
-    pv_raw_kwh = as_float(s[E_PV_NEXT_HOUR_ENERGY], None)
-    if pv_raw_kwh is None:
-        pv_raw_kwh = max(0.0, as_float(s[E_PV_NEXT_HOUR_POWER], 0.0)) / 1000.0
-
-    cloud = as_float(s[E_WEATHER_CLOUD], None)
-    rad = as_float(s[E_WEATHER_RADIATION], None)
-    weather = weather_snapshot(runtime, runtime.captured_at_ms)
-    if weather:
-        cloud = weather["cloud_cover"]
-        rad = weather["shortwave_radiation"]
-
-    future_stats = read_tibber_future_price_stats(
-        runtime,
-        dt.datetime.fromtimestamp(captured_at, dt.timezone.utc).astimezone(
-            runtime.settings.timezone
-        ),
-    )
-    p_future_max = future_stats["max_ct"] if future_stats else p_now
-
-    wallbox_raw = max(0.0, as_float(s[E_EV_POWER], 0.0))
-    wallbox_status = str(s.get(E_EV_STATUS) or "").lower()
-    wallbox_w = wallbox_raw if ("charg" in wallbox_status) else 0.0
-
-    return {
-        "p_now": p_now,
-        "p_future_max": p_future_max,
-        "grid_import_w": as_float(s[E_GRID_IMPORT], 0.0),
-        "grid_export_w": as_float(s[E_GRID_EXPORT], 0.0),
-        "pv_w": as_float(s[E_PV_POWER], 0.0),
-        "wallbox_w": wallbox_w,
-        "bat_in_out_w": as_float(s[E_BATTERY_POWER], 0.0),
-        "soc": as_float(s[E_BATTERY_SOC], None),
-        "soc_min_pct": as_float(s[E_BATTERY_MIN_SOC], runtime.settings.min_soc_pct),
-        "hp_w": as_float(s[E_HEAT_PUMP_POWER], 0.0),
-        "pv_raw_kwh": pv_raw_kwh,
-        "pv_tomorrow_kwh": as_float(s[E_PV_TOMORROW_ENERGY], None),
-        "cloud": 50.0 if cloud is None else cloud,
-        "rad": 0.0 if rad is None else rad,
-        "weather": weather,
-    }
-
-
-def run(runtime: PlanningRuntime):
+def run(
+    runtime: PlanningRuntime, owner_state: PlanningOwnerState
+) -> PlanningRunOutcome:
     """Execute one planning refresh from an explicitly captured snapshot."""
     settings = runtime.settings
     now = dt.datetime.fromtimestamp(runtime.captured_at_ms / 1000.0, tz=dt.timezone.utc)
@@ -285,32 +195,38 @@ def run(runtime: PlanningRuntime):
     today = local_now.date().isoformat()
     tomorrow = (local_now.date() + dt.timedelta(days=1)).isoformat()
 
-    owner_state = runtime.state_store.load(runtime)
     forecast_state = owner_state.forecast
     simulation_state = owner_state.simulation
     savings_state = owner_state.savings
-    inputs = collect_inputs(runtime)
-    if inputs.get("error"):
+    observations = runtime.observations
+    if observations.current_price_ct_per_kwh is None:
         out = fallback_output(
-            "no_price", inputs["error"], owner_state.publication, now.isoformat()
+            "no_price",
+            "No current price available",
+            owner_state.publication,
+            now.isoformat(),
         )
-        return result_from_persisted_output(
-            out,
-            _result_options(settings),
-            timezone=settings.timezone,
-            now_ms=int(now.timestamp() * 1000),
+        return PlanningRunOutcome(
+            result_from_persisted_output(
+                out,
+                _result_options(settings),
+                timezone=settings.timezone,
+                now_ms=int(now.timestamp() * 1000),
+            ),
+            owner_state,
+            False,
         )
 
-    p_now = inputs["p_now"]
-    p_future_max = inputs["p_future_max"]
-    grid_import_w = inputs["grid_import_w"]
-    grid_export_w = inputs["grid_export_w"]
-    pv_w = inputs["pv_w"]
-    wallbox_w = inputs["wallbox_w"]
-    bat_in_out_w = inputs["bat_in_out_w"]
+    p_now = observations.current_price_ct_per_kwh
+    p_future_max = observations.future_max_price_ct_per_kwh or p_now
+    grid_import_w = observations.grid_import_w
+    grid_export_w = observations.grid_export_w
+    pv_w = observations.pv_generation_w
+    wallbox_w = observations.ev_charge_w
+    bat_in_out_w = observations.battery_power_w
     house_load_total_w = max(0.0, grid_import_w + pv_w + bat_in_out_w - grid_export_w)
     house_load_w = max(0.0, house_load_total_w - wallbox_w)
-    soc = inputs["soc"]
+    soc = observations.battery_soc_pct
     if soc is not None and 0.0 <= float(soc) <= 100.0:
         soc = float(soc)
         simulation_state.last_known_soc_pct = soc
@@ -336,15 +252,13 @@ def run(runtime: PlanningRuntime):
         )
         if soc is not None:
             simulation_state.last_known_soc_pct = soc
-    soc_min_pct = clamp(
-        float(inputs.get("soc_min_pct", settings.min_soc_pct)), 0.0, 40.0
-    )
+    soc_min_pct = clamp(float(observations.battery_min_soc_pct), 0.0, 40.0)
     settings = settings.with_min_soc_pct(soc_min_pct)
-    hp_w = inputs["hp_w"]
-    pv_raw_kwh = inputs["pv_raw_kwh"]
-    pv_tomorrow_kwh = inputs["pv_tomorrow_kwh"]
-    cloud = inputs["cloud"]
-    rad = inputs["rad"]
+    hp_w = observations.heat_pump_power_w
+    pv_raw_kwh = observations.pv_next_hour_kwh
+    pv_tomorrow_kwh = observations.pv_tomorrow_kwh
+    cloud = observations.cloud_cover_pct
+    rad = observations.shortwave_radiation_w_m2
 
     if len(forecast_state.samples) < 120:
         forecast_state.samples = bootstrap_samples_from_features(
@@ -433,7 +347,7 @@ def run(runtime: PlanningRuntime):
 
     market_context = _market_context_service(settings)
     eex_days = market_context.get_eex_day_context(owner_state.market, local_now)
-    intervals_all = read_tibber_intervals_for_dates(runtime, {today, tomorrow})
+    intervals_all = runtime.tariffs.for_dates({today, tomorrow})
     intervals_all, tomorrow_price_source = market_context.apply_eex_proxy_prices(
         intervals_all,
         eex_days,
@@ -442,7 +356,7 @@ def run(runtime: PlanningRuntime):
     )
     now_floor = floor_to_quarter(local_now)
     now_ts_ms = int(now_ts * 1000)
-    intervals = [it for it in intervals_all if it["dt"] >= now_floor]
+    intervals = [it for it in intervals_all if it.starts_at >= now_floor]
     intervals = intervals[: int(math.ceil(settings.planning_horizon_h / SLOT_H))]
     if soc is not None:
         start_e = clamp(
@@ -828,9 +742,7 @@ def run(runtime: PlanningRuntime):
     )
     result_options = _result_options(settings)
     owner_state.publication.last_output = persisted_output(result, result_options)
-    if not runtime.state_store.save(owner_state):
-        raise StalePlanningResult("newer planning result already persisted")
-    return result
+    return PlanningRunOutcome(result, owner_state, True)
 
 
 def _result_options(settings: PlanningRuntimeSettings) -> StrategyOptions:

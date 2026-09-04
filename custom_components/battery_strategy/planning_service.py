@@ -16,6 +16,7 @@ from .economic_optimizer import OPTIMIZER_VERSION
 from .market_context import MarketContextService
 from .optimization_problem import optimize_snapshot
 from .plan_models import DailyCost, PlanPoint
+from .runtime_market_data import TariffInterval
 
 
 @dataclass(frozen=True)
@@ -63,7 +64,7 @@ class PlanningService:
     def plan(
         self,
         *,
-        intervals: list[dict],
+        intervals: list[TariffInterval],
         samples: list[dict],
         start_energy_kwh: float,
         forecast_bundle: ForecastBundle,
@@ -121,7 +122,7 @@ class PlanningService:
             start_energy_kwh=start_energy_kwh,
             constraints=constraints,
             policy=policy,
-            evaluated_at_ms=int(intervals[0]["dt"].timestamp() * 1000),
+            evaluated_at_ms=int(intervals[0].starts_at.timestamp() * 1000),
         )
         return self._publish(
             candidate,
@@ -133,7 +134,7 @@ class PlanningService:
     def _publish(
         self,
         candidate: BatteryPlan,
-        intervals: list[dict],
+        intervals: list[TariffInterval],
         forecast_bundle: ForecastBundle,
         publication_metadata: dict,
     ) -> PlanningPublication:
@@ -160,11 +161,12 @@ class PlanningService:
             if not (
                 plan_slot.slot == load_slot.slot
                 and plan_slot.slot == pv_slot.slot
-                and plan_slot.slot.start_ms == int(interval["dt"].timestamp() * 1000)
+                and plan_slot.slot.start_ms
+                == int(interval.starts_at.timestamp() * 1000)
             ):
                 raise ValueError("pure plan slot does not match the published grid")
-            date = interval["dt"].date().isoformat()
-            price_ct = float(interval["price_eur"]) * 100.0
+            date = interval.starts_at.date().isoformat()
+            price_ct = interval.price_eur_per_kwh * 100.0
             load_kwh = max(0.0, load_slot.energy.p50_kwh)
             pv_kwh = max(0.0, pv_slot.energy.p50_kwh)
             net_load_kwh = max(0.0, load_kwh - pv_kwh)

@@ -106,14 +106,14 @@ class PlanningStateStore:
             _ACTIVE_LEASES[normalized] = token
         return cls(normalized, token)
 
-    def load(self, runtime) -> PlanningOwnerState:
+    def load(self, settings, captured_at_ms: int) -> PlanningOwnerState:
         """Load and type the unchanged atomic schema-11 document."""
-        document = _load_document(runtime, self.path)
+        document = _load_document(settings, self.path)
         try:
-            return _owner_state_from_document(document, runtime.captured_at_ms)
+            return _owner_state_from_document(document, captured_at_ms)
         except (KeyError, TypeError, ValueError):
             return _owner_state_from_document(
-                _default_document(runtime.settings), runtime.captured_at_ms
+                _default_document(settings), captured_at_ms
             )
 
     def revoke(self) -> None:
@@ -248,8 +248,7 @@ def _default_document(settings) -> dict[str, Any]:
     }
 
 
-def _load_document(runtime, path: str) -> dict[str, Any]:
-    settings = runtime.settings
+def _load_document(settings, path: str) -> dict[str, Any]:
     default_state = _default_document(settings)
     try:
         data = load_state_document(path)

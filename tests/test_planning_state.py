@@ -2,31 +2,23 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from custom_components.battery_strategy.optimizer_state import (
     load_state_document,
     save_state_document,
 )
-from custom_components.battery_strategy.planning_runtime import PlanningRuntime
 from custom_components.battery_strategy.planning_state import (
     STATE_SCHEMA_VERSION,
     PlanningOwnerState,
     PlanningStateStore,
     StalePlanningStateLease,
 )
+from tests.planning_runtime_helpers import settings_from_values
 
 
-def _runtime(tmp_path: Path, captured_at_ms: int, store: PlanningStateStore):
-    return PlanningRuntime.from_mapping(
-        {
-            "captured_at_ms": captured_at_ms,
-            "config_dir": str(tmp_path),
-            "state_store": store,
-        }
-    )
+def _load(store: PlanningStateStore, captured_at_ms: int):
+    return store.load(settings_from_values(), captured_at_ms)
 
 
 def test_store_round_trip_preserves_schema_11_keys_and_unknown_salvage(tmp_path):
@@ -54,7 +46,7 @@ def test_store_round_trip_preserves_schema_11_keys_and_unknown_salvage(tmp_path)
     }
     save_state_document(path, source)
     store = PlanningStateStore(str(path))
-    state = store.load(_runtime(tmp_path, 1_800_000_000_000, store))
+    state = _load(store, 1_800_000_000_000)
 
     assert isinstance(state, PlanningOwnerState)
     assert store.save(state)
@@ -64,8 +56,7 @@ def test_store_round_trip_preserves_schema_11_keys_and_unknown_salvage(tmp_path)
 def test_new_lifecycle_generation_rejects_stale_writer(tmp_path):
     path = tmp_path / "battery_strategy_optimizer_state.json"
     first = PlanningStateStore.claim(path)
-    runtime = _runtime(tmp_path, 1_800_000_000_000, first)
-    state = first.load(runtime)
+    state = _load(first, 1_800_000_000_000)
     PlanningStateStore.claim(path)
 
     with pytest.raises(StalePlanningStateLease):
@@ -75,7 +66,7 @@ def test_new_lifecycle_generation_rejects_stale_writer(tmp_path):
 def test_revoked_lifecycle_rejects_late_executor_write(tmp_path):
     path = tmp_path / "battery_strategy_optimizer_state.json"
     store = PlanningStateStore.claim(path)
-    state = store.load(_runtime(tmp_path, 1_800_000_000_000, store))
+    state = _load(store, 1_800_000_000_000)
 
     store.revoke()
 
@@ -86,8 +77,7 @@ def test_revoked_lifecycle_rejects_late_executor_write(tmp_path):
 def test_older_run_cannot_replace_newer_persisted_output(tmp_path):
     path = tmp_path / "battery_strategy_optimizer_state.json"
     store = PlanningStateStore(str(path))
-    runtime = _runtime(tmp_path, 1_800_000_000_000, store)
-    state = store.load(runtime)
+    state = _load(store, 1_800_000_000_000)
     save_state_document(
         path,
         {
@@ -114,7 +104,7 @@ def test_malformed_typed_field_recovers_to_safe_empty_state(tmp_path):
     )
     store = PlanningStateStore(str(path))
 
-    state = store.load(_runtime(tmp_path, 1_800_000_000_000, store))
+    state = _load(store, 1_800_000_000_000)
 
     assert state.forecast.pv_bias == 1.0
     assert state.publication.last_output == {}

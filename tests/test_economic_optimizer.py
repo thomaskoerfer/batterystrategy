@@ -26,6 +26,8 @@ from custom_components.battery_strategy.contracts import (
 from custom_components.battery_strategy.economic_optimizer import (
     DynamicProgrammingOptimizer,
 )
+from custom_components.battery_strategy.runtime_market_data import TariffInterval
+from tests.planning_runtime_helpers import settings_from_values
 
 SLOT_MS = 15 * 60 * 1000
 SLOT_H = 0.25
@@ -262,26 +264,27 @@ def test_pure_optimizer_matches_current_economic_kernel(prices, loads, pv, soc):
         soc=soc,
         start_ms=int(start.timestamp() * 1000),
     )
-    settings = planning_pipeline.PlanningRuntime.from_mapping(
-        {
-            "captured_at_ms": 1_800_000_000_000,
-            "battery_capacity_kwh": 6.0,
-            "min_soc_pct": 10.0,
-            "max_soc_pct": 100.0,
-            "max_charge_power_w": 2400.0,
-            "max_discharge_power_w": 2400.0,
-            "round_trip_efficiency": 0.8,
-            "min_margin_ct_per_kwh": 2.0,
-            "pv_charging": "on",
-            "grid_charging": "price_sensitive",
-            "discharge": "price_sensitive",
-            "feed_in_tariff_ct_per_kwh": 0.0,
-        }
-    ).settings
+    settings = settings_from_values(
+        captured_at_ms=1_800_000_000_000,
+        battery_capacity_kwh=6.0,
+        min_soc_pct=10.0,
+        max_soc_pct=100.0,
+        max_charge_power_w=2400.0,
+        max_discharge_power_w=2400.0,
+        round_trip_efficiency=0.8,
+        min_margin_ct_per_kwh=2.0,
+        pv_charging="on",
+        grid_charging="price_sensitive",
+        discharge="price_sensitive",
+        feed_in_tariff_ct_per_kwh=0.0,
+    )
     current = (
         planning_pipeline._planning_service(settings)
         .plan(
-            intervals=intervals,
+            intervals=[
+                TariffInterval(item["dt"], item["price_eur"])
+                for item in intervals
+            ],
             samples=[],
             start_energy_kwh=6.0 * soc / 100.0,
             forecast_bundle=candidate.forecast,

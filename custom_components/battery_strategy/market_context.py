@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from urllib.request import Request, urlopen
 
+from .runtime_market_data import TariffInterval
+
 if TYPE_CHECKING:
     from .planning_state import MarketState
 
@@ -319,14 +321,14 @@ class MarketContextService:
         except (AttributeError, TypeError, ValueError):
             return None
 
-    def _intervals_by_date(self, intervals: list[dict]) -> dict:
+    def _intervals_by_date(self, intervals: list[TariffInterval]) -> dict:
         by_date: dict = {}
         for interval in intervals:
-            if interval.get("source", "tibber") != "tibber":
+            if interval.source != "tibber":
                 continue
-            by_date.setdefault(interval["dt"].date(), []).append(interval)
+            by_date.setdefault(interval.starts_at.date(), []).append(interval)
         return {
-            day: sorted(items, key=lambda item: item["dt"])
+            day: sorted(items, key=lambda item: item.starts_at)
             for day, items in by_date.items()
         }
 
@@ -334,13 +336,13 @@ class MarketContextService:
         slot_values = {slot: [] for slot in range(self._config.slots_per_day)}
         for day in recent_days:
             items = by_date.get(day, [])
-            prices = [float(item["price_eur"]) * 100.0 for item in items]
+            prices = [item.price_eur_per_kwh * 100.0 for item in items]
             if not prices:
                 continue
             average = statistics.mean(prices)
             for item in items:
-                slot_values[self._slot_index(item["dt"])].append(
-                    float(item["price_eur"]) * 100.0 - average
+                slot_values[self._slot_index(item.starts_at)].append(
+                    item.price_eur_per_kwh * 100.0 - average
                 )
         return {
             slot: statistics.median(values)
@@ -364,11 +366,11 @@ class MarketContextService:
             or base_ct is None
         ):
             return 20.0, 20.0
-        prices = [float(item["price_eur"]) * 100.0 for item in reference_items]
+        prices = [item.price_eur_per_kwh * 100.0 for item in reference_items]
         peak_prices = [
-            float(item["price_eur"]) * 100.0
+            item.price_eur_per_kwh * 100.0
             for item in reference_items
-            if self._is_peak_slot(self._slot_index(item["dt"]))
+            if self._is_peak_slot(self._slot_index(item.starts_at))
         ]
         base_markup = statistics.mean(prices) - base_ct
         peak_markup = (
@@ -391,11 +393,11 @@ class MarketContextService:
 
     def build_eex_proxy_day_prices(
         self,
-        tibber_intervals: list[dict],
+        tibber_intervals: list[TariffInterval] | tuple[TariffInterval, ...],
         eex_days: dict,
         reference_date: dt.date,
         target_date: dt.date,
-    ) -> list[dict]:
+    ) -> list[TariffInterval]:
         """Build a slot-aligned retail-price proxy from EEX and recent shape."""
         target_context = (eex_days or {}).get(target_date.isoformat(), {})
         base_ct = self._eex_settlement_ct(target_context, "base")
@@ -453,43 +455,41 @@ class MarketContextService:
             )
             slot_datetime = local_midnight + dt.timedelta(minutes=15 * slot)
             result.append(
-                {
-                    "dt": slot_datetime,
-                    "ts": slot_datetime.isoformat(),
-                    "price_eur": round(price_ct / 100.0, 5),
-                    "source": "eex_proxy",
-                }
+                TariffInterval(
+                    starts_at=slot_datetime,
+                    price_eur_per_kwh=round(price_ct / 100.0, 5),
+                    source="eex_proxy",
+                )
             )
         return result
 
     def apply_eex_proxy_prices(
         self,
-        intervals: list[dict],
+        intervals: list[TariffInterval] | tuple[TariffInterval, ...],
         eex_days: dict,
         today: dt.date,
         tomorrow: dt.date,
-    ) -> tuple[list[dict], str]:
+    ) -> tuple[list[TariffInterval], str]:
         """Fill a missing next tariff day without replacing real prices."""
         existing = list(intervals)
         real_tomorrow = [
             interval
             for interval in existing
-            if interval["dt"].date() == tomorrow
-            and interval.get("source", "tibber") == "tibber"
+            if interval.starts_at.date() == tomorrow and interval.source == "tibber"
         ]
         if len(real_tomorrow) >= self._config.proxy_min_full_day_slots:
-            return sorted(existing, key=lambda item: item["dt"]), "tibber"
+            return sorted(existing, key=lambda item: item.starts_at), "tibber"
         proxy = self.build_eex_proxy_day_prices(existing, eex_days, today, tomorrow)
         if not proxy:
-            return sorted(existing, key=lambda item: item["dt"]), "missing"
+            return sorted(existing, key=lambda item: item.starts_at), "missing"
         retained = [
-            interval for interval in existing if interval["dt"].date() != tomorrow
+            interval for interval in existing if interval.starts_at.date() != tomorrow
         ]
-        return sorted(retained + proxy, key=lambda item: item["dt"]), "eex_proxy"
+        return sorted(retained + proxy, key=lambda item: item.starts_at), "eex_proxy"
 
     def build_plan_metadata(
         self,
-        intervals: list[dict],
+        intervals: list[TariffInterval],
         samples: list[dict],
         *,
         eex_days: dict | None = None,
@@ -503,22 +503,22 @@ class MarketContextService:
                 "price_stats": {},
                 "forecast_diagnostics": dict(forecast_diagnostics or {}),
             }
-        prices_ct = [float(item["price_eur"]) * 100.0 for item in intervals]
+        prices_ct = [item.price_eur_per_kwh * 100.0 for item in intervals]
         sorted_prices = sorted(prices_ct)
         p_low = sorted_prices[int(0.3 * (len(sorted_prices) - 1))]
         p_high = sorted_prices[int(0.7 * (len(sorted_prices) - 1))]
-        first_date = intervals[0]["dt"].date()
+        first_date = intervals[0].starts_at.date()
         today = first_date.isoformat()
         tomorrow_date = first_date + dt.timedelta(days=1)
         tomorrow = tomorrow_date.isoformat()
         slots = [
             {
-                "date": item["dt"].date().isoformat(),
-                "price_ct": float(item["price_eur"]) * 100.0,
+                "date": item.starts_at.date().isoformat(),
+                "price_ct": item.price_eur_per_kwh * 100.0,
                 "weekday_rank": self._weekday_price_rank(
                     samples,
-                    item["dt"].date(),
-                    float(item["price_eur"]) * 100.0,
+                    item.starts_at.date(),
+                    item.price_eur_per_kwh * 100.0,
                 ),
             }
             for item in intervals
@@ -562,7 +562,7 @@ class MarketContextService:
         if horizon_min_rank is not None:
             cheapness = self._clamp((0.5 - horizon_min_rank) / 0.5, 0.0, 1.0)
             if cheapness > 0.0:
-                tail_date = intervals[-1]["dt"].date() + dt.timedelta(days=1)
+                tail_date = intervals[-1].starts_at.date() + dt.timedelta(days=1)
                 tail_reference_ct = (
                     self._weekday_price_quantile(samples, tail_date, 0.8) or p_high
                 )

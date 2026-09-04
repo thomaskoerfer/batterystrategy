@@ -10,8 +10,14 @@ import pytest
 
 from custom_components.battery_strategy import planning_adapter, planning_pipeline
 from custom_components.battery_strategy.models import StrategyOptions
-from custom_components.battery_strategy.planning_runtime import PlanningRuntime
+from custom_components.battery_strategy.planning_runtime import (
+    HistoryRole,
+    PlanningObservations,
+)
+from custom_components.battery_strategy.planning_state import PlanningStateStore
+from custom_components.battery_strategy.runtime_market_data import TariffSchedule
 from tests.live_contract_helpers import measurements
+from tests.planning_runtime_helpers import runtime_snapshot, settings_from_values
 
 ROOT = Path(__file__).parents[1]
 PACKAGE = ROOT / "custom_components" / "battery_strategy"
@@ -71,63 +77,78 @@ def test_planning_pipeline_uses_owned_application_boundaries_without_facades():
 
 
 def test_planning_runtime_snapshots_are_immutable_and_isolated():
-    first = PlanningRuntime.from_mapping(
-        {
-            "captured_at_ms": 1_800_000_000_000,
-            "timezone": "Europe/Berlin",
-            "battery_capacity_kwh": 6.0,
-            "states": {"battery_soc": 42.0},
-        }
+    first = runtime_snapshot(
+        settings=settings_from_values(
+            timezone="Europe/Berlin", battery_capacity_kwh=6.0
+        ),
+        observations=PlanningObservations(
+            20.0, 30.0, 100.0, 0.0, 0.0, 0.0, 42.0, 5.0,
+            0.0, 0.0, 0.0, None, 50.0, 0.0,
+        ),
     )
-    second = PlanningRuntime.from_mapping(
-        {
-            "captured_at_ms": 1_800_000_000_000,
-            "timezone": "UTC",
-            "battery_capacity_kwh": 10.0,
-            "states": {"battery_soc": 81.0},
-        }
+    second = runtime_snapshot(
+        settings=settings_from_values(timezone="UTC", battery_capacity_kwh=10.0),
+        observations=PlanningObservations(
+            20.0, 30.0, 100.0, 0.0, 0.0, 0.0, 81.0, 5.0,
+            0.0, 0.0, 0.0, None, 50.0, 0.0,
+        ),
     )
 
     assert first.settings.battery_capacity_kwh == 6.0
     assert second.settings.battery_capacity_kwh == 10.0
-    assert first.states["battery_soc"] == 42.0
-    assert second.states["battery_soc"] == 81.0
-    with pytest.raises(TypeError):
-        first.states["battery_soc"] = 50.0
+    assert first.observations.battery_soc_pct == 42.0
+    assert second.observations.battery_soc_pct == 81.0
+    with pytest.raises((AttributeError, TypeError)):
+        first.observations.battery_soc_pct = 50.0
 
 
-def test_planning_runtime_deep_freezes_ha_owned_values():
-    nested = {"attributes": {"values": [1, {"flag": True}]}}
-    runtime = PlanningRuntime.from_mapping(
-        {
-            "captured_at_ms": 1_800_000_000_000,
-            "states": nested,
-            "price_intervals": [{"nested": {"values": [1, 2]}}],
-        }
+def test_planning_snapshot_excludes_adapter_and_persistence_details():
+    runtime_source = (PACKAGE / "planning_runtime.py").read_text(encoding="utf-8")
+    pipeline_source = (PACKAGE / "planning_pipeline.py").read_text(encoding="utf-8")
+
+    forbidden_runtime_fields = (
+        "states:",
+        "entity_map:",
+        "entity_scale:",
+        "price_intervals:",
+        "history_series:",
+        "state_store:",
+        "config_dir:",
+        "state_file:",
     )
-    nested["attributes"]["values"].append(3)
+    assert all(token not in runtime_source for token in forbidden_runtime_fields)
+    assert "PlanningRuntime.from_mapping" not in runtime_source
+    assert "def collect_inputs(" not in pipeline_source
+    assert "owner_state: PlanningOwnerState" in pipeline_source
 
-    assert runtime.states["attributes"]["values"] == (1, {"flag": True})
-    assert runtime.price_intervals[0]["nested"]["values"] == (1, 2)
-    with pytest.raises(TypeError):
-        runtime.states["attributes"]["values"][1]["flag"] = False
+
+def test_planning_runtime_detaches_mutable_provider_values():
+    provider_rows = [
+        {"start_time": "2027-01-15T10:00:00+00:00", "price": 0.10}
+    ]
+    runtime = runtime_snapshot(
+        provider_prices=provider_rows,
+        history_series={HistoryRole.PV_POWER: [(100.0, 1250.0)]},
+    )
+    provider_rows[0]["price"] = 0.99
+
+    assert runtime.tariffs.intervals[0].price_eur_per_kwh == 0.10
+    assert runtime.history.read([HistoryRole.PV_POWER], 0.0) == {
+        HistoryRole.PV_POWER: [(100.0, 1250.0)]
+    }
 
 
 def test_captured_time_selects_the_exact_quarter_boundary_price():
     boundary = dt.datetime(2027, 1, 15, 10, 15, tzinfo=dt.timezone.utc)
-    runtime = PlanningRuntime.from_mapping(
-        {
-            "captured_at_ms": int(boundary.timestamp() * 1000),
-            "timezone": "UTC",
-            "states": {},
-            "price_intervals": [
-                {"start_time": "2027-01-15T10:00:00+00:00", "price": 0.10},
-                {"start_time": "2027-01-15T10:15:00+00:00", "price": 0.20},
-            ],
-        }
+    tariffs = TariffSchedule.from_provider_rows(
+        [
+            {"start_time": "2027-01-15T10:00:00+00:00", "price": 0.10},
+            {"start_time": "2027-01-15T10:15:00+00:00", "price": 0.20},
+        ],
+        ZoneInfo("UTC"),
     )
 
-    assert planning_pipeline.collect_inputs(runtime)["p_now"] == 20.0
+    assert tariffs.price_eur_at(boundary.timestamp()) == 0.20
 
 
 def test_planning_path_has_no_wall_clock_after_adapter_capture():
@@ -148,8 +169,10 @@ def test_planning_path_has_no_wall_clock_after_adapter_capture():
     assert "time.time(" not in source
 
 
-def test_stale_planning_result_cannot_replace_adapter_cache(monkeypatch):
-    adapter = planning_adapter.PlanningPipelineAdapter()
+def test_stale_planning_result_cannot_replace_adapter_cache(monkeypatch, tmp_path):
+    adapter = planning_adapter.PlanningPipelineAdapter(
+        state_store=PlanningStateStore(str(tmp_path / "state.json"))
+    )
     options = StrategyOptions()
     previous = planning_adapter.result_from_persisted_output(
         {"timestamp": "2027-01-15T10:15:00+00:00"},
@@ -161,7 +184,7 @@ def test_stale_planning_result_cannot_replace_adapter_cache(monkeypatch):
     adapter._last_output = {"timestamp": "2027-01-15T10:15:00+00:00"}
     adapter._last_options = options
 
-    def stale(_runtime):
+    def stale(_runtime, _state):
         raise planning_pipeline.StalePlanningResult
 
     monkeypatch.setattr(planning_pipeline, "run", stale)
@@ -170,7 +193,9 @@ def test_stale_planning_result_cannot_replace_adapter_cache(monkeypatch):
         measurements(0, 0, 0, 0, 0, 50),
         options,
         force=True,
-        runtime_context={"captured_at_ms": 1_800_000_000_000},
+        runtime_context=planning_adapter.PlanningCapture(
+            runtime_snapshot(), {}, {}
+        ),
     )
 
     assert result is previous
@@ -178,8 +203,12 @@ def test_stale_planning_result_cannot_replace_adapter_cache(monkeypatch):
     assert adapter._last_run_monotonic == 123.0
 
 
-def test_stale_planning_result_records_changed_options_without_retry_loop(monkeypatch):
-    adapter = planning_adapter.PlanningPipelineAdapter()
+def test_stale_planning_result_records_changed_options_without_retry_loop(
+    monkeypatch, tmp_path
+):
+    adapter = planning_adapter.PlanningPipelineAdapter(
+        state_store=PlanningStateStore(str(tmp_path / "state.json"))
+    )
     old_options = StrategyOptions()
     new_options = StrategyOptions(grid_charging="price_sensitive")
     previous = planning_adapter.result_from_persisted_output(
@@ -192,7 +221,7 @@ def test_stale_planning_result_records_changed_options_without_retry_loop(monkey
     adapter._last_output = {"timestamp": "2027-01-15T10:15:00+00:00"}
     adapter._last_options = old_options
 
-    def stale(_runtime):
+    def stale(_runtime, _state):
         raise planning_pipeline.StalePlanningResult
 
     monkeypatch.setattr(planning_pipeline, "run", stale)
@@ -201,7 +230,9 @@ def test_stale_planning_result_records_changed_options_without_retry_loop(monkey
         measurements(0, 0, 0, 0, 0, 50),
         new_options,
         force=True,
-        runtime_context={"captured_at_ms": 1_800_000_000_000},
+        runtime_context=planning_adapter.PlanningCapture(
+            runtime_snapshot(), {}, {}
+        ),
     )
 
     assert result.battery_plan is None

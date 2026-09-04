@@ -26,7 +26,12 @@ from custom_components.battery_strategy.forecasting import (
     weather_targets,
 )
 from custom_components.battery_strategy.optimizer_state import save_state_document
-from custom_components.battery_strategy.planning_state import STATE_SCHEMA_VERSION
+from custom_components.battery_strategy.planning_state import (
+    STATE_SCHEMA_VERSION,
+    PlanningStateStore,
+)
+from custom_components.battery_strategy.runtime_market_data import TariffInterval
+from tests.planning_runtime_helpers import runtime_snapshot, settings_from_values
 
 
 class ForecastProductionTests(unittest.TestCase):
@@ -59,18 +64,16 @@ class ForecastProductionTests(unittest.TestCase):
         self.timezone = ZoneInfo("Europe/Berlin")
         self.start = dt.datetime(2026, 8, 16, 10, 0, tzinfo=self.timezone)
         self.intervals = [
-            {
-                "dt": self.start + dt.timedelta(minutes=15 * index),
-                "price_eur": 0.20 + 0.001 * index,
-            }
+            TariffInterval(
+                self.start + dt.timedelta(minutes=15 * index),
+                0.20 + 0.001 * index,
+            )
             for index in range(16)
         ]
         self.history = self._history(8)
-        self.runtime = planning_pipeline.PlanningRuntime.from_mapping(
-            {
-                "captured_at_ms": int(self.start.timestamp() * 1000),
-                "timezone": "Europe/Berlin",
-            }
+        self.runtime = runtime_snapshot(
+            captured_at_ms=int(self.start.timestamp() * 1000),
+            settings=settings_from_values(timezone="Europe/Berlin"),
         )
 
     def _history(self, days: int):
@@ -256,15 +259,10 @@ class ForecastProductionTests(unittest.TestCase):
                     "state_schema": 7,
                 },
             )
-            runtime = planning_pipeline.PlanningRuntime.from_mapping(
-                {
-                    "captured_at_ms": int(self.start.timestamp() * 1000),
-                    "config_dir": temp_dir,
-                    "timezone": "Europe/Berlin",
-                }
-            )
-            state = runtime.state_store.load(runtime)
-            document = runtime.state_store.to_document(state)
+            settings = settings_from_values(timezone="Europe/Berlin")
+            store = PlanningStateStore(str(state_path))
+            state = store.load(settings, int(self.start.timestamp() * 1000))
+            document = store.to_document(state)
         self.assertNotIn("forecast_shadow_trace", document)
         self.assertNotIn("forecast_parity_trace", document)
         self.assertEqual(document["state_schema"], STATE_SCHEMA_VERSION)

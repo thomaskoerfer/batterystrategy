@@ -6,7 +6,9 @@ import datetime as dt
 import logging
 import threading
 import time
-from dataclasses import replace
+from collections.abc import Mapping
+from dataclasses import dataclass, replace
+from types import MappingProxyType
 from zoneinfo import ZoneInfo
 
 from homeassistant.helpers import entity_registry as er
@@ -35,12 +37,38 @@ from .planning_result import (
     persisted_output,
     result_from_persisted_output,
 )
+from .planning_runtime import (
+    HistoryRole,
+    PlanningHistory,
+    PlanningObservations,
+    PlanningRuntime,
+    PlanningRuntimeSettings,
+)
 from .planning_state import PLANNING_STATE_FILENAME, PlanningStateStore
+from .runtime_market_data import TariffSchedule
 
 CACHE_TTL_S = 240
 SLOT_MS = 15 * 60 * 1000
 _PLANNING_RUN_LOCK = threading.Lock()
 LOGGER = logging.getLogger(__name__)
+
+
+def _as_float(value) -> float | None:
+    if value in (None, "unknown", "unavailable", "none", ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+@dataclass(frozen=True, slots=True)
+class PlanningCapture:
+    """Private adapter capture awaiting executor-owned Recorder history."""
+
+    snapshot: PlanningRuntime
+    recorder_entities: Mapping[HistoryRole, str]
+    recorder_scales: Mapping[HistoryRole, float]
 
 
 class PlanningPipelineAdapter:
@@ -141,14 +169,11 @@ class PlanningPipelineAdapter:
         inputs: LiveMeasurements,
         options: StrategyOptions,
         force: bool = False,
-        runtime_context: dict | None = None,
+        runtime_context: PlanningCapture | None = None,
     ) -> PlanningResult:
         """Return a typed result with one canonical executable plan."""
-        if runtime_context and runtime_context.get("timezone"):
-            try:
-                self._timezone = ZoneInfo(str(runtime_context["timezone"]))
-            except (KeyError, ValueError):
-                self._timezone = dt.timezone.utc
+        if runtime_context is not None:
+            self._timezone = runtime_context.snapshot.settings.timezone
         cache_now = time.monotonic()
         if (
             not force
@@ -163,27 +188,40 @@ class PlanningPipelineAdapter:
         # Executor work survives config-entry cancellation. Serialize persistence
         # so an old and a new coordinator cannot write the same state file together.
         with _PLANNING_RUN_LOCK:
-            if runtime_context:
-                runtime_context = dict(runtime_context)
-                if self._hass is not None:
-                    try:
-                        captured_at = dt.datetime.fromtimestamp(
-                            int(runtime_context["captured_at_ms"]) / 1000.0,
-                            tz=dt.timezone.utc,
+            if runtime_context is None or self._state_store is None:
+                raise RuntimeError("planning capture and state store are required")
+            runtime = runtime_context.snapshot
+            if self._hass is not None:
+                try:
+                    captured_at = dt.datetime.fromtimestamp(
+                        runtime.captured_at_s, tz=dt.timezone.utc
+                    )
+                    series = read_recorder_series(
+                        self._hass,
+                        dict(runtime_context.recorder_entities),
+                        dict(runtime_context.recorder_scales),
+                        start_time=captured_at - dt.timedelta(hours=49),
+                        end_time=captured_at,
+                    )
+                    runtime = runtime.with_history(
+                        PlanningHistory.from_series(
+                            series, captured_at_s=runtime.captured_at_s
                         )
-                        runtime_context["history_series"] = read_recorder_series(
-                            self._hass,
-                            runtime_context.get("entity_map") or {},
-                            runtime_context.get("entity_scale") or {},
-                            start_time=captured_at - dt.timedelta(hours=49),
-                            end_time=captured_at,
-                        )
-                    except Exception as err:  # Recorder failure must not stop control.
-                        LOGGER.warning("Recorder history snapshot failed: %s", err)
-                        runtime_context["history_series"] = {}
-            runtime = planning_pipeline.PlanningRuntime.from_mapping(runtime_context)
+                    )
+                except Exception as err:  # Recorder failure must not stop control.
+                    LOGGER.warning("Recorder history snapshot failed: %s", err)
+            owner_state = self._state_store.load(
+                runtime.settings, runtime.captured_at_ms
+            )
             try:
-                result = planning_pipeline.run(runtime)
+                outcome = planning_pipeline.run(runtime, owner_state)
+                if outcome.persist_state and not self._state_store.save(
+                    outcome.owner_state
+                ):
+                    raise planning_pipeline.StalePlanningResult(
+                        "newer planning result already persisted"
+                    )
+                result = outcome.result
             except planning_pipeline.StalePlanningResult:
                 # A newer lifecycle already persisted a result. Treat this run as
                 # observed so completion refreshes cannot create a retry loop.
@@ -200,29 +238,30 @@ class PlanningPipelineAdapter:
 
     def runtime_context(
         self, inputs: LiveMeasurements, options: StrategyOptions
-    ) -> dict:
+    ) -> PlanningCapture:
         """Snapshot HA-owned runtime data before entering the executor thread."""
         if self._hass is None or self._entry is None:
-            return {}
+            raise RuntimeError("Home Assistant and config entry are required")
         data = self._entry.data
         price_entity = data.get(CONF_PRICE_ENTITY)
         price_state = self._hass.states.get(price_entity) if price_entity else None
-        price_intervals = (
+        provider_prices = (
             list(price_state.attributes.get("data") or []) if price_state else []
         )
+        settings = PlanningRuntimeSettings.from_options(options, self._timezone)
+        tariffs = TariffSchedule.from_provider_rows(provider_prices, settings.timezone)
+        current_price = tariffs.price_eur_at(inputs.captured_at_ms / 1000.0)
+        current_price_ct = current_price * 100.0 if current_price is not None else None
+        if current_price_ct is None and price_state is not None:
+            current_price_ct = _as_float(price_state.state)
+        local_now = dt.datetime.fromtimestamp(
+            inputs.captured_at_ms / 1000.0, dt.timezone.utc
+        ).astimezone(settings.timezone)
+        future_stats = tariffs.future_price_stats(local_now)
+        future_max_price_ct = (
+            future_stats["max_ct"] if future_stats is not None else current_price_ct
+        )
         battery_power_w = inputs.battery_discharge_w - inputs.battery_charge_w
-        states = {
-            "grid_import": inputs.grid_import_w,
-            "grid_export": inputs.grid_export_w,
-            "pv_power": inputs.pv_generation_w,
-            "battery_soc": inputs.soc_pct,
-            "battery_min_soc": options.min_soc_pct,
-            "battery_power": battery_power_w,
-            "ev_power": inputs.ev_charge_w,
-            "ev_status": "charging"
-            if inputs.ev_charge_w >= options.ev_active_threshold_w
-            else "idle",
-        }
         house_load_no_ev_w = max(
             0.0,
             inputs.grid_import_w
@@ -231,8 +270,46 @@ class PlanningPipelineAdapter:
             - inputs.grid_export_w
             - inputs.ev_charge_w,
         )
-        if price_state is not None:
-            states["price_current"] = price_state.state
+        current_weather = next(
+            (
+                item
+                for item in self._forecast_weather
+                if item.slot.start_ms <= inputs.captured_at_ms < item.slot.end_ms
+            ),
+            self._forecast_weather[0] if self._forecast_weather else None,
+        )
+        cloud_cover = (
+            current_weather.cloud_cover_pct
+            if current_weather is not None
+            and current_weather.cloud_cover_pct is not None
+            else 50.0
+        )
+        radiation = (
+            current_weather.shortwave_radiation_w_m2
+            if current_weather is not None
+            and current_weather.shortwave_radiation_w_m2 is not None
+            else 0.0
+        )
+        observations = PlanningObservations(
+            current_price_ct_per_kwh=current_price_ct,
+            future_max_price_ct_per_kwh=future_max_price_ct,
+            grid_import_w=float(inputs.grid_import_w),
+            grid_export_w=float(inputs.grid_export_w),
+            pv_generation_w=float(inputs.pv_generation_w),
+            battery_power_w=float(battery_power_w),
+            battery_soc_pct=float(inputs.soc_pct),
+            battery_min_soc_pct=float(options.min_soc_pct),
+            ev_charge_w=(
+                float(inputs.ev_charge_w)
+                if inputs.ev_charge_w >= options.ev_active_threshold_w
+                else 0.0
+            ),
+            heat_pump_power_w=0.0,
+            pv_next_hour_kwh=0.0,
+            pv_tomorrow_kwh=None,
+            cloud_cover_pct=float(cloud_cover),
+            shortwave_radiation_w_m2=float(radiation),
+        )
         registry = er.async_get(self._hass)
         grid_import_entity = registry.async_get_entity_id(
             "sensor", DOMAIN, f"{self._entry.entry_id}_grid_import"
@@ -245,55 +322,46 @@ class PlanningPipelineAdapter:
         )
         ev_entity = data.get(CONF_EV_POWER_ENTITY)
         pv_entity = data.get(CONF_PV_POWER_ENTITY)
-        return {
-            "captured_at_ms": int(inputs.captured_at_ms),
-            "state_store": self._state_store,
-            "config_dir": self._hass.config.config_dir,
-            "latitude": self._hass.config.latitude,
-            "longitude": self._hass.config.longitude,
-            "timezone": self._hass.config.time_zone,
-            "states": states,
-            "price_intervals": price_intervals,
-            "entity_map": {
-                "price_current": price_entity,
-                "price_eur": price_entity,
-                "grid_import": grid_import_entity,
-                "grid_export": grid_export_entity,
-                "pv_power": pv_entity,
-                "battery_soc": data.get(CONF_BATTERY_SOC_ENTITY),
-                "battery_input_energy": data.get(CONF_BATTERY_INPUT_ENERGY_ENTITY),
-                "battery_output_energy": data.get(CONF_BATTERY_OUTPUT_ENERGY_ENTITY),
-                "battery_power": battery_power_entity,
-                "ev_power": ev_entity,
-            },
-            "entity_scale": {
-                "pv_power": self._power_scale(pv_entity),
-                "ev_power": self._power_scale(ev_entity),
-            },
-            "battery_capacity_kwh": options.battery_capacity_kwh,
-            "min_soc_pct": options.min_soc_pct,
-            "max_soc_pct": options.max_soc_pct,
-            "max_power_w": max(
-                options.max_charge_power_w, options.max_discharge_power_w
+        recorder_entities = {
+            HistoryRole.PRICE_EUR: price_entity,
+            HistoryRole.GRID_IMPORT: grid_import_entity,
+            HistoryRole.GRID_EXPORT: grid_export_entity,
+            HistoryRole.PV_POWER: pv_entity,
+            HistoryRole.BATTERY_SOC: data.get(CONF_BATTERY_SOC_ENTITY),
+            HistoryRole.BATTERY_INPUT_ENERGY: data.get(
+                CONF_BATTERY_INPUT_ENERGY_ENTITY
             ),
-            "max_charge_power_w": options.max_charge_power_w,
-            "max_discharge_power_w": options.max_discharge_power_w,
-            "round_trip_efficiency": options.round_trip_efficiency,
-            "min_margin_ct_per_kwh": options.min_margin_ct_per_kwh,
-            "feed_in_tariff_ct_per_kwh": options.feed_in_tariff_ct_per_kwh,
-            "pv_capacity_kwp": options.pv_capacity_kwp,
-            "pv_inverter_power_kw": options.pv_inverter_power_kw,
-            "pv_charging": options.pv_charging,
-            "grid_charging": options.grid_charging,
-            "discharge": options.discharge,
-            "planning_horizon_h": options.planning_horizon_h,
-            "forecast_history": self._forecast_history,
-            "forecast_weather": self._forecast_weather,
-            "forecast_context": LoadForecastContext(
+            HistoryRole.BATTERY_OUTPUT_ENERGY: data.get(
+                CONF_BATTERY_OUTPUT_ENERGY_ENTITY
+            ),
+            HistoryRole.BATTERY_POWER: battery_power_entity,
+            HistoryRole.EV_POWER: ev_entity,
+        }
+        snapshot = PlanningRuntime(
+            captured_at_ms=int(inputs.captured_at_ms),
+            settings=settings,
+            observations=observations,
+            history=PlanningHistory.empty(),
+            tariffs=tariffs,
+            forecast_history=self._forecast_history,
+            forecast_weather=self._forecast_weather,
+            forecast_context=LoadForecastContext(
                 house_load_no_ev_w, self._forecast_drivers
             ),
-            "forecast_component_specs": self._forecast_component_specs,
-        }
+            forecast_component_specs=self._forecast_component_specs,
+        )
+        return PlanningCapture(
+            snapshot=snapshot,
+            recorder_entities=MappingProxyType(
+                {key: value for key, value in recorder_entities.items() if value}
+            ),
+            recorder_scales=MappingProxyType(
+                {
+                    HistoryRole.PV_POWER: self._power_scale(pv_entity),
+                    HistoryRole.EV_POWER: self._power_scale(ev_entity),
+                }
+            ),
+        )
 
     def _power_scale(self, entity_id: str | None) -> float:
         """Return the recorder-history scale needed to normalize power to watts."""

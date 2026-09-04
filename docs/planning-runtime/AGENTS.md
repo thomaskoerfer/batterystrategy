@@ -4,8 +4,8 @@
 
 - Capture Home Assistant inputs in `planning_adapter.py` and freeze each run in
   `planning_runtime.py`.
-- Normalize only captured measurements and tariffs in the two `runtime_*`
-  modules.
+- Convert Home Assistant states, provider aliases and units into typed domain
+  observations and tariffs at the adapter seam.
 - Sequence existing component APIs in `planning_pipeline.py`.
 - Keep state migration/persistence in `planning_state.py`, forecast invocation
   and evaluation in their application modules, and entity/profile projection in
@@ -19,6 +19,9 @@
   derive all time decisions from it.
 - Keep one `PlanningStateStore` as the atomic persistence owner and mutate only
   the typed owner state belonging to the current component.
+- Keep Recorder entity IDs in the private `PlanningCapture`; complete history
+  in the executor before planning. Execute in this order: capture, read history,
+  load owner state, plan, save owner state, publish.
 
 ## Forbidden
 
@@ -29,6 +32,8 @@
 - Access Recorder schemas, database engines or battery services directly.
 - Store per-entry configuration, state, history, weather or prices in module
   globals.
+- Put raw Home Assistant state mappings, provider payloads, entity IDs,
+  configuration paths or `PlanningStateStore` inside `PlanningRuntime`.
 - Recompute profiles, timestamps or planning fallbacks from entity properties,
   or expose large changing profile attributes to Recorder.
 - Reconstruct a `BatteryPlan` or compiler permission from `StrategyPlan`,

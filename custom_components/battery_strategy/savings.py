@@ -9,24 +9,27 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from .planning_runtime import HistoryRole
+from .runtime_market_data import TariffInterval
+
 if TYPE_CHECKING:
     from .planning_state import SavingsState
 
 Series = list[tuple[float, float]]
-HistoryReader = Callable[[Iterable[str], float], dict[str, Series]]
-PriceReader = Callable[[set[str]], list[dict]]
+HistoryReader = Callable[[Iterable[HistoryRole], float], dict[HistoryRole, Series]]
+PriceReader = Callable[[set[str]], Iterable[TariffInterval]]
 
 
 @dataclass(frozen=True)
 class SavingsEntities:
     """Normalized runtime roles required by measured-savings accounting."""
 
-    price: str
-    battery_input_energy: str
-    battery_output_energy: str
-    grid_import: str
-    grid_export: str
-    battery_power: str
+    price: HistoryRole
+    battery_input_energy: HistoryRole
+    battery_output_energy: HistoryRole
+    grid_import: HistoryRole
+    grid_export: HistoryRole
+    battery_power: HistoryRole
 
 
 @dataclass(frozen=True)
@@ -87,8 +90,8 @@ class SavingsLedger:
     def _price_index(self, dates: set[str]) -> tuple[list[float], list[float]]:
         pairs = sorted(
             (
-                float(interval["dt"].timestamp()),
-                float(interval["price_eur"]),
+                float(interval.starts_at.timestamp()),
+                float(interval.price_eur_per_kwh),
             )
             for interval in self._price_reader(dates)
         )

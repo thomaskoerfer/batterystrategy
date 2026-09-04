@@ -2,42 +2,26 @@
 
 from __future__ import annotations
 
-E_PRICE_CURRENT = "price_current"
-E_PRICE_EUR = "price_eur"
-E_GRID_IMPORT = "grid_import"
-E_GRID_EXPORT = "grid_export"
-E_PV_POWER = "pv_power"
-E_BATTERY_SOC = "battery_soc"
-E_BATTERY_MIN_SOC = "battery_min_soc"
-E_BATTERY_POWER = "battery_power"
-E_BATTERY_INPUT_ENERGY = "battery_input_energy"
-E_BATTERY_OUTPUT_ENERGY = "battery_output_energy"
-E_PV_NEXT_HOUR_ENERGY = "pv_next_hour_energy"
-E_PV_NEXT_HOUR_POWER = "pv_next_hour_power"
-E_PV_TOMORROW_ENERGY = "pv_tomorrow_energy"
-E_WEATHER_CLOUD = "weather_cloud"
-E_WEATHER_RADIATION = "weather_radiation"
-E_HEAT_PUMP_POWER = "heat_pump_power"
-E_EV_POWER = "ev_power"
-E_EV_STATUS = "ev_status"
+from .planning_runtime import HistoryRole
 
-
-def get_latest_states(runtime, entity_ids):
-    """Return only the immutable live-state snapshot captured by the adapter."""
-    return {entity_id: runtime.states.get(entity_id) for entity_id in entity_ids}
+E_PRICE_EUR = HistoryRole.PRICE_EUR
+E_GRID_IMPORT = HistoryRole.GRID_IMPORT
+E_GRID_EXPORT = HistoryRole.GRID_EXPORT
+E_PV_POWER = HistoryRole.PV_POWER
+E_BATTERY_SOC = HistoryRole.BATTERY_SOC
+E_BATTERY_POWER = HistoryRole.BATTERY_POWER
+E_BATTERY_INPUT_ENERGY = HistoryRole.BATTERY_INPUT_ENERGY
+E_BATTERY_OUTPUT_ENERGY = HistoryRole.BATTERY_OUTPUT_ENERGY
+E_EV_POWER = HistoryRole.EV_POWER
 
 
 def fetch_sensor_series_many(runtime, entity_ids, cutoff_ts):
     """Return bounded Recorder history captured through the HA adapter."""
-    cutoff = float(cutoff_ts)
-    return {
-        entity_id: [
-            (float(timestamp), float(value))
-            for timestamp, value in runtime.history_series.get(entity_id, ())
-            if cutoff <= float(timestamp) <= runtime.captured_at_s
-        ]
-        for entity_id in entity_ids
-    }
+    roles = tuple(
+        item if isinstance(item, HistoryRole) else HistoryRole(item)
+        for item in entity_ids
+    )
+    return runtime.history.read(roles, cutoff_ts)
 
 
 def fetch_sensor_series(runtime, entity_id, cutoff_ts):

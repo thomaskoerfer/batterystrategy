@@ -38,13 +38,11 @@ def build_optimization_problem(
         market=tuple(
             MarketSlot(
                 load_slot.slot,
-                float(interval["price_eur"]) * 100.0,
+                interval.price_eur_per_kwh * 100.0,
                 policy.export_opportunity_ct_per_kwh,
                 "captured_market_snapshot",
             )
-            for interval, load_slot in zip(
-                intervals, forecast.load.slots, strict=True
-            )
+            for interval, load_slot in zip(intervals, forecast.load.slots, strict=True)
         ),
         battery=BatteryState(
             evaluated_at_ms,

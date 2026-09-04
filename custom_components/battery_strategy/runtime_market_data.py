@@ -1,15 +1,42 @@
-"""Normalize the tariff snapshot captured by the Home Assistant adapter."""
+"""Typed tariff schedule captured at the Home Assistant adapter seam."""
 
 from __future__ import annotations
 
 import bisect
 import datetime as dt
+from collections.abc import Mapping
+from dataclasses import dataclass
+from types import MappingProxyType
 
 
-def read_tibber_intervals_all(runtime):
-    if runtime.price_intervals:
-        merged = {}
-        for item in runtime.price_intervals:
+@dataclass(frozen=True, slots=True)
+class TariffInterval:
+    """One normalized retail tariff interval."""
+
+    starts_at: dt.datetime
+    price_eur_per_kwh: float
+    source: str = "tibber"
+
+    @property
+    def timestamp(self) -> float:
+        return self.starts_at.timestamp()
+
+
+@dataclass(frozen=True, slots=True)
+class TariffSchedule:
+    """Immutable normalized tariff observations for one planning snapshot."""
+
+    intervals: tuple[TariffInterval, ...] = ()
+
+    @classmethod
+    def from_provider_rows(
+        cls,
+        rows: list[Mapping[str, object]] | tuple[Mapping[str, object], ...],
+        timezone: dt.tzinfo,
+    ) -> TariffSchedule:
+        """Detach and normalize provider-specific aliases, units and duplicates."""
+        merged: dict[float, TariffInterval] = {}
+        for item in rows:
             try:
                 value = float(
                     item.get("price_per_kwh", item.get("price", item.get("total")))
@@ -21,71 +48,41 @@ def read_tibber_intervals_all(runtime):
                     str(timestamp).replace("Z", "+00:00")
                 )
                 if parsed.tzinfo is None:
-                    parsed = parsed.replace(tzinfo=runtime.settings.timezone)
+                    parsed = parsed.replace(tzinfo=timezone)
                 price_eur = value / 100.0 if value >= 2.0 else value
-                merged[parsed.timestamp()] = {
-                    "ts": parsed.timestamp(),
-                    "dt": parsed,
-                    "price_eur": price_eur,
-                }
+                merged[parsed.timestamp()] = TariffInterval(
+                    parsed, price_eur, str(item.get("source", "tibber"))
+                )
             except (AttributeError, TypeError, ValueError):
                 continue
-        return [merged[key] for key in sorted(merged)]
-    return []
+        return cls(tuple(merged[key] for key in sorted(merged)))
 
+    def for_dates(self, date_set: set[str]) -> tuple[TariffInterval, ...]:
+        return tuple(
+            item
+            for item in self.intervals
+            if item.starts_at.date().isoformat() in date_set
+        )
 
-def read_tibber_intervals_for_dates(runtime, date_set):
-    intervals = read_tibber_intervals_all(runtime)
-    return [it for it in intervals if it["dt"].date().isoformat() in date_set]
+    def price_eur_at(self, timestamp: float) -> float | None:
+        starts = [item.timestamp for item in self.intervals]
+        position = bisect.bisect_right(starts, float(timestamp)) - 1
+        if position < 0:
+            return None
+        return self.intervals[position].price_eur_per_kwh
 
-
-def read_tibber_future_price_stats(runtime, now_local):
-    date_set = {
-        now_local.date().isoformat(),
-        (now_local.date() + dt.timedelta(days=1)).isoformat(),
-    }
-    intervals = read_tibber_intervals_for_dates(runtime, date_set)
-    if not intervals:
-        return None
-    future = [it["price_eur"] * 100.0 for it in intervals if it["dt"] >= now_local]
-    if not future:
-        return None
-    return {"min_ct": min(future), "max_ct": max(future)}
-
-
-def local_date_set_between(timezone, start_ts, end_ts):
-    start_day = (
-        dt.datetime.fromtimestamp(float(start_ts), dt.timezone.utc)
-        .astimezone(timezone)
-        .date()
-    )
-    end_day = (
-        dt.datetime.fromtimestamp(float(end_ts), dt.timezone.utc)
-        .astimezone(timezone)
-        .date()
-    )
-    days = set()
-    cur = start_day
-    while cur <= end_day:
-        days.add(cur.isoformat())
-        cur += dt.timedelta(days=1)
-    return days
-
-
-def build_tibber_price_index(runtime, date_set):
-    intervals = read_tibber_intervals_for_dates(runtime, date_set)
-    pairs = sorted(
-        (float(it["dt"].timestamp()), float(it["price_eur"])) for it in intervals
-    )
-    if not pairs:
-        return [], []
-    return [p[0] for p in pairs], [p[1] for p in pairs]
-
-
-def tibber_price_eur_at(ts, price_ts, price_vals):
-    if not price_ts:
-        return None
-    i = bisect.bisect_right(price_ts, float(ts)) - 1
-    if i < 0:
-        return None
-    return float(price_vals[i])
+    def future_price_stats(
+        self, now_local: dt.datetime
+    ) -> Mapping[str, float] | None:
+        date_set = {
+            now_local.date().isoformat(),
+            (now_local.date() + dt.timedelta(days=1)).isoformat(),
+        }
+        future = [
+            item.price_eur_per_kwh * 100.0
+            for item in self.for_dates(date_set)
+            if item.starts_at >= now_local
+        ]
+        if not future:
+            return None
+        return MappingProxyType({"min_ct": min(future), "max_ct": max(future)})

@@ -112,6 +112,23 @@ is retained only for display hydration from persisted output. It cannot create
 executable compiler permission; only the separately persisted canonical
 `BatteryPlan` can do so.
 
+### 9. Captured planning snapshot completion: implement internally
+
+Architecture and Home Assistant reviews approved finishing the existing
+captured-snapshot boundary without changing an approved interface contract.
+`PlanningRuntime` now contains only immutable domain observations, role-keyed
+bounded history, normalized tariffs and forecast inputs. Provider aliases,
+units, current-price fallback behavior and Recorder entity resolution belong to
+the Home Assistant adapter. `PlanningStateStore`, configuration paths and raw
+state mappings cannot cross into the planning snapshot.
+
+The adapter preserves the required lifecycle order: capture on the event loop,
+read bounded Recorder history in the executor, load typed owner state, invoke
+planning, persist that state under the existing schema-11 lease, then publish.
+No optimizer, compiler, live-control, actuator, entity or persistence-schema
+semantics changed. Existing EV-history scaling behavior was deliberately
+preserved for this ownership-only refactor and remains separately testable debt.
+
 ## Contract impact
 
 Recommendation 2 changes the planning-publication interface and persisted
@@ -120,7 +137,7 @@ in-memory compiler/live/actuator interfaces and binds restored intent to its
 authorizing policy without changing operator entity IDs. `INTERFACE_CONTRACTS.md` defines both canonical-plan
 separation and the direct live-control chain normatively.
 
-Recommendations 5-8 do not change approved interface contracts, entity IDs,
+Recommendations 5-9 do not change approved interface contracts, entity IDs,
 schema-11 keys, optimizer behavior, plan-compiler semantics, live policy or the
 single actuator path.
 

@@ -84,11 +84,14 @@ from custom_components.battery_strategy.optimizer_state import (
 from custom_components.battery_strategy.plan_compiler import DeterministicPlanCompiler
 from custom_components.battery_strategy.plan_models import PlanPoint, StrategyPlan
 from custom_components.battery_strategy.planner import BackgroundPlanner
+from custom_components.battery_strategy.planning_runtime import HistoryRole
+from custom_components.battery_strategy.runtime_market_data import TariffInterval
 from custom_components.battery_strategy.runtime_measurements import fetch_sensor_series
 from custom_components.battery_strategy.strategy import DeterministicLiveController
 from tests.live_contract_helpers import directive as contract_directive_factory
 from tests.live_contract_helpers import measurements, policy_from_options, probe
 from tests.plan_helpers import canonical_plan
+from tests.planning_runtime_helpers import runtime_snapshot, settings_from_values
 
 TEST_TIMEZONE = ZoneInfo("Europe/Berlin")
 TEST_CAPACITY_KWH = 6.0
@@ -171,7 +174,20 @@ class HacsStrategyTests(unittest.TestCase):
         context = self._optimizer_runtime_context()
         context.update(getattr(self, "_planning_settings_override", {}))
         context.update(overrides or {})
-        return planning_pipeline.PlanningRuntime.from_mapping(context).settings
+        return settings_from_values(**context)
+
+    @staticmethod
+    def _typed_intervals(intervals):
+        return [
+            item
+            if isinstance(item, TariffInterval)
+            else TariffInterval(
+                starts_at=item["dt"],
+                price_eur_per_kwh=float(item["price_eur"]),
+                source=str(item.get("source", "tibber")),
+            )
+            for item in intervals
+        ]
 
     def _forecast_bundle(
         self,
@@ -251,7 +267,7 @@ class HacsStrategyTests(unittest.TestCase):
         return (
             planning_pipeline._planning_service(self._planning_settings())
             .plan(
-                intervals=intervals,
+                intervals=self._typed_intervals(intervals),
                 samples=samples,
                 start_energy_kwh=start_energy_kwh,
                 eex_days=eex_days,
@@ -355,44 +371,32 @@ class HacsStrategyTests(unittest.TestCase):
             planning_adapter.er.async_get = original_async_get
 
         self.assertEqual(
-            context["entity_map"]["battery_power"],
+            context.recorder_entities[HistoryRole.BATTERY_POWER],
             "sensor.renamed_battery_power",
         )
         self.assertEqual(
-            context["entity_map"]["grid_import"],
+            context.recorder_entities[HistoryRole.GRID_IMPORT],
             "sensor.renamed_grid_import",
         )
         self.assertEqual(
-            context["entity_map"]["grid_export"],
+            context.recorder_entities[HistoryRole.GRID_EXPORT],
             "sensor.renamed_grid_export",
         )
-        self.assertEqual(context["entity_scale"]["pv_power"], 1000.0)
-        self.assertEqual(context["entity_scale"]["ev_power"], 1000.0)
+        self.assertEqual(context.recorder_scales[HistoryRole.PV_POWER], 1000.0)
+        self.assertEqual(context.recorder_scales[HistoryRole.EV_POWER], 1000.0)
 
     def test_optimizer_history_normalizes_mapped_power_units(self):
-        runtime = planning_pipeline.PlanningRuntime.from_mapping(
-            {
-                "captured_at_ms": 1_800_000_000_000,
-                "history_series": {"pv_power": ((100.0, 1250.0),)},
-            }
+        runtime = runtime_snapshot(
+            history_series={HistoryRole.PV_POWER: ((100.0, 1250.0),)},
         )
-        result = planning_pipeline.fetch_sensor_series_many(runtime, ["pv_power"], 0.0)
-        self.assertEqual(result["pv_power"], [(100.0, 1250.0)])
+        result = planning_pipeline.fetch_sensor_series_many(
+            runtime, [HistoryRole.PV_POWER], 0.0
+        )
+        self.assertEqual(result[HistoryRole.PV_POWER], [(100.0, 1250.0)])
 
     def test_optimizer_history_does_not_fall_back_to_local_sqlite(self):
-        runtime = planning_pipeline.PlanningRuntime.from_mapping(
-            {
-                "captured_at_ms": 1_800_000_000_000,
-                "states": {"grid_import": 123.0},
-                "history_series": {},
-            }
-        )
-        states = planning_pipeline.get_latest_states(
-            runtime, ["grid_import", "missing_sensor"]
-        )
-        series = fetch_sensor_series(runtime, "grid_import", 0.0)
-        self.assertEqual(states["grid_import"], 123.0)
-        self.assertIsNone(states["missing_sensor"])
+        runtime = runtime_snapshot()
+        series = fetch_sensor_series(runtime, HistoryRole.GRID_IMPORT, 0.0)
         self.assertEqual(series, [])
 
     def test_optional_entity_selectors_can_be_omitted(self):
@@ -2790,17 +2794,23 @@ class HacsStrategyTests(unittest.TestCase):
 
         filled, source = planning_pipeline._market_context_service(
             self._planning_settings()
-        ).apply_eex_proxy_prices(intervals, eex_days, today, tomorrow)
+        ).apply_eex_proxy_prices(
+            self._typed_intervals(intervals), eex_days, today, tomorrow
+        )
 
-        tomorrow_prices = [it for it in filled if it["dt"].date() == tomorrow]
+        tomorrow_prices = [it for it in filled if it.starts_at.date() == tomorrow]
         self.assertEqual(source, "eex_proxy")
         self.assertEqual(len(tomorrow_prices), 96)
-        self.assertTrue(all(it["source"] == "eex_proxy" for it in tomorrow_prices))
+        self.assertTrue(all(it.source == "eex_proxy" for it in tomorrow_prices))
         noon = [
-            it["price_eur"] * 100 for it in tomorrow_prices if 12 <= it["dt"].hour < 15
+            it.price_eur_per_kwh * 100
+            for it in tomorrow_prices
+            if 12 <= it.starts_at.hour < 15
         ]
         evening = [
-            it["price_eur"] * 100 for it in tomorrow_prices if 18 <= it["dt"].hour < 21
+            it.price_eur_per_kwh * 100
+            for it in tomorrow_prices
+            if 18 <= it.starts_at.hour < 21
         ]
         self.assertLess(sum(noon) / len(noon), sum(evening) / len(evening))
 
@@ -2819,11 +2829,15 @@ class HacsStrategyTests(unittest.TestCase):
 
         filled, source = planning_pipeline._market_context_service(
             self._planning_settings()
-        ).apply_eex_proxy_prices(intervals, {}, today, tomorrow)
+        ).apply_eex_proxy_prices(
+            self._typed_intervals(intervals), {}, today, tomorrow
+        )
 
         self.assertEqual(source, "tibber")
-        self.assertEqual(len([it for it in filled if it["dt"].date() == tomorrow]), 96)
-        self.assertTrue(all(it["source"] == "tibber" for it in filled))
+        self.assertEqual(
+            len([it for it in filled if it.starts_at.date() == tomorrow]), 96
+        )
+        self.assertTrue(all(it.source == "tibber" for it in filled))
 
     def test_full_optimizer_does_not_plan_discharge_export_when_feed_in_is_zero(self):
         tz = dt.timezone.utc

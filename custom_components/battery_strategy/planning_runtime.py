@@ -1,23 +1,99 @@
-"""Immutable inputs for one Home Assistant planning refresh."""
+"""Immutable domain inputs for one Home Assistant planning refresh."""
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
+from enum import StrEnum
 from types import MappingProxyType
-from typing import Any
+from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 from .component_config import LoadComponentSpec
 from .contracts import HistoricalFeatureSlot, LoadForecastContext, WeatherSlot
-from .planning_state import PLANNING_STATE_FILENAME, PlanningStateStore
+from .runtime_market_data import TariffSchedule
+
+if TYPE_CHECKING:
+    from .models import StrategyOptions
+
+
+class HistoryRole(StrEnum):
+    """Domain roles available from normalized Recorder history."""
+
+    PRICE_EUR = "price_eur"
+    GRID_IMPORT = "grid_import"
+    GRID_EXPORT = "grid_export"
+    PV_POWER = "pv_power"
+    BATTERY_SOC = "battery_soc"
+    BATTERY_INPUT_ENERGY = "battery_input_energy"
+    BATTERY_OUTPUT_ENERGY = "battery_output_energy"
+    BATTERY_POWER = "battery_power"
+    EV_POWER = "ev_power"
+
+
+@dataclass(frozen=True, slots=True)
+class PlanningHistory:
+    """Immutable, role-keyed and capture-bounded historical observations."""
+
+    _series: Mapping[HistoryRole, tuple[tuple[float, float], ...]]
+
+    @classmethod
+    def empty(cls) -> PlanningHistory:
+        return cls(MappingProxyType({}))
+
+    @classmethod
+    def from_series(
+        cls,
+        values: Mapping[HistoryRole | str, Iterable[tuple[float, float]]],
+        *,
+        captured_at_s: float,
+    ) -> PlanningHistory:
+        normalized = {}
+        for raw_role, series in values.items():
+            role = (
+                raw_role if isinstance(raw_role, HistoryRole) else HistoryRole(raw_role)
+            )
+            normalized[role] = tuple(
+                (float(timestamp), float(value))
+                for timestamp, value in series
+                if float(timestamp) <= captured_at_s
+            )
+        return cls(MappingProxyType(normalized))
+
+    def read(
+        self, roles: Iterable[HistoryRole], cutoff_ts: float
+    ) -> dict[HistoryRole, list[tuple[float, float]]]:
+        cutoff = float(cutoff_ts)
+        return {
+            role: [item for item in self._series.get(role, ()) if item[0] >= cutoff]
+            for role in roles
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class PlanningObservations:
+    """Normalized current measurements and derived planning observations."""
+
+    current_price_ct_per_kwh: float | None
+    future_max_price_ct_per_kwh: float | None
+    grid_import_w: float
+    grid_export_w: float
+    pv_generation_w: float
+    battery_power_w: float
+    battery_soc_pct: float | None
+    battery_min_soc_pct: float
+    ev_charge_w: float
+    heat_pump_power_w: float
+    pv_next_hour_kwh: float
+    pv_tomorrow_kwh: float | None
+    cloud_cover_pct: float
+    shortwave_radiation_w_m2: float
 
 
 @dataclass(frozen=True, slots=True)
 class PlanningRuntimeSettings:
     """Validated configuration used by one planning refresh."""
 
-    config_dir: str
     timezone: ZoneInfo
     battery_capacity_kwh: float
     min_soc_pct: float
@@ -35,9 +111,41 @@ class PlanningRuntimeSettings:
     pv_capacity_kwp: float
     pv_inverter_kw: float
 
-    @property
-    def state_file(self) -> str:
-        return f"{self.config_dir.rstrip('/')}/{PLANNING_STATE_FILENAME}"
+    @classmethod
+    def from_options(
+        cls, options: StrategyOptions, timezone: str | ZoneInfo
+    ) -> PlanningRuntimeSettings:
+        zone = timezone if isinstance(timezone, ZoneInfo) else ZoneInfo(str(timezone))
+        capacity = max(0.5, float(options.battery_capacity_kwh))
+        min_soc = max(0.0, min(100.0, float(options.min_soc_pct)))
+        max_soc = max(min_soc, min(100.0, float(options.max_soc_pct)))
+        max_charge = max(0.0, float(options.max_charge_power_w))
+        max_discharge = max(0.0, float(options.max_discharge_power_w))
+        rte = max(0.01, min(1.0, float(options.round_trip_efficiency)))
+        pv_capacity = max(0.1, float(options.pv_capacity_kwp) or 1.0)
+        discharge_mode = str(options.discharge)
+        return cls(
+            timezone=zone,
+            battery_capacity_kwh=capacity,
+            min_soc_pct=min_soc,
+            max_soc_pct=max_soc,
+            max_charge_power_w=max_charge,
+            max_discharge_power_w=max_discharge,
+            pv_charging_allowed=str(options.pv_charging) != "off",
+            grid_charging_allowed=str(options.grid_charging) != "off",
+            discharge_allowed=discharge_mode != "off",
+            discharge_mode=discharge_mode,
+            planning_horizon_h=max(1, min(48, int(options.planning_horizon_h))),
+            round_trip_efficiency=rte,
+            min_margin_ct_per_kwh=max(0.0, float(options.min_margin_ct_per_kwh)),
+            export_opportunity_ct_per_kwh=max(
+                0.0, float(options.feed_in_tariff_ct_per_kwh)
+            ),
+            pv_capacity_kwp=pv_capacity,
+            pv_inverter_kw=max(
+                0.1, float(options.pv_inverter_power_kw) or pv_capacity
+            ),
+        )
 
     @property
     def min_energy_kwh(self) -> float:
@@ -67,129 +175,26 @@ class PlanningRuntimeSettings:
 
 @dataclass(frozen=True, slots=True)
 class PlanningRuntime:
-    """Complete immutable data snapshot for one planning refresh."""
+    """Complete immutable domain snapshot for one planning refresh."""
 
     captured_at_ms: int
     settings: PlanningRuntimeSettings
-    state_store: PlanningStateStore
-    states: Mapping[str, Any]
-    history_series: Mapping[str, tuple[tuple[float, float], ...]]
-    price_intervals: tuple[Mapping[str, Any], ...]
+    observations: PlanningObservations
+    history: PlanningHistory
+    tariffs: TariffSchedule
     forecast_history: tuple[HistoricalFeatureSlot, ...]
     forecast_weather: tuple[WeatherSlot, ...]
     forecast_context: LoadForecastContext | None
     forecast_component_specs: tuple[LoadComponentSpec, ...]
 
+    def __post_init__(self) -> None:
+        if self.captured_at_ms < 0:
+            raise ValueError("captured_at_ms must be non-negative")
+
     @property
     def captured_at_s(self) -> float:
-        """Return the single adapter-captured run time in epoch seconds."""
         return self.captured_at_ms / 1000.0
 
-    @classmethod
-    def from_mapping(cls, context: Mapping[str, Any]) -> PlanningRuntime:
-        """Validate and freeze the adapter-owned runtime mapping."""
-        if "captured_at_ms" not in context:
-            raise ValueError("planning runtime requires captured_at_ms")
-        captured_at_ms = int(context["captured_at_ms"])
-        if captured_at_ms < 0:
-            raise ValueError("captured_at_ms must be non-negative")
-        capacity = max(0.5, float(context.get("battery_capacity_kwh") or 6.0))
-        min_soc = max(0.0, min(100.0, float(context.get("min_soc_pct") or 0.0)))
-        max_soc = max(min_soc, min(100.0, float(context.get("max_soc_pct") or 100.0)))
-        max_charge = max(
-            0.0,
-            float(
-                context.get("max_charge_power_w")
-                or context.get("max_power_w")
-                or 2400.0
-            ),
-        )
-        max_discharge = max(
-            0.0,
-            float(
-                context.get("max_discharge_power_w")
-                or context.get("max_power_w")
-                or 2400.0
-            ),
-        )
-        rte = max(
-            0.01,
-            min(1.0, float(context.get("round_trip_efficiency") or 0.8)),
-        )
-        pv_capacity = max(0.1, float(context.get("pv_capacity_kwp") or 1.0))
-        discharge_mode = str(context.get("discharge") or "load")
-        settings = PlanningRuntimeSettings(
-            config_dir=str(context.get("config_dir") or "/config"),
-            timezone=ZoneInfo(str(context.get("timezone") or "UTC")),
-            battery_capacity_kwh=capacity,
-            min_soc_pct=min_soc,
-            max_soc_pct=max_soc,
-            max_charge_power_w=max_charge,
-            max_discharge_power_w=max_discharge,
-            pv_charging_allowed=str(context.get("pv_charging") or "on") != "off",
-            grid_charging_allowed=str(context.get("grid_charging") or "off") != "off",
-            discharge_allowed=discharge_mode != "off",
-            discharge_mode=discharge_mode,
-            planning_horizon_h=max(
-                1, min(48, int(context.get("planning_horizon_h") or 48))
-            ),
-            round_trip_efficiency=rte,
-            min_margin_ct_per_kwh=max(
-                0.0, float(context.get("min_margin_ct_per_kwh", 2.0))
-            ),
-            export_opportunity_ct_per_kwh=max(
-                0.0, float(context.get("feed_in_tariff_ct_per_kwh", 0.0))
-            ),
-            pv_capacity_kwp=pv_capacity,
-            pv_inverter_kw=max(
-                0.1, float(context.get("pv_inverter_power_kw") or pv_capacity)
-            ),
-        )
-        states = MappingProxyType(
-            {
-                str(key): _deep_freeze(value)
-                for key, value in (context.get("states") or {}).items()
-            }
-        )
-        history = MappingProxyType(
-            {
-                key: tuple((float(ts), float(value)) for ts, value in values)
-                for key, values in (context.get("history_series") or {}).items()
-            }
-        )
-        prices = tuple(
-            MappingProxyType(
-                {str(key): _deep_freeze(value) for key, value in item.items()}
-            )
-            for item in (context.get("price_intervals") or ())
-        )
-        state_store = context.get("state_store")
-        if not isinstance(state_store, PlanningStateStore):
-            state_store = PlanningStateStore(settings.state_file)
-        return cls(
-            captured_at_ms=captured_at_ms,
-            settings=settings,
-            state_store=state_store,
-            states=states,
-            history_series=history,
-            price_intervals=prices,
-            forecast_history=tuple(context.get("forecast_history") or ()),
-            forecast_weather=tuple(context.get("forecast_weather") or ()),
-            forecast_context=context.get("forecast_context"),
-            forecast_component_specs=tuple(
-                context.get("forecast_component_specs") or ()
-            ),
-        )
-
-
-def _deep_freeze(value: Any) -> Any:
-    """Detach and recursively freeze mutable values owned by Home Assistant."""
-    if isinstance(value, Mapping):
-        return MappingProxyType(
-            {str(key): _deep_freeze(item) for key, item in value.items()}
-        )
-    if isinstance(value, (list, tuple)):
-        return tuple(_deep_freeze(item) for item in value)
-    if isinstance(value, (set, frozenset)):
-        return frozenset(_deep_freeze(item) for item in value)
-    return value
+    def with_history(self, history: PlanningHistory) -> PlanningRuntime:
+        """Complete the event-loop capture with executor-owned Recorder history."""
+        return replace(self, history=history)

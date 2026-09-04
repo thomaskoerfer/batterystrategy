@@ -8,7 +8,7 @@ from collections.abc import Awaitable, Callable
 
 from .contracts import LiveMeasurements
 from .models import StrategyOptions
-from .planning_adapter import PlanningPipelineAdapter
+from .planning_adapter import PlanningCapture, PlanningPipelineAdapter
 from .planning_result import PlanningResult
 
 LOGGER = logging.getLogger(__name__)
@@ -43,7 +43,7 @@ class BackgroundPlanner:
         self,
         inputs: LiveMeasurements,
         options: StrategyOptions,
-        runtime_context: dict,
+        runtime_context: PlanningCapture,
         *,
         force: bool = False,
     ) -> bool:

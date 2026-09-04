@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import datetime as dt
 
+from custom_components.battery_strategy.planning_runtime import HistoryRole
 from custom_components.battery_strategy.planning_state import SavingsState
+from custom_components.battery_strategy.runtime_market_data import TariffInterval
 from custom_components.battery_strategy.savings import (
     SavingsConfig,
     SavingsEntities,
@@ -12,23 +14,37 @@ from custom_components.battery_strategy.savings import (
 )
 
 ENTITIES = SavingsEntities(
-    price="price",
-    battery_input_energy="battery_input",
-    battery_output_energy="battery_output",
-    grid_import="grid_import",
-    grid_export="grid_export",
-    battery_power="battery_power",
+    price=HistoryRole.PRICE_EUR,
+    battery_input_energy=HistoryRole.BATTERY_INPUT_ENERGY,
+    battery_output_energy=HistoryRole.BATTERY_OUTPUT_ENERGY,
+    grid_import=HistoryRole.GRID_IMPORT,
+    grid_export=HistoryRole.GRID_EXPORT,
+    battery_power=HistoryRole.BATTERY_POWER,
 )
 
 
 def _ledger(series: dict, prices: list[dict]) -> SavingsLedger:
+    aliases = {
+        "price": HistoryRole.PRICE_EUR,
+        "battery_input": HistoryRole.BATTERY_INPUT_ENERGY,
+        "battery_output": HistoryRole.BATTERY_OUTPUT_ENERGY,
+        "grid_import": HistoryRole.GRID_IMPORT,
+        "grid_export": HistoryRole.GRID_EXPORT,
+        "battery_power": HistoryRole.BATTERY_POWER,
+    }
+    role_series = {aliases[key]: value for key, value in series.items()}
+    tariff_intervals = [
+        TariffInterval(item["dt"], item["price_eur"]) for item in prices
+    ]
     return SavingsLedger(
         config=SavingsConfig(dt.timezone.utc, 60, ENTITIES),
         history_reader=lambda entity_ids, cutoff: {
-            entity_id: [item for item in series.get(entity_id, []) if item[0] >= cutoff]
+            entity_id: [
+                item for item in role_series.get(entity_id, []) if item[0] >= cutoff
+            ]
             for entity_id in entity_ids
         },
-        price_reader=lambda _dates: prices,
+        price_reader=lambda _dates: tariff_intervals,
     )
 
 

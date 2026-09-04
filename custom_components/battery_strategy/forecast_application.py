@@ -209,8 +209,8 @@ def forecast_request(
         timezone=timezone,
         slots=tuple(
             SlotKey(
-                int(item["dt"].timestamp() * 1000),
-                int(item["dt"].timestamp() * 1000) + int(SLOT_H * 3600 * 1000),
+                int(item.starts_at.timestamp() * 1000),
+                int(item.starts_at.timestamp() * 1000) + int(SLOT_H * 3600 * 1000),
             )
             for item in intervals
         ),

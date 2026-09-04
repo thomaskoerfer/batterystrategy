@@ -4,9 +4,9 @@ from __future__ import annotations
 
 
 def build_price_profile(intervals, date_str):
-    arr = [it for it in intervals if it["dt"].date().isoformat() == date_str]
+    arr = [it for it in intervals if it.starts_at.date().isoformat() == date_str]
     return [
-        [int(it["dt"].timestamp() * 1000), round(it["price_eur"] * 100.0, 3)]
+        [int(it.starts_at.timestamp() * 1000), round(it.price_eur_per_kwh * 100.0, 3)]
         for it in arr
     ]
 
