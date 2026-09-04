@@ -29,8 +29,9 @@ historical observations; the orchestration derives a signed legacy calculation
 value only at its point of use. Historical prices are normalized to EUR/kWh,
 historical timestamps to UTC epoch milliseconds, tariff timestamps to the Home
 Assistant timezone, and non-finite values are rejected. Provider metadata cannot
-redefine the authority of normalized retail tariffs. Unitless price history uses
-the prior history-based unit inference when the current entity is unavailable.
+redefine the authority of normalized retail tariffs. Unitless price entities use
+the integration's established cents-per-kWh convention for both current and
+historical values.
 
 The runtime is split by application responsibility:
 

@@ -397,6 +397,7 @@ class HacsStrategyTests(unittest.TestCase):
                 ),
             },
             200_000,
+            1.0,
         )
 
         self.assertEqual(
@@ -441,12 +442,34 @@ class HacsStrategyTests(unittest.TestCase):
 
     def test_explicit_eur_per_kwh_history_unit_overrides_value_inference(self):
         state = SimpleNamespace(
-            state="3.5", attributes={"unit_of_measurement": "EUR/kWh"}
+            state="3.5",
+            attributes={"unit_of_measurement": "EUR/kWh", "data": []},
         )
-        adapter = object.__new__(planning_adapter.PlanningPipelineAdapter)
-        adapter._hass = SimpleNamespace(states=SimpleNamespace(get=lambda _id: state))
+        hass = SimpleNamespace(
+            config=SimpleNamespace(
+                config_dir="/config",
+                latitude=50.9,
+                longitude=6.1,
+                time_zone="UTC",
+            ),
+            states=SimpleNamespace(get=lambda _id: state),
+        )
+        entry = SimpleNamespace(
+            entry_id="entry-1",
+            data={"price_entity": "sensor.price"},
+            options={},
+        )
+        adapter = planning_adapter.PlanningPipelineAdapter(hass, entry)
 
         self.assertEqual(adapter._price_scale("sensor.price"), 1.0)
+        registry = SimpleNamespace(async_get_entity_id=lambda *_args: None)
+        with patch.object(planning_adapter.er, "async_get", return_value=registry):
+            capture = adapter.runtime_context(
+                measurements(captured_at_ms=1_800_000_000_000), StrategyOptions()
+            )
+        self.assertEqual(
+            capture.snapshot.observations.current_price_ct_per_kwh, 350.0
+        )
 
     def test_house_profile_consumes_ev_history_once_in_watts(self):
         timestamp_ms = 1_800_000_000_000

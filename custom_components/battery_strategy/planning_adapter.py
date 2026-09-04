@@ -5,7 +5,6 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import math
-import statistics
 import threading
 import time
 from collections.abc import Mapping
@@ -90,7 +89,7 @@ class PlanningCapture:
     snapshot: PlanningRuntime
     recorder_entities: Mapping[_RecorderRole, str]
     recorder_scales: Mapping[_RecorderRole, float]
-    price_history_scale: float | None = None
+    price_history_scale: float = 0.01
 
 
 class PlanningPipelineAdapter:
@@ -285,7 +284,11 @@ class PlanningPipelineAdapter:
         )
         current_price_ct = current_price * 100.0 if current_price is not None else None
         if current_price_ct is None and price_state is not None:
-            current_price_ct = _as_float(price_state.state)
+            current_price_raw = _as_float(price_state.state)
+            if current_price_raw is not None:
+                current_price_ct = (
+                    current_price_raw * self._price_scale(price_entity) * 100.0
+                )
         future_stats = tariffs.future_price_stats(local_now)
         future_max_price_ct = (
             future_stats["max_ct"] if future_stats is not None else current_price_ct
@@ -402,19 +405,10 @@ class PlanningPipelineAdapter:
 
     @staticmethod
     def _normalize_history(
-        series, captured_at_ms: int, price_history_scale: float | None = None
+        series, captured_at_ms: int, price_history_scale: float = 0.01
     ) -> PlanningHistory:
         signed_battery = series.get(_RecorderRole.BATTERY_SIGNED_POWER, ())
         raw_prices = series.get(_RecorderRole.PRICE_RAW, ())
-        if price_history_scale is None:
-            price_values = [float(value) for _, value in raw_prices]
-            price_history_scale = (
-                0.01
-                if price_values
-                and statistics.median(abs(value) for value in price_values) > 2.0
-                else 1.0
-            )
-
         def non_negative(role):
             return tuple(
                 (timestamp, max(0.0, value))
@@ -474,7 +468,7 @@ class PlanningPipelineAdapter:
         )
         return {"kw": 1000.0, "mw": 1_000_000.0}.get(unit, 1.0)
 
-    def _price_scale(self, entity_id: str | None) -> float | None:
+    def _price_scale(self, entity_id: str | None) -> float:
         """Normalize Recorder price history to EUR/kWh at the HA seam."""
         state = self._hass.states.get(entity_id) if entity_id else None
         unit = str(
@@ -486,10 +480,9 @@ class PlanningPipelineAdapter:
             return 0.001
         if ("eur/" in unit or "€/" in unit) and "kwh" in unit:
             return 1.0
-        current = _as_float(state.state) if state is not None else None
-        if current is None:
-            return None
-        return 0.01 if abs(current) > 2.0 else 1.0
+        # Unitless price entities retain the established integration convention:
+        # their current and historical states are cents per kWh.
+        return 0.01
 
     def age_s(self) -> float | None:
         """Return seconds since the last optimizer run."""

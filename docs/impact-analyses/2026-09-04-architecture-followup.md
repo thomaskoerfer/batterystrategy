@@ -144,8 +144,8 @@ The adapter preserves the required lifecycle order: capture on the event loop,
 read bounded Recorder history in the executor, load typed owner state, invoke
 planning, persist that state under the existing schema-11 lease, then publish.
 No optimizer, compiler, live-control, actuator, entity or persistence-schema
-semantics changed. Existing EV-history scaling behavior was deliberately
-preserved for this ownership-only refactor and remains separately testable debt.
+semantics changed. The residual duplicate EV-history conversion was removed as
+part of enforcing the existing unit contract.
 
 ## Contract impact
 
