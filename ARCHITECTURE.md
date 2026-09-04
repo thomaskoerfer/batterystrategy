@@ -153,6 +153,12 @@ meter following, EV policy, manual controls, budget consumption, command
 smoothing and fail-safe behavior. It does not optimize prices or retrain a
 forecast.
 
+The Home Assistant adapter creates one `LiveMeasurements` snapshot and one
+`LivePolicy`. The pure controller returns `LiveControlResult`, keeping its
+validated `BatteryCommand`, explicit `LiveControlState` and `LiveDiagnostics`
+separate. The actuator receives that command unchanged. No second live input,
+directive or command model exists in production.
+
 Dashboard future profiles remain canonical optimizer output. They may be joined
 to measured history at the current timestamp, but the current live command does
 not mutate future plan slots. This keeps plan diagnostics reproducible and

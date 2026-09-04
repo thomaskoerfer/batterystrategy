@@ -28,24 +28,42 @@ diagnostic/profile mapping. The compiler receives only the canonical plan;
 production no longer contains a `StrategyPlan`/profile-to-`BatteryPlan`
 reconstruction path.
 
-Planning persistence advances from schema 9 to schema 10 and stores the
-canonical plan through one codec. Existing schema-9 operator data remains
+Planning persistence advances from schema 9 to schema 11 and stores the
+canonical plan plus its authorizing execution-policy fingerprint through one
+codec. Existing schema-9/10 operator data remains
 visible, but is deliberately non-executable until a new optimizer result is
 available. Invalid canonical data and a mismatch with current physical battery
-constraints also fail closed. This is a one-time migration without a runtime
-compatibility facade.
+constraints or planning switches also fail closed. This is a one-time migration
+without a runtime compatibility facade.
 
-### 3. Live-control model convergence: defer
+### 3. Live-control model convergence: implement
 
-The current model boundary contains some conversion between planning-facing
-and actuator-facing command types. Collapsing those types now would touch the
-active safety path and may change approved command semantics. The types remain
-separate until a concrete simplification can be demonstrated with parity and
-restart tests.
+The owner approved this contract change on 2026-09-04. Home Assistant values
+are normalized once into `LiveMeasurements`; the compiler emits the contract
+`PlanLiveDirective` directly; and `DeterministicLiveController` returns one
+`LiveControlResult` containing an actuator-ready `BatteryCommand`, explicit
+`LiveControlState` and separate `LiveDiagnostics`. The removed integration
+input, directive and diagnostic-command models had no remaining owner.
 
-Any future convergence requires a separate impact analysis and explicit
-contract approval. It must retain single-writer actuation, fail-closed behavior,
-EV policy, PV-follow precedence and disabled one-shot zeroing.
+`required_charge_power_w` makes the compiler's latched required-rate intent
+explicit rather than reconstructing it from an operator profile. Manual
+physical power limits are explicit in `LivePolicy`, because manual control may
+legitimately operate while the economic directive is closed. These are
+coordinated in-memory changes. The subsequent safety review added the schema-11
+policy fingerprint; no entity IDs change.
+
+Direction hysteresis now consumes and returns explicit `LiveControlState`.
+Single-writer actuation, fail-closed safety, EV policy, PV-follow precedence,
+required-charge behavior, disabled one-shot zeroing and dashboard values remain
+covered by parity regression tests.
+
+The independent architecture and Home Assistant reviews also tightened existing
+semantics without adding commercial behavior: the runtime selects the current
+plan slot atomically and carries measured energy across slot boundaries; stale
+grid, battery, SoC and policy-relevant EV inputs fail closed; fail-safe zero
+writes are retried until device state confirms them; manual control remains
+independent of economic slot validity; optimizer completion publishes
+immediately; and unload is refused unless an active battery can first be stopped.
 
 ### 4. Configuration knowledge: implement partially
 
@@ -62,10 +80,10 @@ behavior change while removing duplicated literals.
 ## Contract impact
 
 Recommendation 2 changes the planning-publication interface and persisted
-planning schema as described above. `BatteryPlan`, optimizer, compiler,
-live-control and actuator semantics are unchanged. The contract model package
-does not change shape; `INTERFACE_CONTRACTS.md` now makes the canonical-plan and
-operator-projection separation normative.
+planning schema as described above. Recommendation 3 changes the coordinated
+in-memory compiler/live/actuator interfaces and binds restored intent to its
+authorizing policy without changing operator entity IDs. `INTERFACE_CONTRACTS.md` defines both canonical-plan
+separation and the direct live-control chain normatively.
 
 ## Verification
 
@@ -77,3 +95,5 @@ operator-projection separation normative.
 - Canonical-plan persistence round trip, legacy display-only migration,
   malformed-state fail-closed and physical-constraint mismatch tests.
 - Static guard proving no production profile-to-`BatteryPlan` reconstruction.
+- Current-slot rollover and cross-boundary energy-accounting tests.
+- Stale numeric input, fail-safe retry and unload-race regression tests.

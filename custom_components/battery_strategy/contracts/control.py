@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Protocol
 
-from .common import DataQuality, SlotKey, require_nonnegative, require_percentage
+from .common import (
+    DataQuality,
+    SlotKey,
+    require_finite,
+    require_nonnegative,
+    require_percentage,
+)
 from .optimization import BatteryPlan
 
 
@@ -92,6 +98,7 @@ class PlanLiveDirective:
     slot: SlotKey
     pv_charge_allowed: bool
     grid_charge_allowed: bool
+    required_charge_power_w: float
     required_charge_remaining_kwh: float
     max_pv_charge_power_w: float
     max_grid_charge_power_w: float
@@ -105,6 +112,7 @@ class PlanLiveDirective:
             raise ValueError("directive identity and issued_at_ms are required")
         for name in (
             "required_charge_remaining_kwh",
+            "required_charge_power_w",
             "max_pv_charge_power_w",
             "max_grid_charge_power_w",
             "max_discharge_power_w",
@@ -115,8 +123,12 @@ class PlanLiveDirective:
         require_percentage("max_soc_pct", self.max_soc_pct)
         if self.min_soc_pct >= self.max_soc_pct:
             raise ValueError("directive min_soc_pct must be below max_soc_pct")
+        if not self.grid_charge_allowed and self.required_charge_power_w > 0.0:
+            raise ValueError("required charge power requires grid_charge_allowed")
         if not self.grid_charge_allowed and self.max_grid_charge_power_w > 0.0:
             raise ValueError("grid charge power requires grid_charge_allowed")
+        if self.required_charge_power_w > self.max_grid_charge_power_w:
+            raise ValueError("required charge power exceeds grid charge limit")
         if not self.pv_charge_allowed and self.max_pv_charge_power_w > 0.0:
             raise ValueError("PV charge power requires pv_charge_allowed")
 
@@ -133,7 +145,7 @@ class LiveMeasurements:
     battery_discharge_w: float
     ev_charge_w: float
     soc_pct: float
-    quality: DataQuality = DataQuality()
+    quality: DataQuality = field(default_factory=DataQuality)
 
     def __post_init__(self) -> None:
         if self.captured_at_ms < 0:
@@ -161,6 +173,8 @@ class LivePolicy:
     battery_may_feed_ev: bool
     ev_active_threshold_w: float
     min_command_power_w: float
+    max_charge_power_w: float
+    max_discharge_power_w: float
     automatic_discharge_mode: AutomaticDischargeMode = (
         AutomaticDischargeMode.LOAD_FOLLOWING
     )
@@ -170,6 +184,8 @@ class LivePolicy:
     def __post_init__(self) -> None:
         require_nonnegative("ev_active_threshold_w", self.ev_active_threshold_w)
         require_nonnegative("min_command_power_w", self.min_command_power_w)
+        require_nonnegative("max_charge_power_w", self.max_charge_power_w)
+        require_nonnegative("max_discharge_power_w", self.max_discharge_power_w)
         require_nonnegative("manual_power_w", self.manual_power_w)
 
 
@@ -180,6 +196,9 @@ class LiveControlState:
     previous_mode: CommandMode
     previous_power_w: float
     previous_command_at_ms: int | None
+    direction: CommandMode | None = None
+    charge_block_until_ms: int | None = None
+    last_charge_at_ms: int | None = None
 
     def __post_init__(self) -> None:
         require_nonnegative("previous_power_w", self.previous_power_w)
@@ -187,6 +206,38 @@ class LiveControlState:
             raise ValueError("previous_command_at_ms must be non-negative")
         if self.previous_mode == CommandMode.IDLE and self.previous_power_w != 0.0:
             raise ValueError("idle live-control state must have zero power")
+        for name in (
+            "charge_block_until_ms",
+            "last_charge_at_ms",
+        ):
+            value = getattr(self, name)
+            if value is not None and value < 0:
+                raise ValueError(f"{name} must be non-negative")
+        if self.direction == CommandMode.IDLE:
+            raise ValueError("live-control direction is input, output or unknown")
+
+
+@dataclass(frozen=True, slots=True)
+class LiveDiagnostics:
+    """Derived live values kept separate from executable commands."""
+
+    residual_with_ev_w: float
+    residual_no_ev_w: float
+    pv_surplus_w: float
+    allowed_discharge_load_w: float
+    house_load_total_w: float
+    house_load_no_ev_w: float
+
+    def __post_init__(self) -> None:
+        for name in ("residual_with_ev_w", "residual_no_ev_w"):
+            require_finite(name, getattr(self, name))
+        for name in (
+            "pv_surplus_w",
+            "allowed_discharge_load_w",
+            "house_load_total_w",
+            "house_load_no_ev_w",
+        ):
+            require_nonnegative(name, getattr(self, name))
 
 
 @dataclass(frozen=True, slots=True)
@@ -211,6 +262,15 @@ class BatteryCommand:
             raise ValueError("idle commands must have zero power")
         if self.mode != CommandMode.IDLE and self.power_w <= 0.0:
             raise ValueError("active commands must have positive power")
+
+
+@dataclass(frozen=True, slots=True)
+class LiveControlResult:
+    """Complete output of one pure live-control evaluation."""
+
+    command: BatteryCommand
+    state: LiveControlState
+    diagnostics: LiveDiagnostics
 
 
 @dataclass(frozen=True, slots=True)
@@ -250,7 +310,7 @@ class LiveController(Protocol):
         measurements: LiveMeasurements,
         policy: LivePolicy,
         state: LiveControlState,
-    ) -> tuple[BatteryCommand, LiveControlState]: ...
+    ) -> LiveControlResult: ...
 
 
 class BatteryActuator(Protocol):

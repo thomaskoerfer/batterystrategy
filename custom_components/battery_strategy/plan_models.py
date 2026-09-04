@@ -44,22 +44,6 @@ class DailyCost:
 
 
 @dataclass(frozen=True)
-class PlanLiveDirective:
-    """Minimal plan output consumed by live meter-following control."""
-
-    slot_id: str
-    slot_start_ts: int
-    slot_end_ts: int
-    pv_charge_allowed: bool
-    must_charge_w: int
-    must_charge_remaining_kwh: float
-    grid_charge_allowed: bool
-    discharge_budget_kwh: float
-    battery_min_soc_pct: float
-    battery_max_soc_pct: float
-
-
-@dataclass(frozen=True)
 class StrategyPlan:
     """Immutable operator-facing projection of optimizer output."""
 

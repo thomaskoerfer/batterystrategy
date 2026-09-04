@@ -23,12 +23,13 @@ from .const import (
 )
 from .contracts import (
     HistoricalFeatureSlot,
+    LiveMeasurements,
     LoadDriverSnapshot,
     LoadForecastContext,
     WeatherSlot,
 )
 from .history_adapter import read_recorder_series
-from .models import StrategyInputs, StrategyOptions
+from .models import StrategyOptions
 from .planning_result import (
     PlanningResult,
     persisted_output,
@@ -79,7 +80,7 @@ class PlanningPipelineAdapter:
             self._last_result = None
 
     def cached_result(
-        self, inputs: StrategyInputs, options: StrategyOptions
+        self, inputs: LiveMeasurements, options: StrategyOptions
     ) -> PlanningResult:
         """Return the cached plan without running the optimizer."""
         del inputs
@@ -87,6 +88,9 @@ class PlanningPipelineAdapter:
             self._last_result = result_from_persisted_output(
                 self._last_output or {}, options, timezone=self._timezone
             )
+            # The persistence codec has already verified this exact policy.
+            # Remember it so a later option change invalidates the cached plan.
+            self._last_options = options
         result = self._last_result
         override_active = options.manual_mode != "off"
         if self._last_options is not None and self._last_options != options:
@@ -119,7 +123,7 @@ class PlanningPipelineAdapter:
 
     def run(
         self,
-        inputs: StrategyInputs,
+        inputs: LiveMeasurements,
         options: StrategyOptions,
         force: bool = False,
         runtime_context: dict | None = None,
@@ -160,12 +164,14 @@ class PlanningPipelineAdapter:
                         runtime_context["history_series"] = {}
             result = planning_pipeline.run(runtime_context)
         self._last_result = result
-        self._last_output = persisted_output(result)
+        self._last_output = persisted_output(result, options)
         self._last_options = options
         self._last_run_ts = now
         return self.cached_result(inputs, options)
 
-    def runtime_context(self, inputs: StrategyInputs, options: StrategyOptions) -> dict:
+    def runtime_context(
+        self, inputs: LiveMeasurements, options: StrategyOptions
+    ) -> dict:
         """Snapshot HA-owned runtime data before entering the executor thread."""
         if self._hass is None or self._entry is None:
             return {}
@@ -175,25 +181,26 @@ class PlanningPipelineAdapter:
         price_intervals = (
             list(price_state.attributes.get("data") or []) if price_state else []
         )
+        battery_power_w = inputs.battery_discharge_w - inputs.battery_charge_w
         states = {
             "grid_import": inputs.grid_import_w,
             "grid_export": inputs.grid_export_w,
-            "pv_power": inputs.pv_w,
+            "pv_power": inputs.pv_generation_w,
             "battery_soc": inputs.soc_pct,
             "battery_min_soc": options.min_soc_pct,
-            "battery_power": inputs.battery_power_w,
-            "ev_power": inputs.ev_power_w,
+            "battery_power": battery_power_w,
+            "ev_power": inputs.ev_charge_w,
             "ev_status": "charging"
-            if inputs.ev_power_w >= options.ev_active_threshold_w
+            if inputs.ev_charge_w >= options.ev_active_threshold_w
             else "idle",
         }
         house_load_no_ev_w = max(
             0.0,
             inputs.grid_import_w
-            + inputs.pv_w
-            + inputs.battery_power_w
+            + inputs.pv_generation_w
+            + battery_power_w
             - inputs.grid_export_w
-            - inputs.ev_power_w,
+            - inputs.ev_charge_w,
         )
         if price_state is not None:
             states["price_current"] = price_state.state

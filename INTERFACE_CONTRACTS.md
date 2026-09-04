@@ -2,9 +2,8 @@
 
 The executable contracts live in
 `custom_components/battery_strategy/contracts/`. This document defines their
-semantics and evolution rules. The contracts describe the target boundaries;
-the legacy runtime models remain transitional until each migration phase in
-`ARCHITECTURE.md` is completed.
+semantics and evolution rules. The production runtime conforms to these
+interfaces; projection and persistence models are not executable substitutes.
 
 ## Contract status
 
@@ -207,10 +206,12 @@ profiles, `StrategyPlan`, diagnostics and dashboard data must never be parsed or
 combined to reconstruct executable intent. This keeps display compatibility
 separate from safety-critical permission.
 
-Planning state schema 10 persists the canonical plan alongside operator data.
+Planning state schema 11 persists the canonical plan and the execution-policy
+fingerprint that authorized it alongside operator data.
 A schema-9 or malformed snapshot may still populate operator displays, but it
 has no executable plan and therefore fails commercially closed until a fresh
-optimizer run succeeds. A persisted plan whose physical constraints differ
+optimizer run succeeds. A persisted plan whose physical constraints or
+planning policy differ
 from current configuration is also non-executable. This contract migration was
 approved by the owner on 2026-09-04; see
 `docs/impact-analyses/2026-09-04-architecture-followup.md`.
@@ -240,15 +241,16 @@ not be replaced by a fabricated nominal SoC. A valid recovered measurement
 forces a new optimizer run.
 
 `PlanLiveDirective` contains every permission the live controller needs:
-allowed charge sources, source-specific power limits, remaining required charge,
-remaining discharge budget, SoC bounds and slot validity.
+allowed charge sources, required charge power and remaining energy,
+source-specific power limits, remaining discharge budget, SoC bounds and slot
+validity.
 
 ### Plan compiler to live controller
 
 `LiveMeasurements` contains one normalized fast snapshot. Battery charge and
 discharge are separate positive fields so meter feedback cannot invert the
 house-load reconstruction. EV power remains explicit and is interpreted only
-through the supplied `LivePolicy`. Previous command state is supplied as
+through the supplied `LivePolicy`. Previous command and direction-hysteresis state are supplied as
 `LiveControlState`; the controller does not keep hidden mutable state.
 
 `LivePolicy` explicitly carries automatic discharge mode and manual override in
@@ -259,7 +261,9 @@ precedence, EV combinations, PV-follow and disabled-control semantics are
 normative in `docs/live-control/README.md` and were approved by the owner on
 2026-08-31.
 
-The live controller computes a `BatteryCommand` without I/O. An idle command has
+The live controller returns one immutable `LiveControlResult` without I/O. It
+contains the validated `BatteryCommand`, next `LiveControlState` and separate
+`LiveDiagnostics`. Diagnostics never authorize actuation. An idle command has
 zero power; active commands have positive power and a short validity interval.
 Every command references the directive that authorized it.
 
@@ -343,10 +347,10 @@ backtests or operational evidence are preferred over speculative prose. A
 contract change that can affect actuation must never be combined with an
 unrelated live-control change.
 
-## Transitional mapping
+## Runtime conformance
 
-`StrategyInputs`, `StrategyPlan` and the operator-facing `PlanLiveDirective`
-remain integration projection models. They do not authorize the compiler.
-Executable planning intent uses `BatteryPlan`; the compiler-to-live contract
-continues to use the contract `PlanLiveDirective`. New safety-critical code
-must target the contracts package rather than presentation models.
+Home Assistant values are normalized once into `LiveMeasurements`. The plan
+compiler emits the contract `PlanLiveDirective` directly; the live controller
+returns `LiveControlResult`; and the actuator receives its `BatteryCommand`
+unchanged. `StrategyPlan` remains operator presentation only. Production must
+not introduce a second input, directive or command model at these seams.

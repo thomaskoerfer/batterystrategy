@@ -97,6 +97,14 @@ class DeterministicPlanCompiler:
             slot=progress.slot,
             pv_charge_allowed=pv_charge_allowed,
             grid_charge_allowed=next_state.grid_charge_allowed,
+            required_charge_power_w=(
+                min(
+                    plan.constraints.max_charge_power_w,
+                    next_state.required_charge_commitment_kwh / 0.25 * 1000.0,
+                )
+                if next_state.grid_charge_allowed
+                else 0.0
+            ),
             required_charge_remaining_kwh=required_remaining_kwh,
             max_pv_charge_power_w=(
                 plan.constraints.max_charge_power_w if pv_charge_allowed else 0.0

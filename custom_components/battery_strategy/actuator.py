@@ -13,7 +13,12 @@ TRACKED_WRITE_MIN_INTERVAL_S = 2.2
 CONFIRM_RETRY_INTERVAL_S = 8.0
 POWER_TOLERANCE_W = 5.0
 _FAILSAFE_REASONS = frozenset(
-    {"battery_soc_unavailable", "grid_inputs_stale", "ev_power_unavailable"}
+    {
+        "battery_power_unavailable",
+        "battery_soc_unavailable",
+        "grid_inputs_stale",
+        "ev_power_unavailable",
+    }
 )
 
 
@@ -53,17 +58,20 @@ class ActuationWriteTracker:
     ) -> bool:
         """Return whether a numeric target needs an initial write or retry."""
         tolerance_w = max(POWER_TOLERANCE_W, float(min_command_delta_w))
+        pending = self._pending.get(key)
+        if pending is not None and abs(float(pending.target) - float(target_w)) < 0.5:
+            if abs(float(current_w) - float(target_w)) < tolerance_w:
+                self._pending.pop(key, None)
+                return False
+            return now_s - pending.written_at_s >= CONFIRM_RETRY_INTERVAL_S
+
         # Direction changes and safety stops must clear any positive opposite
-        # limit, even when it sits below the ordinary command deadband.
+        # limit even below the normal deadband, then await confirmation/retry.
         if force_zero and current_w > 0 and target_w == 0:
             return True
         if abs(float(current_w) - float(target_w)) < tolerance_w:
             self._pending.pop(key, None)
             return False
-
-        pending = self._pending.get(key)
-        if pending is not None and abs(float(pending.target) - float(target_w)) < 0.5:
-            return now_s - pending.written_at_s >= CONFIRM_RETRY_INTERVAL_S
 
         last_write_s = self._last_write_s.get(key, float("-inf"))
         return now_s - last_write_s >= TRACKED_WRITE_MIN_INTERVAL_S
@@ -129,7 +137,6 @@ class HomeAssistantZendureActuator:
             lambda: float(option_default("min_command_delta_w"))
         )
         self._tracker = ActuationWriteTracker()
-        self._failsafe_reason: str | None = None
 
     def controls_available(self, *, include_mode: bool = True) -> bool:
         """Return whether all required control entities have usable states."""
@@ -138,6 +145,14 @@ class HomeAssistantZendureActuator:
             entities.insert(0, self._ac_mode)
         return all(self._available(entity) for entity in entities)
 
+    def limits_zero_confirmed(self) -> bool:
+        """Return whether both device-reported direction limits are safely zero."""
+        return bool(
+            self.controls_available(include_mode=False)
+            and abs(self._float(self._input_limit)) <= POWER_TOLERANCE_W
+            and abs(self._float(self._output_limit)) <= POWER_TOLERANCE_W
+        )
+
     async def apply(self, command: BatteryCommand) -> ActuationResult:
         """Apply one validated generic command with ordered vendor writes."""
         applied_at_ms = int(time.time() * 1000)
@@ -145,10 +160,6 @@ class HomeAssistantZendureActuator:
             return ActuationResult(command.command_id, False, applied_at_ms, "expired")
 
         failsafe = command.reason in _FAILSAFE_REASONS
-        if failsafe and self._failsafe_reason == command.reason:
-            return ActuationResult(
-                command.command_id, False, applied_at_ms, "failsafe_no_write"
-            )
         if not self.controls_available(include_mode=command.mode != CommandMode.IDLE):
             return ActuationResult(
                 command.command_id,
@@ -230,13 +241,14 @@ class HomeAssistantZendureActuator:
             if should_write:
                 await write_limit(entity, target, label)
 
-        if failsafe:
-            self._failsafe_reason = command.reason
+        if failsafe and not actions:
+            status = (
+                "failsafe_confirmed"
+                if current_input == 0 and current_output == 0
+                else "failsafe_pending_confirmation"
+            )
         else:
-            # Any valid non-failsafe command proves the safety condition cleared,
-            # including a normal idle command.
-            self._failsafe_reason = None
-        status = "written" if actions else "no_change"
+            status = "written" if actions else "no_change"
         detail = status if not actions else f"{status}:{','.join(actions)}"
         return ActuationResult(command.command_id, bool(actions), applied_at_ms, detail)
 

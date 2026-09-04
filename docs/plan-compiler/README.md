@@ -21,6 +21,8 @@ wall clock. It receives only:
 It returns one `PlanLiveDirective` and the next immutable compilation state. It
 may translate and reduce optimizer permission, but it never creates economic
 permission, moves energy between slots or changes a future SoC trajectory.
+The directive carries both remaining required energy and the latched required
+charge power; live control never reconstructs that rate from dashboard data.
 
 The compiler receives `PlanningResult.battery_plan` directly. It must never
 reconstruct a plan from `StrategyPlan`, dashboard profiles or diagnostics. A

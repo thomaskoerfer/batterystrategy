@@ -25,8 +25,6 @@ from .compiler_runtime_store import (
 from .config_definitions import option_default
 from .const import (
     BATTERY_PROFILE_ZENDURE,
-    COMMAND_IDLE,
-    COMMAND_OUTPUT,
     CONF_BATTERY_CAPACITY_KWH,
     CONF_BATTERY_INPUT_ENERGY_ENTITY,
     CONF_BATTERY_OUTPUT_ENERGY_ENTITY,
@@ -52,17 +50,28 @@ from .const import (
     CONF_ZENDURE_OUTPUT_LIMIT_ENTITY,
     CONF_ZENDURE_OUTPUT_PACK_POWER_ENTITY,
     CONF_ZENDURE_PACK_INPUT_POWER_ENTITY,
+    DISCHARGE_LOAD,
+    DISCHARGE_PRICE_SENSITIVE,
     DOMAIN,
     GRID_MODE_IMPORT_EXPORT,
     GRID_MODE_SIGNED,
     GRID_MODE_THREE_PHASE,
+    MANUAL_CHARGE,
+    MANUAL_DISCHARGE,
     MANUAL_OFF,
 )
 from .contracts import (
     ActuationResult,
+    AutomaticDischargeMode,
     BatteryCommand,
     CommandMode,
+    DataQuality,
     ForecastRequest,
+    LiveControlResult,
+    LiveControlState,
+    LiveMeasurements,
+    LivePolicy,
+    ManualControlMode,
     QualityFlag,
     SlotKey,
 )
@@ -73,19 +82,18 @@ from .feature_store import (
     FeatureAggregator,
     FeatureObservation,
 )
-from .live_control import DirectionHysteresis, P1UpdateGate
+from .live_control import P1UpdateGate
 from .load_components import (
     LoadComponentCollection,
     add_central_weather,
     collect_load_components,
 )
-from .models import StrategyCommand, StrategyInputs, StrategyOptions
+from .models import StrategyOptions
 from .operator_projection import build_operator_projection
 from .optimizer_state import last_known_soc_pct
-from .plan_models import PlanLiveDirective
 from .planner import BackgroundPlanner
 from .planning_adapter import PlanningPipelineAdapter
-from .strategy import calculate_command, live_command_from_directive
+from .strategy import DeterministicLiveController
 from .weather import OpenMeteoWeatherProvider
 
 LOGGER = logging.getLogger(__name__)
@@ -96,6 +104,9 @@ EV_POWER_BRIDGE_MAX_AGE_S = 180
 OPTIMIZER_STATE_FILE = "battery_strategy_optimizer_state.json"
 FEATURE_STORE_FILE = "battery_strategy_features.json.gz"
 GRID_INPUT_MAX_AGE_S = 30
+BATTERY_INPUT_MAX_AGE_S = 30
+UNLOAD_STOP_TIMEOUT_S = 10.0
+UNLOAD_STOP_POLL_S = 0.5
 
 
 def _load_last_known_soc_pct(path: Path) -> float | None:
@@ -132,7 +143,9 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         self._feature_history = tuple(feature_history)
         self._planning_pipeline = PlanningPipelineAdapter(hass, entry)
         self._planning_pipeline.hydrate_output(last_optimizer_output)
-        self._planner = BackgroundPlanner(hass, self._planning_pipeline)
+        self._planner = BackgroundPlanner(
+            hass, self._planning_pipeline, self.async_request_refresh
+        )
         self._optimizer_attrs: Mapping[str, object] = {}
         self.last_actuation = ActuationResult(
             command_id="not-started",
@@ -161,7 +174,8 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             ),
         )
         self._p1_update_gate = P1UpdateGate()
-        self._direction_hysteresis = DirectionHysteresis()
+        self._live_controller = DeterministicLiveController()
+        self._live_control_state = LiveControlState(CommandMode.IDLE, 0.0, None)
         self._live_event_unsubs: list[object] = []
         self._last_known_ev_power_w = 0.0
         self._last_valid_ev_at: dt.datetime | None = None
@@ -181,6 +195,8 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         self._weather_provider = OpenMeteoWeatherProvider(
             async_get_clientsession(hass), hass.config.latitude, hass.config.longitude
         )
+        self._unloading = False
+        self._actuation_lock = asyncio.Lock()
 
     def set_manual_override(
         self, mode: str, power_w: float, duration_min: int = 0
@@ -264,6 +280,8 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
 
     async def _async_update_data(self):
         """Fetch current states and calculate command."""
+        if getattr(self, "_unloading", False):
+            return self.data or {}
         if (
             self._manual_until is not None
             and dt.datetime.now(dt.timezone.utc) >= self._manual_until
@@ -271,8 +289,8 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             self.clear_manual_override()
 
         options = self._strategy_options()
-        inputs = self._strategy_inputs()
         now = dt.datetime.now(dt.timezone.utc)
+        inputs = self._live_measurements(int(now.timestamp() * 1000))
         local_now = now.astimezone(ZoneInfo(self.hass.config.time_zone))
         self._load_components = collect_load_components(
             self.hass, self.entry, local_now
@@ -298,9 +316,11 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
                     timestamp_ms=int(now.timestamp() * 1000),
                     grid_import_w=inputs.grid_import_w,
                     grid_export_w=inputs.grid_export_w,
-                    pv_generation_w=inputs.pv_w,
-                    battery_power_w=inputs.battery_power_w,
-                    ev_charge_w=inputs.ev_power_w,
+                    pv_generation_w=inputs.pv_generation_w,
+                    battery_power_w=(
+                        inputs.battery_discharge_w - inputs.battery_charge_w
+                    ),
+                    ev_charge_w=inputs.ev_charge_w,
                     price_ct_per_kwh=self._current_price_ct(now),
                     quality_flags=self._feature_quality_flags(),
                     load_components_w=self._load_components.powers_w,
@@ -311,10 +331,15 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             finalized_features = ()
             self._feature_store.last_error = f"{type(err).__name__}: {err}"
             LOGGER.warning("Feature-store aggregation failed: %s", err)
-        self._compiler_runtime.account(now, inputs.battery_power_w)
+        if QualityFlag.MISSING_BATTERY in inputs.quality.flags:
+            self._compiler_runtime.suspend_accounting(now)
+        else:
+            measured_battery_power_w = (
+                inputs.battery_discharge_w - inputs.battery_charge_w
+            )
+            self._compiler_runtime.account(now, measured_battery_power_w)
         force_optimizer = self._should_force_optimizer(now) or self._soc_recovered
         self._soc_recovered = False
-        simple_command = calculate_command(inputs, options)
         optimizer_scheduled = False
         if self._soc_control_ready:
             runtime_context = self._planning_pipeline.runtime_context(inputs, options)
@@ -325,41 +350,44 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         plan = planning_result.operator_plan
         self._optimizer_attrs = planning_result.operator_data
         now_ms = int(now.timestamp() * 1000)
-        slot_start_ms = (
-            planning_result.battery_plan.slots[0].slot.start_ms
-            if planning_result.battery_plan is not None
-            else 0
-        )
-        self._compiler_runtime.sync_slot(
-            slot_start_ms, now_ms, self._battery_energy_totals()
-        )
         directive = self._compiler_runtime.compile(
             planning_result.battery_plan,
             options,
             inputs,
             now_ms,
+            self._battery_energy_totals(),
         )
         if self._compiler_runtime.snapshot_dirty:
             await self._async_persist_compiler_runtime(clean_shutdown=False)
-        command = live_command_from_directive(
-            directive, simple_command, inputs, options
-        )
         strategy_enabled = bool(self.entry.options.get("strategy_enabled", False))
-        if strategy_enabled:
-            command = self._direction_hysteresis.apply(
-                command,
-                inputs.battery_power_w,
-                time.monotonic(),
-            )
-        calculated_command = command
-        display_command = (
-            command if strategy_enabled else self._disabled_display_command(command)
+        control_state = (
+            self._live_control_state
+            if strategy_enabled
+            else LiveControlState(CommandMode.IDLE, 0.0, None)
+        )
+        live_result = self._live_controller.command(
+            directive,
+            inputs,
+            self._live_policy(options),
+            control_state,
+        )
+        self._live_control_state = (
+            live_result.state
+            if strategy_enabled
+            else LiveControlState(CommandMode.IDLE, 0.0, None)
+        )
+        calculated_command = live_result.command
+        display_result = (
+            live_result
+            if strategy_enabled
+            else self._disabled_display_result(live_result)
         )
         data = {
             "inputs": inputs,
             "options": options,
-            "command": display_command,
+            "command": display_result.command,
             "calculated_command": calculated_command,
+            "live_diagnostics": display_result.diagnostics,
             "plan": plan,
             "optimizer_attrs": self._optimizer_attrs,
             "plan_to_live": directive,
@@ -378,9 +406,7 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         if strategy_enabled:
             self._strategy_was_enabled = True
             self._disabled_zeroed = False
-            await self._async_apply_command(
-                calculated_command, options, directive, now_ms
-            )
+            await self._async_apply_command(calculated_command)
             data["actuation"] = asdict(self.last_actuation)
         elif not self._disabled_zeroed:
             self._disabled_zeroed = await self._async_zero_limits_once()
@@ -536,6 +562,8 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             flags.append(QualityFlag.MISSING_PV)
         if not self._battery_measurement_available():
             flags.append(QualityFlag.MISSING_BATTERY)
+        if not self._soc_control_ready:
+            flags.append(QualityFlag.ESTIMATED)
         if self.entry.data.get(CONF_EV_POWER_ENTITY) and not self._ev_control_ready:
             flags.append(QualityFlag.MISSING_EV)
         return tuple(flags)
@@ -544,15 +572,29 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         """Return whether the battery power reconstruction has usable inputs."""
         if self.entry.data.get(CONF_BATTERY_PROFILE) != BATTERY_PROFILE_ZENDURE:
             entity = self.entry.data.get(CONF_BATTERY_POWER_ENTITY)
-            return bool(entity and self._state_available(entity))
-        entities = (
-            self.entry.data.get(CONF_ZENDURE_AC_MODE_ENTITY),
+            return bool(
+                entity
+                and self._state_available(entity)
+                and self._state_age_s(entity) <= BATTERY_INPUT_MAX_AGE_S
+            )
+        mode_entity = self.entry.data.get(CONF_ZENDURE_AC_MODE_ENTITY)
+        power_entities = (
             self.entry.data.get(CONF_ZENDURE_OUTPUT_PACK_POWER_ENTITY),
             self.entry.data.get(CONF_ZENDURE_PACK_INPUT_POWER_ENTITY),
             self.entry.data.get(CONF_ZENDURE_OUTPUT_HOME_POWER_ENTITY),
             self.entry.data.get(CONF_ZENDURE_GRID_INPUT_POWER_ENTITY),
         )
-        return all(entity and self._state_available(entity) for entity in entities)
+        return bool(
+            mode_entity
+            and self._state_available(mode_entity)
+            and self._state_age_s(mode_entity) <= BATTERY_INPUT_MAX_AGE_S
+            and all(
+                entity
+                and self._state_available(entity)
+                and self._state_age_s(entity) <= BATTERY_INPUT_MAX_AGE_S
+                for entity in power_entities
+            )
+        )
 
     def _should_force_optimizer(self, now: dt.datetime) -> bool:
         """Refresh planning once before and once after the active slot boundary."""
@@ -661,15 +703,48 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             manual_power_w=manual_power,
         )
 
-    def _strategy_inputs(self) -> StrategyInputs:
+    def _live_measurements(self, captured_at_ms: int) -> LiveMeasurements:
         grid_import, grid_export = self._grid_import_export()
-        return StrategyInputs(
+        battery_power_w = self._battery_power_w()
+        ev_power_w = self._ev_power_w()
+        soc_pct = self._battery_soc_pct()
+        quality_flags = self._feature_quality_flags()
+        return LiveMeasurements(
+            captured_at_ms=captured_at_ms,
             grid_import_w=grid_import,
             grid_export_w=grid_export,
-            pv_w=self._state_power_w(CONF_PV_POWER_ENTITY),
-            battery_power_w=self._battery_power_w(),
-            ev_power_w=self._ev_power_w(),
-            soc_pct=self._battery_soc_pct(),
+            pv_generation_w=self._state_power_w(CONF_PV_POWER_ENTITY),
+            battery_charge_w=max(0.0, -battery_power_w),
+            battery_discharge_w=max(0.0, battery_power_w),
+            ev_charge_w=ev_power_w,
+            soc_pct=soc_pct,
+            quality=DataQuality(
+                coverage=0.0 if quality_flags else 1.0,
+                flags=quality_flags,
+            ),
+        )
+
+    @staticmethod
+    def _live_policy(options: StrategyOptions) -> LivePolicy:
+        discharge_mode = {
+            DISCHARGE_LOAD: AutomaticDischargeMode.LOAD_FOLLOWING,
+            DISCHARGE_PRICE_SENSITIVE: AutomaticDischargeMode.PRICE_SENSITIVE,
+        }.get(options.discharge, AutomaticDischargeMode.OFF)
+        manual_mode = {
+            MANUAL_CHARGE: ManualControlMode.CHARGE,
+            MANUAL_DISCHARGE: ManualControlMode.DISCHARGE,
+        }.get(options.manual_mode, ManualControlMode.OFF)
+        return LivePolicy(
+            pv_to_ev_first=options.pv_to_ev_first,
+            discharge_during_ev_charging=options.discharge_during_ev_charging,
+            battery_may_feed_ev=options.battery_may_feed_ev,
+            ev_active_threshold_w=options.ev_active_threshold_w,
+            min_command_power_w=options.min_command_power_w,
+            max_charge_power_w=options.max_charge_power_w,
+            max_discharge_power_w=options.max_discharge_power_w,
+            automatic_discharge_mode=discharge_mode,
+            manual_mode=manual_mode,
+            manual_power_w=options.manual_power_w,
         )
 
     def _battery_soc_pct(self) -> float:
@@ -677,11 +752,10 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         entity_id = self.entry.data.get(CONF_BATTERY_SOC_ENTITY)
         if entity_id:
             state = self.hass.states.get(entity_id)
-            if state is not None and state.state not in (
-                "unknown",
-                "unavailable",
-                "none",
-                "",
+            if (
+                state is not None
+                and self._state_age_s(entity_id) <= SOC_BRIDGE_MAX_AGE_S
+                and state.state not in ("unknown", "unavailable", "none", "")
             ):
                 try:
                     value = float(state.state)
@@ -692,7 +766,7 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
                     self._last_known_soc_pct = value
                     self._soc_control_ready = True
                     self._soc_recovered = not was_control_ready
-                    self._last_valid_soc_at = dt.datetime.now(dt.timezone.utc)
+                    self._last_valid_soc_at = self._state_reported_at(entity_id)
                     return value
         last_valid_soc_at = getattr(
             self, "_last_valid_soc_at", dt.datetime.now(dt.timezone.utc)
@@ -749,11 +823,10 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             self._ev_control_ready = True
             return 0.0
         state = self.hass.states.get(entity_id)
-        if state is not None and state.state not in (
-            "unknown",
-            "unavailable",
-            "none",
-            "",
+        if (
+            state is not None
+            and self._state_age_s(entity_id) <= EV_POWER_BRIDGE_MAX_AGE_S
+            and state.state not in ("unknown", "unavailable", "none", "")
         ):
             try:
                 value = max(0.0, self._raw_power_w(entity_id))
@@ -761,7 +834,7 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
                 value = None
             if value is not None:
                 self._last_known_ev_power_w = value
-                self._last_valid_ev_at = dt.datetime.now(dt.timezone.utc)
+                self._last_valid_ev_at = self._state_reported_at(entity_id)
                 self._ev_control_ready = True
                 return value
         now = dt.datetime.now(dt.timezone.utc)
@@ -836,17 +909,26 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
 
     def _state_age_s(self, entity_id: str) -> float:
         """Return seconds since a state changed."""
-        state = self.hass.states.get(entity_id)
-        if state is None:
-            return 1e9
-        reported_at = (
-            getattr(state, "last_reported", None)
-            or getattr(state, "last_updated", None)
-            or state.last_changed
-        )
+        reported_at = self._state_reported_at(entity_id)
         return max(
             0.0, (dt.datetime.now(dt.timezone.utc) - reported_at).total_seconds()
         )
+
+    def _state_reported_at(self, entity_id: str) -> dt.datetime:
+        """Return the source timestamp for one Home Assistant state."""
+        state = self.hass.states.get(entity_id)
+        if state is None:
+            return dt.datetime.min.replace(tzinfo=dt.timezone.utc)
+        reported_at = (
+            getattr(state, "last_reported", None)
+            or getattr(state, "last_updated", None)
+            or getattr(state, "last_changed", None)
+        )
+        if reported_at is None:
+            # Home Assistant State always supplies timestamps. Lightweight test
+            # doubles without them represent a freshly captured state.
+            return dt.datetime.now(dt.timezone.utc)
+        return reported_at
 
     def _state_available(self, entity_id: str) -> bool:
         """Return whether an entity has a usable state."""
@@ -895,11 +977,19 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
 
     async def _async_zero_limits_once(self, *, blocking: bool = False) -> bool:
         """Stop once when disabled; retry only until the safe stop can be issued."""
-        del blocking  # The actuator contract always performs ordered blocking writes.
-        self.last_actuation = await self._actuator.apply(
-            self._safe_idle_command("strategy_disabled")
-        )
-        return self.last_actuation.detail != "control_entity_unavailable"
+        async with self._get_actuation_lock():
+            deadline = time.monotonic() + (UNLOAD_STOP_TIMEOUT_S if blocking else 0.0)
+            while True:
+                self.last_actuation = await self._actuator.apply(
+                    self._safe_idle_command("strategy_disabled")
+                )
+                if self.last_actuation.detail == "control_entity_unavailable":
+                    return False
+                if not blocking or self._actuator.limits_zero_confirmed():
+                    return True
+                if time.monotonic() >= deadline:
+                    return False
+                await asyncio.sleep(UNLOAD_STOP_POLL_S)
 
     def _battery_energy_totals(self) -> tuple[float | None, float | None]:
         """Return cumulative battery charge/discharge counters when both are valid."""
@@ -939,59 +1029,26 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
 
     async def _async_apply_command(
         self,
-        command: StrategyCommand,
-        options: StrategyOptions,
-        directive: PlanLiveDirective,
-        now_ms: int,
+        command: BatteryCommand,
     ) -> None:
-        """Apply the command to Zendure with anti-oscillation guardrails."""
-        if not self._soc_control_ready:
-            await self._async_failsafe_zero_once("battery_soc_unavailable")
-            return
-        if not self._grid_inputs_fresh():
-            await self._async_failsafe_zero_once("grid_inputs_stale")
-            return
-        if (
-            command.mode == COMMAND_OUTPUT
-            and self.entry.data.get(CONF_EV_POWER_ENTITY)
-            and not self._ev_control_ready
-            and (
-                not options.battery_may_feed_ev
-                or not options.discharge_during_ev_charging
-            )
-        ):
-            await self._async_failsafe_zero_once("ev_power_unavailable")
-            return
-        self.last_actuation = await self._actuator.apply(
-            self._battery_command(command, directive, now_ms)
-        )
+        """Pass the validated live command unchanged to the sole actuator."""
+        async with self._get_actuation_lock():
+            if getattr(self, "_unloading", False):
+                self.last_actuation = ActuationResult(
+                    command.command_id,
+                    False,
+                    int(dt.datetime.now(dt.timezone.utc).timestamp() * 1000),
+                    "unloading_no_write",
+                )
+                return
+            self.last_actuation = await self._actuator.apply(command)
 
-    async def _async_failsafe_zero_once(self, reason: str) -> None:
-        """Zero both limits once while a safety-critical input is invalid."""
-        self.last_actuation = await self._actuator.apply(
-            self._safe_idle_command(reason)
-        )
-
-    @staticmethod
-    def _battery_command(
-        command: StrategyCommand,
-        directive: PlanLiveDirective,
-        now_ms: int,
-    ) -> BatteryCommand:
-        """Adapt the established live result to the generic actuator contract."""
-        mode = CommandMode(command.mode)
-        valid_until_ms = max(now_ms + 1, int(directive.slot_end_ts))
-        return BatteryCommand(
-            command_id=(
-                f"{directive.slot_id}:{now_ms}:{mode.value}:{int(command.power_w)}"
-            ),
-            directive_id=f"published:{directive.slot_id}",
-            created_at_ms=now_ms,
-            valid_until_ms=valid_until_ms,
-            mode=mode,
-            power_w=float(command.power_w),
-            reason=command.reason,
-        )
+    def _get_actuation_lock(self) -> asyncio.Lock:
+        """Return the per-entry lock shared by normal actuation and shutdown."""
+        lock = getattr(self, "_actuation_lock", None)
+        if lock is None:
+            lock = self._actuation_lock = asyncio.Lock()
+        return lock
 
     @staticmethod
     def _safe_idle_command(reason: str) -> BatteryCommand:
@@ -1007,23 +1064,34 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             reason=reason,
         )
 
-    async def async_prepare_unload(self) -> None:
+    async def async_prepare_unload(self) -> bool:
         """Stop active output before a reload, then shut down the planner."""
+        self._unloading = True
+        self._planner.begin_shutdown()
+        if self._strategy_was_enabled or bool(
+            self.entry.options.get("strategy_enabled", False)
+        ):
+            try:
+                stopped = await self._async_zero_limits_once(blocking=True)
+            except Exception:  # noqa: BLE001 - a rejected unload must restore control.
+                self._unloading = False
+                self._planner.abort_shutdown()
+                LOGGER.exception(
+                    "Battery stop failed; refusing Battery Strategy unload"
+                )
+                return False
+            if not stopped:
+                self._unloading = False
+                self._planner.abort_shutdown()
+                LOGGER.error(
+                    "Refusing to unload Battery Strategy before battery stop is confirmed"
+                )
+                return False
         live_event_unsubs = getattr(self, "_live_event_unsubs", [])
         for unsubscribe in live_event_unsubs:
             unsubscribe()
         live_event_unsubs.clear()
-        clean_shutdown = True
-        if self._strategy_was_enabled or bool(
-            self.entry.options.get("strategy_enabled", False)
-        ):
-            stopped = await self._async_zero_limits_once(blocking=True)
-            if not stopped:
-                clean_shutdown = False
-                LOGGER.warning(
-                    "Could not confirm safe battery stop before unloading Battery Strategy"
-                )
-        await self._async_persist_compiler_runtime(clean_shutdown=clean_shutdown)
+        await self._async_persist_compiler_runtime(clean_shutdown=True)
         weather_task = getattr(self, "_weather_task", None)
         if weather_task is not None and not weather_task.done():
             weather_task.cancel()
@@ -1032,13 +1100,29 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             except asyncio.CancelledError:
                 pass
         await self._planner.async_shutdown()
+        return True
 
-    def _disabled_display_command(self, command: StrategyCommand) -> StrategyCommand:
+    async def async_abort_unload(self) -> None:
+        """Restore retained runtime ownership after platform unload rejection."""
+        await self._async_persist_compiler_runtime(clean_shutdown=False)
+        self._unloading = False
+        self._planner.abort_shutdown()
+        self._weather_task = None
+        self._weather_refresh_key = None
+        self.async_start_live_tracking()
+
+    def _disabled_display_result(self, result: LiveControlResult) -> LiveControlResult:
         """Return the safe UI command while actuation is disabled."""
-        return replace(
-            command,
-            mode=COMMAND_IDLE,
-            power_w=0,
+        command = replace(
+            result.command,
+            command_id=f"{result.command.command_id}:disabled",
+            mode=CommandMode.IDLE,
+            power_w=0.0,
             reason="strategy_disabled_external_control",
-            allowed_discharge_load_w=0,
+        )
+        return replace(
+            result,
+            command=command,
+            state=LiveControlState(CommandMode.IDLE, 0.0, command.created_at_ms),
+            diagnostics=replace(result.diagnostics, allowed_discharge_load_w=0.0),
         )

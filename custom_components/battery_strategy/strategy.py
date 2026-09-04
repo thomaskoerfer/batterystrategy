@@ -1,244 +1,289 @@
-"""Pure Battery Strategy command calculation.
-
-This module intentionally has no Home Assistant imports. It is the first
-runtime core for the integration and covers the currently used mode:
-no grid charging and load-following discharge.
-"""
+"""Pure live controller at the plan-to-actuator seam."""
 
 from __future__ import annotations
 
-from .const import (
-    COMMAND_IDLE,
-    COMMAND_INPUT,
-    COMMAND_OUTPUT,
-    DISCHARGE_LOAD,
-    GRID_CHARGING_PRICE_SENSITIVE,
-    MANUAL_CHARGE,
-    MANUAL_DISCHARGE,
-    MANUAL_OFF,
-    PV_CHARGING_ON,
+from .contracts import (
+    AutomaticDischargeMode,
+    BatteryCommand,
+    CommandMode,
+    LiveControlResult,
+    LiveControlState,
+    LiveDiagnostics,
+    LiveMeasurements,
+    LivePolicy,
+    ManualControlMode,
+    PlanLiveDirective,
+    QualityFlag,
 )
-from .models import StrategyCommand, StrategyInputs, StrategyOptions
-from .plan_models import PlanLiveDirective
+
+POWER_TOLERANCE_W = 5.0
+POWER_START_W = 50.0
+CHARGE_RESTART_FAST_MS = 2_000
+CHARGE_RESTART_SLOW_MS = 60_000
+CHARGE_RECENT_WINDOW_MS = 300_000
 
 
-def clamp(value: float, low: float, high: float) -> float:
-    """Clamp value to an inclusive range."""
-    return max(low, min(high, value))
-
-
-def net_no_battery_with_ev_w(inputs: StrategyInputs) -> float:
-    """Net grid demand reconstructed without battery influence, EV included."""
+def _active_ev_power_w(measurements: LiveMeasurements, policy: LivePolicy) -> float:
     return (
-        float(inputs.grid_import_w)
-        - float(inputs.grid_export_w)
-        + float(inputs.battery_power_w)
+        measurements.ev_charge_w
+        if measurements.ev_charge_w >= policy.ev_active_threshold_w
+        else 0.0
     )
 
 
-def active_ev_power_w(inputs: StrategyInputs, options: StrategyOptions) -> float:
-    """Return EV power only when it exceeds the configured active threshold."""
-    ev_power = max(0.0, float(inputs.ev_power_w))
-    return ev_power if ev_power >= float(options.ev_active_threshold_w) else 0.0
-
-
-def net_no_battery_no_ev_w(inputs: StrategyInputs, options: StrategyOptions) -> float:
-    """Net grid demand reconstructed without battery and configured EV influence."""
-    return net_no_battery_with_ev_w(inputs) - active_ev_power_w(inputs, options)
-
-
-def real_pv_surplus_w(inputs: StrategyInputs, options: StrategyOptions) -> float:
-    """PV surplus available for strategy charging."""
-    residual = net_no_battery_with_ev_w(inputs)
-    if not options.pv_to_ev_first:
-        # Optional policy: calculate available PV before the configured EV load.
-        # This lets battery charging compete with the EV and may intentionally
-        # cause equivalent grid import while both are active.
-        residual -= active_ev_power_w(inputs, options)
-    return max(0.0, -residual)
-
-
-def allowed_discharge_load_w(inputs: StrategyInputs, options: StrategyOptions) -> float:
-    """Load that automatic discharge may serve."""
-    residual = net_no_battery_with_ev_w(inputs)
-    ev_power = active_ev_power_w(inputs, options)
-    if ev_power > 0.0 and not options.discharge_during_ev_charging:
-        return 0.0
-    if not options.battery_may_feed_ev:
-        residual -= ev_power
-    return max(0.0, residual)
-
-
-def current_house_loads_w(
-    inputs: StrategyInputs, options: StrategyOptions
-) -> tuple[float, float]:
-    """Return total house load and house load excluding active EV."""
-    total = max(
+def _diagnostics(measurements: LiveMeasurements, policy: LivePolicy) -> LiveDiagnostics:
+    battery_net_w = measurements.battery_discharge_w - measurements.battery_charge_w
+    signed_residual_w = (
+        measurements.grid_import_w - measurements.grid_export_w + battery_net_w
+    )
+    ev_power_w = _active_ev_power_w(measurements, policy)
+    pv_residual_w = signed_residual_w
+    if not policy.pv_to_ev_first:
+        # The battery may intentionally compete with an active EV in this mode.
+        pv_residual_w -= ev_power_w
+    allowed_discharge_load_w = signed_residual_w
+    if ev_power_w > 0.0 and not policy.discharge_during_ev_charging:
+        allowed_discharge_load_w = 0.0
+    elif not policy.battery_may_feed_ev:
+        allowed_discharge_load_w -= ev_power_w
+    house_load_total_w = max(
         0.0,
-        float(inputs.grid_import_w)
-        + float(inputs.pv_w)
-        + float(inputs.battery_power_w)
-        - float(inputs.grid_export_w),
+        measurements.grid_import_w
+        + measurements.pv_generation_w
+        + battery_net_w
+        - measurements.grid_export_w,
     )
-    return total, max(0.0, total - active_ev_power_w(inputs, options))
+    return LiveDiagnostics(
+        residual_with_ev_w=signed_residual_w,
+        residual_no_ev_w=signed_residual_w - ev_power_w,
+        pv_surplus_w=max(0.0, -pv_residual_w),
+        allowed_discharge_load_w=max(0.0, allowed_discharge_load_w),
+        house_load_total_w=house_load_total_w,
+        house_load_no_ev_w=max(0.0, house_load_total_w - ev_power_w),
+    )
 
 
-def apply_minimum_power(power_w: float, options: StrategyOptions) -> int:
-    """Round small commands to zero and return an integer Watt command."""
-    if power_w < float(options.min_command_power_w):
-        return 0
-    return int(round(power_w))
+class DeterministicLiveController:
+    """Turn one directive and one measurement snapshot into one command."""
 
+    def command(
+        self,
+        directive: PlanLiveDirective,
+        measurements: LiveMeasurements,
+        policy: LivePolicy,
+        state: LiveControlState,
+    ) -> LiveControlResult:
+        """Evaluate approved precedence without I/O or economic reinterpretation."""
+        diagnostics = _diagnostics(measurements, policy)
+        directive_current = (
+            directive.slot.start_ms
+            <= measurements.captured_at_ms
+            < directive.slot.end_ms
+        )
+        mode = CommandMode.IDLE
+        power_w = 0.0
+        reason = "live_idle"
 
-def calculate_command(
-    inputs: StrategyInputs, options: StrategyOptions
-) -> StrategyCommand:
-    """Calculate the current battery command."""
-    residual_with_ev = net_no_battery_with_ev_w(inputs)
-    residual_no_ev = net_no_battery_no_ev_w(inputs, options)
-    pv_surplus = real_pv_surplus_w(inputs, options)
-    discharge_load = allowed_discharge_load_w(inputs, options)
-    house_total, house_no_ev = current_house_loads_w(inputs, options)
-
-    mode = COMMAND_IDLE
-    power = 0.0
-    reason = "idle"
-
-    if options.manual_mode == MANUAL_CHARGE:
-        if float(inputs.soc_pct) >= float(options.max_soc_pct):
-            reason = "max_soc"
-        else:
-            mode = COMMAND_INPUT
-            power = clamp(
-                float(options.manual_power_w), 0.0, float(options.max_charge_power_w)
+        safety_reason = _safety_reason(measurements, policy)
+        if safety_reason is not None:
+            reason = safety_reason
+        elif policy.manual_mode == ManualControlMode.CHARGE:
+            if measurements.soc_pct >= directive.max_soc_pct:
+                reason = "max_soc"
+            else:
+                mode = CommandMode.INPUT
+                power_w = min(
+                    policy.manual_power_w,
+                    policy.max_charge_power_w,
+                )
+                reason = "manual_charge"
+        elif policy.manual_mode == ManualControlMode.DISCHARGE:
+            if measurements.soc_pct <= directive.min_soc_pct:
+                reason = "min_soc"
+            else:
+                mode = CommandMode.OUTPUT
+                power_w = min(policy.manual_power_w, policy.max_discharge_power_w)
+                reason = "manual_discharge"
+        elif not directive_current:
+            reason = "directive_outside_slot"
+        elif (
+            directive.required_charge_power_w > 0.0
+            and directive.required_charge_remaining_kwh > 0.0
+            and directive.grid_charge_allowed
+            and measurements.soc_pct < directive.max_soc_pct
+        ):
+            mode = CommandMode.INPUT
+            power_w = min(
+                max(
+                    directive.required_charge_power_w,
+                    diagnostics.pv_surplus_w if directive.pv_charge_allowed else 0.0,
+                ),
+                directive.max_grid_charge_power_w,
             )
-            reason = "manual_charge"
-    elif options.manual_mode == MANUAL_DISCHARGE:
-        if float(inputs.soc_pct) <= float(options.min_soc_pct):
+            reason = "must_charge"
+        elif (
+            directive.pv_charge_allowed
+            and diagnostics.pv_surplus_w > 0.0
+            and measurements.soc_pct < directive.max_soc_pct
+        ):
+            mode = CommandMode.INPUT
+            power_w = min(diagnostics.pv_surplus_w, directive.max_pv_charge_power_w)
+            reason = "live_pv_surplus"
+        elif measurements.soc_pct <= directive.min_soc_pct:
             reason = "min_soc"
-        else:
-            mode = COMMAND_OUTPUT
-            power = clamp(
-                float(options.manual_power_w), 0.0, float(options.max_discharge_power_w)
+        elif (
+            policy.automatic_discharge_mode != AutomaticDischargeMode.OFF
+            and _active_ev_power_w(measurements, policy) > 0.0
+            and not policy.discharge_during_ev_charging
+        ):
+            reason = "ev_discharge_blocked"
+        elif self._discharge_permitted(directive, policy):
+            mode = CommandMode.OUTPUT
+            power_w = min(
+                diagnostics.allowed_discharge_load_w,
+                directive.max_discharge_power_w,
             )
-            reason = "manual_discharge"
-    elif float(inputs.soc_pct) <= float(options.min_soc_pct):
-        reason = "min_soc"
-    elif (
-        options.discharge == DISCHARGE_LOAD
-        and discharge_load > 0.0
-        and options.manual_mode == MANUAL_OFF
-    ):
-        mode = COMMAND_OUTPUT
-        power = clamp(discharge_load, 0.0, float(options.max_discharge_power_w))
-        reason = "load_discharge"
-    elif (
-        options.pv_charging == PV_CHARGING_ON
-        and pv_surplus > 0.0
-        and float(inputs.soc_pct) < float(options.max_soc_pct)
-    ):
-        mode = COMMAND_INPUT
-        power = clamp(pv_surplus, 0.0, float(options.max_charge_power_w))
-        reason = "pv_surplus"
-    elif options.grid_charging == GRID_CHARGING_PRICE_SENSITIVE:
-        reason = "price_optimizer_pending"
+            reason = (
+                "load_discharge"
+                if policy.automatic_discharge_mode
+                == AutomaticDischargeMode.LOAD_FOLLOWING
+                else "budget_discharge"
+            )
 
-    command_power = apply_minimum_power(power, options)
-    if command_power == 0:
-        mode = COMMAND_IDLE
+        if power_w < policy.min_command_power_w:
+            mode = CommandMode.IDLE
+            power_w = 0.0
 
-    return StrategyCommand(
-        mode=mode,
-        power_w=command_power,
-        reason=reason,
-        residual_with_ev_w=int(round(residual_with_ev)),
-        residual_no_ev_w=int(round(residual_no_ev)),
-        pv_surplus_w=int(round(pv_surplus)),
-        allowed_discharge_load_w=int(round(discharge_load)),
-        house_load_total_w=int(round(house_total)),
-        house_load_no_ev_w=int(round(house_no_ev)),
-    )
-
-
-def live_command_from_directive(
-    directive: PlanLiveDirective,
-    live_command: StrategyCommand,
-    inputs: StrategyInputs,
-    options: StrategyOptions,
-) -> StrategyCommand:
-    """Apply the plan directive to the current meter-following diagnostics."""
-    if options.manual_mode in (MANUAL_CHARGE, MANUAL_DISCHARGE):
-        return _with_reason(live_command, live_command.reason)
-
-    if (
-        directive.must_charge_w > 0
-        and directive.must_charge_remaining_kwh > 0.0
-        and directive.grid_charge_allowed
-        and float(inputs.soc_pct) < float(directive.battery_max_soc_pct)
-    ):
-        pv_part_w = (
-            float(live_command.pv_surplus_w) if directive.pv_charge_allowed else 0.0
+        command = BatteryCommand(
+            command_id=(
+                f"{directive.directive_id}:{measurements.captured_at_ms}:"
+                f"{mode.value}:{round(power_w)}"
+            ),
+            directive_id=directive.directive_id,
+            created_at_ms=measurements.captured_at_ms,
+            valid_until_ms=(
+                directive.slot.end_ms
+                if directive_current
+                else measurements.captured_at_ms + 30_000
+            ),
+            mode=mode,
+            power_w=float(round(power_w)),
+            reason=reason,
         )
-        grid_part_w = max(0.0, float(directive.must_charge_w) - pv_part_w)
-        power = min(pv_part_w + grid_part_w, float(options.max_charge_power_w))
-        return _command_like(live_command, COMMAND_INPUT, power, "must_charge")
-
-    if (
-        directive.pv_charge_allowed
-        and live_command.pv_surplus_w > 0
-        and float(inputs.soc_pct) < float(directive.battery_max_soc_pct)
-    ):
-        power = min(float(live_command.pv_surplus_w), float(options.max_charge_power_w))
-        return _command_like(live_command, COMMAND_INPUT, power, "live_pv_surplus")
-
-    if (
-        directive.discharge_budget_kwh > 0.0
-        and active_ev_power_w(inputs, options) > 0.0
-        and not options.discharge_during_ev_charging
-    ):
-        return _idle_like(live_command, "ev_discharge_blocked")
-
-    if (
-        directive.discharge_budget_kwh > 0.0
-        and live_command.allowed_discharge_load_w > 0
-        and float(inputs.soc_pct) > float(directive.battery_min_soc_pct)
-    ):
-        power = min(
-            float(live_command.allowed_discharge_load_w),
-            float(options.max_discharge_power_w),
+        command, direction, block_until_ms, last_charge_at_ms = _apply_hysteresis(
+            command, measurements, state
         )
-        return _command_like(live_command, COMMAND_OUTPUT, power, "budget_discharge")
+        next_state = LiveControlState(
+            previous_mode=command.mode,
+            previous_power_w=command.power_w,
+            previous_command_at_ms=command.created_at_ms,
+            direction=direction,
+            charge_block_until_ms=block_until_ms,
+            last_charge_at_ms=last_charge_at_ms,
+        )
+        return LiveControlResult(command, next_state, diagnostics)
 
-    if float(inputs.soc_pct) <= float(directive.battery_min_soc_pct):
-        return _idle_like(live_command, "min_soc")
+    @staticmethod
+    def _discharge_permitted(directive: PlanLiveDirective, policy: LivePolicy) -> bool:
+        if policy.automatic_discharge_mode == AutomaticDischargeMode.LOAD_FOLLOWING:
+            return True
+        if policy.automatic_discharge_mode == AutomaticDischargeMode.PRICE_SENSITIVE:
+            return directive.discharge_budget_remaining_kwh > 0.0
+        return False
 
-    return _idle_like(live_command, "live_idle")
+
+def _safety_reason(measurements: LiveMeasurements, policy: LivePolicy) -> str | None:
+    flags = set(measurements.quality.flags)
+    if QualityFlag.ESTIMATED in flags:
+        return "battery_soc_unavailable"
+    if QualityFlag.MISSING_GRID in flags:
+        return "grid_inputs_stale"
+    if QualityFlag.MISSING_BATTERY in flags:
+        return "battery_power_unavailable"
+    if (
+        QualityFlag.MISSING_EV in flags
+        and policy.automatic_discharge_mode != AutomaticDischargeMode.OFF
+        and (not policy.battery_may_feed_ev or not policy.discharge_during_ev_charging)
+    ):
+        return "ev_power_unavailable"
+    return None
 
 
-def _command_like(
-    diagnostics: StrategyCommand, mode: str, power_w: float, reason: str
-) -> StrategyCommand:
-    power = apply_minimum_power(
-        max(0.0, power_w), StrategyOptions(min_command_power_w=0.0)
-    )
-    if power <= 0:
-        mode = COMMAND_IDLE
-    return StrategyCommand(
+def _apply_hysteresis(
+    command: BatteryCommand,
+    measurements: LiveMeasurements,
+    state: LiveControlState,
+) -> tuple[BatteryCommand, CommandMode | None, int | None, int | None]:
+    """Apply deterministic direction-change smoothing using explicit state."""
+    now_ms = measurements.captured_at_ms
+    measured_power_w = measurements.battery_discharge_w - measurements.battery_charge_w
+    direction = state.direction
+    block_until_ms = state.charge_block_until_ms
+    last_charge_at_ms = state.last_charge_at_ms
+    if direction is None:
+        if measured_power_w > POWER_TOLERANCE_W:
+            direction = CommandMode.OUTPUT
+        elif measured_power_w < -POWER_TOLERANCE_W:
+            direction = CommandMode.INPUT
+            last_charge_at_ms = now_ms
+
+    if command.mode == CommandMode.OUTPUT:
+        if (
+            abs(measured_power_w) <= POWER_TOLERANCE_W
+            and command.power_w < POWER_START_W
+        ):
+            return (
+                _replace_command(
+                    command, CommandMode.IDLE, 0.0, "power_start_threshold"
+                ),
+                direction,
+                block_until_ms,
+                last_charge_at_ms,
+            )
+        return command, CommandMode.OUTPUT, None, last_charge_at_ms
+
+    if command.mode != CommandMode.INPUT:
+        return command, direction, block_until_ms, last_charge_at_ms
+
+    if block_until_ms is None and direction == CommandMode.OUTPUT:
+        recent_charge = (
+            last_charge_at_ms is not None
+            and now_ms - last_charge_at_ms <= CHARGE_RECENT_WINDOW_MS
+        )
+        delay_ms = CHARGE_RESTART_SLOW_MS if recent_charge else CHARGE_RESTART_FAST_MS
+        block_until_ms = now_ms + delay_ms
+    if block_until_ms is not None and now_ms < block_until_ms:
+        return (
+            _replace_command(command, CommandMode.IDLE, 0.0, "direction_hysteresis"),
+            direction,
+            block_until_ms,
+            last_charge_at_ms,
+        )
+    if abs(measured_power_w) <= POWER_TOLERANCE_W and command.power_w < POWER_START_W:
+        return (
+            _replace_command(command, CommandMode.IDLE, 0.0, "power_start_threshold"),
+            direction,
+            block_until_ms,
+            last_charge_at_ms,
+        )
+    return command, CommandMode.INPUT, None, now_ms
+
+
+def _replace_command(
+    command: BatteryCommand,
+    mode: CommandMode,
+    power_w: float,
+    reason: str,
+) -> BatteryCommand:
+    return BatteryCommand(
+        command_id=(
+            f"{command.directive_id}:{command.created_at_ms}:"
+            f"{mode.value}:{round(power_w)}"
+        ),
+        directive_id=command.directive_id,
+        created_at_ms=command.created_at_ms,
+        valid_until_ms=command.valid_until_ms,
         mode=mode,
-        power_w=power,
+        power_w=power_w,
         reason=reason,
-        residual_with_ev_w=diagnostics.residual_with_ev_w,
-        residual_no_ev_w=diagnostics.residual_no_ev_w,
-        pv_surplus_w=diagnostics.pv_surplus_w,
-        allowed_discharge_load_w=diagnostics.allowed_discharge_load_w,
-        house_load_total_w=diagnostics.house_load_total_w,
-        house_load_no_ev_w=diagnostics.house_load_no_ev_w,
     )
-
-
-def _idle_like(diagnostics: StrategyCommand, reason: str) -> StrategyCommand:
-    return _command_like(diagnostics, COMMAND_IDLE, 0.0, reason)
-
-
-def _with_reason(command: StrategyCommand, reason: str) -> StrategyCommand:
-    return _command_like(command, command.mode, command.power_w, reason)

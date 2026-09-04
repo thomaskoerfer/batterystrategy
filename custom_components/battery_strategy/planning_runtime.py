@@ -23,6 +23,7 @@ class PlanningRuntimeSettings:
     pv_charging_allowed: bool
     grid_charging_allowed: bool
     discharge_allowed: bool
+    discharge_mode: str
     planning_horizon_h: int
     round_trip_efficiency: float
     min_margin_ct_per_kwh: float
@@ -100,6 +101,7 @@ class PlanningRuntime:
             min(1.0, float(context.get("round_trip_efficiency") or 0.8)),
         )
         pv_capacity = max(0.1, float(context.get("pv_capacity_kwp") or 1.0))
+        discharge_mode = str(context.get("discharge") or "load")
         settings = PlanningRuntimeSettings(
             config_dir=str(context.get("config_dir") or "/config"),
             timezone=ZoneInfo(str(context.get("timezone") or "UTC")),
@@ -110,7 +112,8 @@ class PlanningRuntime:
             max_discharge_power_w=max_discharge,
             pv_charging_allowed=str(context.get("pv_charging") or "on") != "off",
             grid_charging_allowed=str(context.get("grid_charging") or "off") != "off",
-            discharge_allowed=str(context.get("discharge") or "load") != "off",
+            discharge_allowed=discharge_mode != "off",
+            discharge_mode=discharge_mode,
             planning_horizon_h=max(
                 1, min(48, int(context.get("planning_horizon_h") or 48))
             ),

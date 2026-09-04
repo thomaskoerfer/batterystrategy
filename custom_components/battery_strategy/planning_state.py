@@ -11,7 +11,7 @@ SLOTS_PER_DAY = 96
 TRACE_MIN_INTERVAL_S = 240
 TRACE_RETENTION_DAYS = 14
 TRACE_MAX_POINTS = 8000
-STATE_SCHEMA_VERSION = 10
+STATE_SCHEMA_VERSION = 11
 
 
 def _clamp(value, lower, upper):
@@ -90,9 +90,9 @@ def load_state(runtime):
             ]
         else:
             data["samples"] = normalize_samples(data.get("samples", []))
-        # Schema 10 stores the canonical BatteryPlan beside operator data.
-        # Schema 9 display data remains readable, but cannot authorize control;
-        # the first successful planning run writes the canonical plan snapshot.
+        # Schema 11 binds the schema-10 canonical BatteryPlan to the execution
+        # policy that authorized it. Older display data remains readable, but
+        # cannot authorize control until the first successful planning run.
         data["state_schema"] = STATE_SCHEMA_VERSION
         data["virtual_trace"] = compact_virtual_trace(data.get("virtual_trace", []))
         return data

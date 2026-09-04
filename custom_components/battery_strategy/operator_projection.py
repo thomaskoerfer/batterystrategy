@@ -54,6 +54,7 @@ def build_operator_projection(
 ) -> OperatorProjection:
     """Build the complete operator-facing projection once per refresh."""
     command = data["command"]
+    diagnostics = data["live_diagnostics"]
     inputs = data["inputs"]
     plan: StrategyPlan = data["plan"]  # type: ignore[assignment]
     directive = data["plan_to_live"]
@@ -70,20 +71,20 @@ def build_operator_projection(
         optimizer_attrs, "actual_battery_discharge_credited_today_kwh"
     )
     values = {
-        "mode": command.mode,
+        "mode": command.mode.value,
         "command_power": command.power_w,
         "command_source": _command_source(data),
         "reason": command.reason,
-        "residual_with_ev": command.residual_with_ev_w,
-        "residual_no_ev": command.residual_no_ev_w,
-        "pv_surplus": command.pv_surplus_w,
-        "allowed_discharge_load": command.allowed_discharge_load_w,
-        "house_load_total": command.house_load_total_w,
-        "house_load_no_ev": command.house_load_no_ev_w,
+        "residual_with_ev": round(diagnostics.residual_with_ev_w),
+        "residual_no_ev": round(diagnostics.residual_no_ev_w),
+        "pv_surplus": round(diagnostics.pv_surplus_w),
+        "allowed_discharge_load": round(diagnostics.allowed_discharge_load_w),
+        "house_load_total": round(diagnostics.house_load_total_w),
+        "house_load_no_ev": round(diagnostics.house_load_no_ev_w),
         "grid_import": round(inputs.grid_import_w),
         "grid_export": round(inputs.grid_export_w),
-        "battery_power": round(inputs.battery_power_w),
-        "ev_power": round(inputs.ev_power_w),
+        "battery_power": round(inputs.battery_discharge_w - inputs.battery_charge_w),
+        "ev_power": round(inputs.ev_charge_w),
         "soc": round(inputs.soc_pct, 1),
         "planned_mode": plan.current_mode,
         "planned_power": plan.current_power_w,
@@ -93,15 +94,15 @@ def build_operator_projection(
         "planned_discharge_power": (
             plan.current_power_w if plan.current_mode == "output" else 0
         ),
-        "plan_live_slot_start": _format_ts_ms(directive.slot_start_ts, timezone),
-        "plan_live_slot_end": _format_ts_ms(directive.slot_end_ts, timezone),
+        "plan_live_slot_start": _format_ts_ms(directive.slot.start_ms, timezone),
+        "plan_live_slot_end": _format_ts_ms(directive.slot.end_ms, timezone),
         "plan_live_pv_charge_allowed": "on" if directive.pv_charge_allowed else "off",
-        "plan_live_must_charge": directive.must_charge_w,
-        "plan_live_must_charge_remaining": directive.must_charge_remaining_kwh,
+        "plan_live_must_charge": round(directive.required_charge_power_w),
+        "plan_live_must_charge_remaining": directive.required_charge_remaining_kwh,
         "plan_live_grid_charge_allowed": (
             "on" if directive.grid_charge_allowed else "off"
         ),
-        "plan_live_discharge_budget": directive.discharge_budget_kwh,
+        "plan_live_discharge_budget": directive.discharge_budget_remaining_kwh,
         "optimizer_discharge_budget": _optimizer_discharge_budget_kwh(plan),
         "load_forecast_next_1h": plan.load_forecast_next_1h_kwh,
         "pv_forecast_corrected_next_1h": plan.pv_forecast_corrected_next_1h_kwh,

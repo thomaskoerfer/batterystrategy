@@ -20,6 +20,7 @@ from .models import StrategyOptions
 from .plan_models import DailyCost, PlanPoint, StrategyPlan
 
 PERSISTED_PLAN_KEY = "_canonical_battery_plan_v1"
+PERSISTED_POLICY_KEY = "_execution_policy_v1"
 SLOT_MS = 15 * 60 * 1000
 
 
@@ -63,8 +64,10 @@ def build_planning_result(
     )
 
 
-def persisted_output(result: PlanningResult) -> dict[str, object]:
-    """Serialize the canonical plan beside, not inside, operator projection data."""
+def persisted_output(
+    result: PlanningResult, options: StrategyOptions
+) -> dict[str, object]:
+    """Serialize executable intent with the policy that authorized it."""
     return {
         **{key: _thaw(value) for key, value in result.operator_data.items()},
         PERSISTED_PLAN_KEY: (
@@ -72,6 +75,7 @@ def persisted_output(result: PlanningResult) -> dict[str, object]:
             if result.battery_plan is not None
             else None
         ),
+        PERSISTED_POLICY_KEY: _execution_policy(options),
     }
 
 
@@ -84,11 +88,15 @@ def result_from_persisted_output(
 ) -> PlanningResult:
     """Restore a result; legacy/invalid snapshots retain display data but fail closed."""
     display_data = {
-        key: value for key, value in output.items() if key != PERSISTED_PLAN_KEY
+        key: value
+        for key, value in output.items()
+        if key not in (PERSISTED_PLAN_KEY, PERSISTED_POLICY_KEY)
     }
     try:
         battery_plan = _deserialize_battery_plan(output.get(PERSISTED_PLAN_KEY))
-        if battery_plan.constraints != _constraints_from_options(options):
+        if battery_plan.constraints != _constraints_from_options(options) or output.get(
+            PERSISTED_POLICY_KEY
+        ) != _execution_policy(options):
             battery_plan = None
     except (KeyError, TypeError, ValueError):
         battery_plan = None
@@ -236,6 +244,26 @@ def _constraints_from_options(options: StrategyOptions) -> BatteryConstraints:
         max_discharge_power_w=max(0.0, float(options.max_discharge_power_w)),
         round_trip_efficiency=float(options.round_trip_efficiency),
     )
+
+
+def _execution_policy(options: StrategyOptions) -> dict[str, object]:
+    """Return optimizer inputs that must match before a stored plan may execute."""
+    return {
+        "pv_charging": options.pv_charging,
+        "grid_charging": options.grid_charging,
+        "discharge": options.discharge,
+        "min_soc_pct": float(options.min_soc_pct),
+        "max_soc_pct": float(options.max_soc_pct),
+        "max_charge_power_w": float(options.max_charge_power_w),
+        "max_discharge_power_w": float(options.max_discharge_power_w),
+        "round_trip_efficiency": float(options.round_trip_efficiency),
+        "min_margin_ct_per_kwh": float(options.min_margin_ct_per_kwh),
+        "planning_horizon_h": int(options.planning_horizon_h),
+        "feed_in_tariff_ct_per_kwh": float(options.feed_in_tariff_ct_per_kwh),
+        "battery_capacity_kwh": float(options.battery_capacity_kwh),
+        "pv_capacity_kwp": float(options.pv_capacity_kwp),
+        "pv_inverter_power_kw": float(options.pv_inverter_power_kw),
+    }
 
 
 def _points_from_output(

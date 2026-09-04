@@ -53,8 +53,8 @@ documented impact analysis and explicit owner approval.
 - Keep forecasting free of prices and battery state; keep optimization free of
   Home Assistant and I/O; keep live control free of economic re-optimization.
 - Use contract types at boundaries and explicit state instead of module globals.
-- Do not spread transitional dependencies. Remove them after their documented
-  observation and rollback gate.
+- Do not introduce parallel input, directive or command models at an existing
+  contract seam. Projection models never authorize execution.
 - Update the affected public README and agent guidance with implementation.
 
 ## Required checks

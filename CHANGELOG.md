@@ -24,20 +24,31 @@ All notable changes to Battery Strategy are documented here.
   reloads cannot reopen consumed charge or discharge permission.
 - Carry the optimizer's canonical `BatteryPlan` through an immutable planning
   result instead of reconstructing compiler intent from dashboard profiles.
-- Migrate planning state to schema 10 so canonical intent and operator-facing
-  data remain explicitly separate across restarts.
+- Migrate planning state to schema 11 so canonical intent, its authorizing
+  execution policy and operator-facing data remain separate across restarts.
+- Normalize Home Assistant values once into `LiveMeasurements`, emit the
+  compiler contract directive directly and pass the live controller's validated
+  `BatteryCommand` unchanged to the single actuator.
+- Separate live diagnostics from executable commands and make direction
+  hysteresis state explicit in `LiveControlState`.
+- Select the current plan slot atomically, preserve measured throughput across
+  slot boundaries and publish completed background plans immediately.
 
 ### Safety
+
+- Fail closed on stale numeric battery, SoC, grid and policy-relevant EV inputs,
+  retry unconfirmed safety stops, and reject unload while an active battery
+  cannot be stopped.
 
 - Unclean same-slot restarts reconstruct throughput from monotonic battery
   energy counters. If that is impossible, commercial charge and discharge fail
   closed until the next slot while PV-follow remains available.
-- Optimizer, forecast, compiler and live-control semantics are unchanged. This
+- Optimizer, forecast and commercial compiler semantics are unchanged. This
   release remains local until validation and explicit deployment approval.
 - Legacy or malformed schema-10 plan data remains visible to operators but
   fails commercially closed until a fresh optimizer run succeeds.
-- Live-model convergence remains intentionally deferred pending separate
-  impact analysis and contract approval.
+- Live-model convergence was approved on 2026-09-04 and is implemented as a
+  coordinated in-memory contract migration without entity or storage changes.
 
 ## [0.2.0-rc.6] - 2026-09-03
 

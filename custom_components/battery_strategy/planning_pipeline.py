@@ -805,18 +805,27 @@ def run(runtime_context):
         now_ms=now_ts_ms,
         override_active=False,
     )
-    data["last_output"] = persisted_output(result)
+    result_options = _result_options(settings)
+    data["last_output"] = persisted_output(result, result_options)
     save_state(runtime, data)
     return result
 
 
 def _result_options(settings: PlanningRuntimeSettings) -> StrategyOptions:
-    """Build only the physical fallback needed to validate a persisted plan."""
+    """Rebuild the complete planning policy used to authorize persisted intent."""
     return StrategyOptions(
+        pv_charging="on" if settings.pv_charging_allowed else "off",
+        grid_charging=("price_sensitive" if settings.grid_charging_allowed else "off"),
+        discharge=settings.discharge_mode,
         min_soc_pct=settings.min_soc_pct,
         max_soc_pct=settings.max_soc_pct,
         battery_capacity_kwh=settings.battery_capacity_kwh,
         max_charge_power_w=settings.max_charge_power_w,
         max_discharge_power_w=settings.max_discharge_power_w,
         round_trip_efficiency=settings.round_trip_efficiency,
+        min_margin_ct_per_kwh=settings.min_margin_ct_per_kwh,
+        planning_horizon_h=settings.planning_horizon_h,
+        feed_in_tariff_ct_per_kwh=settings.export_opportunity_ct_per_kwh,
+        pv_capacity_kwp=settings.pv_capacity_kwp,
+        pv_inverter_power_kw=settings.pv_inverter_kw,
     )

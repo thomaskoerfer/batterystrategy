@@ -15,7 +15,8 @@ battery, EV and SoC measurements. It follows the meter at the fast coordinator
 cadence. It does not read prices, construct forecasts or optimize future slots.
 
 Operator choices are passed as a typed `LivePolicy`; the pure controller does
-not read Home Assistant options itself.
+not read Home Assistant options itself. Its only output is `LiveControlResult`:
+one actuator-ready command, next explicit control state and diagnostics.
 
 ## Decision precedence
 
@@ -104,6 +105,8 @@ path. There is never a second automatic hardware writer.
 - Charging and discharging are separate positive flows in measurements.
 - Battery influence is removed before reconstructing eligible household load.
 - Direction changes zero the opposite hardware limit before applying a new one.
+- Direction hysteresis state is explicit in `LiveControlState`; it is not held
+  in the coordinator or actuator.
 - Minimum command and delta thresholds reduce oscillation and unnecessary
   writes without changing commercial permission.
 - An invalid or expired directive, stale grid input or stale SoC produces a safe
@@ -126,9 +129,9 @@ must separate economic permission from live meter-following behavior.
 ## Current implementation
 
 The deterministic plan compiler is the sole owner of slot commitment state and
-the sole producer of the live directive. Operator modes enter through
-`StrategyOptions`; the compiler maps them to the approved contract semantics.
-Load-following remains budget-independent, while price-sensitive discharge uses
-the slot budget and consumed-energy progress. Required charging and within-slot
-replanning use the same explicit compiler state. No coordinator-owned latch or
-alternative compiler remains.
+the sole producer of the contract live directive. The Home Assistant adapter
+maps operator options once into `LivePolicy`. Load-following remains
+budget-independent, while price-sensitive discharge uses the slot budget and
+consumed-energy progress. Required charging and within-slot replanning use the
+same explicit compiler state. No coordinator-owned latch, duplicate directive,
+diagnostic command or alternative compiler remains.

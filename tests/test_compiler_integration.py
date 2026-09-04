@@ -1,8 +1,10 @@
-"""Phase-6 compiler adapter and shadow-parity tests."""
+"""Compiler/runtime tests at the canonical plan-to-live seam."""
 
 from __future__ import annotations
 
 import datetime as dt
+
+import pytest
 
 from custom_components.battery_strategy.compiler_runtime import PlanCompilerRuntime
 from custom_components.battery_strategy.const import (
@@ -13,16 +15,13 @@ from custom_components.battery_strategy.const import (
     PV_CHARGING_ON,
 )
 from custom_components.battery_strategy.contracts import (
+    LiveMeasurements,
     PlanCompilationState,
     SlotProgress,
 )
-from custom_components.battery_strategy.models import StrategyInputs, StrategyOptions
+from custom_components.battery_strategy.models import StrategyOptions
 from custom_components.battery_strategy.plan_compiler import (
     DeterministicPlanCompiler,
-)
-from custom_components.battery_strategy.plan_compiler_adapter import (
-    closed_published_directive,
-    published_directive_from_contract,
 )
 from custom_components.battery_strategy.plan_models import PlanPoint, StrategyPlan
 from tests.plan_helpers import canonical_plan
@@ -72,7 +71,7 @@ def _options() -> StrategyOptions:
     )
 
 
-def test_compiler_adapter_publishes_grid_charge_directive():
+def test_compiler_publishes_grid_charge_directive():
     start_ms = int(
         dt.datetime(2026, 9, 2, 12, tzinfo=dt.timezone.utc).timestamp() * 1000
     )
@@ -98,15 +97,15 @@ def test_compiler_adapter_publishes_grid_charge_directive():
         PlanCompilationState(),
         start_ms,
     )
-    candidate = published_directive_from_contract(compiled, contract_plan, options)
+    candidate = compiled
 
     assert candidate.grid_charge_allowed
-    assert candidate.must_charge_w == 1700
-    assert candidate.must_charge_remaining_kwh == 0.425
-    assert candidate.discharge_budget_kwh == 0.0
+    assert candidate.required_charge_power_w == 1700
+    assert candidate.required_charge_remaining_kwh == 0.425
+    assert candidate.discharge_budget_remaining_kwh == 0.0
 
 
-def test_compiler_adapter_preserves_discharge_progress_and_budget():
+def test_compiler_preserves_discharge_progress_and_budget():
     start_ms = int(
         dt.datetime(2026, 9, 2, 18, tzinfo=dt.timezone.utc).timestamp() * 1000
     )
@@ -130,19 +129,19 @@ def test_compiler_adapter_preserves_discharge_progress_and_budget():
         PlanCompilationState(),
         start_ms + 300_000,
     )
-    candidate = published_directive_from_contract(compiled, contract_plan, options)
-    assert candidate.discharge_budget_kwh == 0.4
-    assert candidate.must_charge_w == 0
+    assert compiled.discharge_budget_remaining_kwh == pytest.approx(0.4)
+    assert compiled.required_charge_power_w == 0
 
 
 def test_closed_directive_has_no_automatic_permissions():
-    directive = closed_published_directive(_options(), slot_start_ms=1_800_000_000_000)
+    runtime = PlanCompilerRuntime()
+    directive = runtime.compile(None, _options(), _inputs(), 1_800_000_000_000)
 
     assert not directive.pv_charge_allowed
     assert not directive.grid_charge_allowed
-    assert directive.must_charge_w == 0
-    assert directive.must_charge_remaining_kwh == 0.0
-    assert directive.discharge_budget_kwh == 0.0
+    assert directive.required_charge_power_w == 0
+    assert directive.required_charge_remaining_kwh == 0.0
+    assert directive.discharge_budget_remaining_kwh == 0.0
 
 
 def _compiler_runtime(start_ms: int) -> PlanCompilerRuntime:
@@ -151,8 +150,8 @@ def _compiler_runtime(start_ms: int) -> PlanCompilerRuntime:
     return runtime
 
 
-def _inputs(*, soc_pct: float = 50.0) -> StrategyInputs:
-    return StrategyInputs(500.0, 0.0, 0.0, 0.0, soc_pct=soc_pct)
+def _inputs(*, soc_pct: float = 50.0) -> LiveMeasurements:
+    return LiveMeasurements(0, 500.0, 0.0, 0.0, 0.0, 0.0, 0.0, soc_pct)
 
 
 def test_cutover_compiler_owns_progress_and_replan_latch():
@@ -181,9 +180,9 @@ def test_cutover_compiler_owns_progress_and_replan_latch():
     reduced = runtime.compile(reduced_contract, options, _inputs(), start_ms + 60_000)
     reopened = runtime.compile(first_contract, options, _inputs(), start_ms + 120_000)
 
-    assert first.discharge_budget_kwh == 0.6
-    assert reduced.discharge_budget_kwh == 0.1
-    assert reopened.discharge_budget_kwh == 0.1
+    assert first.discharge_budget_remaining_kwh == 0.6
+    assert reduced.discharge_budget_remaining_kwh == 0.1
+    assert reopened.discharge_budget_remaining_kwh == 0.1
 
 
 def test_cutover_compiler_fails_closed_without_plan():
@@ -193,4 +192,4 @@ def test_cutover_compiler_fails_closed_without_plan():
     assert runtime.error == "no_plan"
     assert not directive.pv_charge_allowed
     assert not directive.grid_charge_allowed
-    assert directive.discharge_budget_kwh == 0.0
+    assert directive.discharge_budget_remaining_kwh == 0.0

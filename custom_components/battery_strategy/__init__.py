@@ -114,8 +114,15 @@ async def async_unload_entry(
 ) -> bool:
     """Unload Battery Strategy."""
     coordinator = entry.runtime_data
-    await coordinator.async_prepare_unload()
-    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    if not await coordinator.async_prepare_unload():
+        return False
+    try:
+        unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    except Exception:  # noqa: BLE001 - retained entries must recover before propagation.
+        await coordinator.async_abort_unload()
+        raise
+    if not unload_ok:
+        await coordinator.async_abort_unload()
     return bool(unload_ok)
 
 

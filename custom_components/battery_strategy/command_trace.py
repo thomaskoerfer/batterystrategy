@@ -20,22 +20,23 @@ def append_command_trace(path: Path, data: dict) -> None:
     calculated_command = data["calculated_command"]
     plan = data["plan"]
     inputs = data["inputs"]
+    diagnostics = data["live_diagnostics"]
     item = {
         "ts": now.timestamp(),
         "iso": now.isoformat(),
-        "mode": command.mode,
+        "mode": command.mode.value,
         "power_w": command.power_w,
         "reason": command.reason,
-        "calculated_mode": calculated_command.mode,
+        "calculated_mode": calculated_command.mode.value,
         "calculated_power_w": calculated_command.power_w,
         "calculated_reason": calculated_command.reason,
         "send_commands": data["send_commands"],
         "strategy_enabled": data["strategy_enabled"],
         "grid_import_w": round(inputs.grid_import_w),
         "grid_export_w": round(inputs.grid_export_w),
-        "pv_w": round(inputs.pv_w),
-        "battery_power_w": round(inputs.battery_power_w),
-        "ev_power_w": round(inputs.ev_power_w),
+        "pv_w": round(inputs.pv_generation_w),
+        "battery_power_w": round(inputs.battery_discharge_w - inputs.battery_charge_w),
+        "ev_power_w": round(inputs.ev_charge_w),
         "soc_pct": round(inputs.soc_pct, 1),
         "soc_control_ready": data.get("soc_control_ready"),
         "soc_estimate_stale": data.get("soc_estimate_stale"),
@@ -44,6 +45,7 @@ def append_command_trace(path: Path, data: dict) -> None:
         "plan_mode": plan.current_mode,
         "plan_power_w": plan.current_power_w,
         "plan_to_live": asdict(data["plan_to_live"]),
+        "live_diagnostics": asdict(diagnostics),
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:

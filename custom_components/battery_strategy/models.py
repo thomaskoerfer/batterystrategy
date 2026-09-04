@@ -38,30 +38,3 @@ class StrategyOptions:
     pv_inverter_power_kw: float = 0.0
     manual_mode: str = MANUAL_OFF
     manual_power_w: float = 0.0
-
-
-@dataclass(frozen=True)
-class StrategyInputs:
-    """Live inputs required for the minimal strategy command."""
-
-    grid_import_w: float
-    grid_export_w: float
-    pv_w: float
-    battery_power_w: float
-    ev_power_w: float = 0.0
-    soc_pct: float = 50.0
-
-
-@dataclass(frozen=True)
-class StrategyCommand:
-    """Battery command and diagnostics."""
-
-    mode: str
-    power_w: int
-    reason: str
-    residual_with_ev_w: int
-    residual_no_ev_w: int
-    pv_surplus_w: int
-    allowed_discharge_load_w: int
-    house_load_total_w: int
-    house_load_no_ev_w: int

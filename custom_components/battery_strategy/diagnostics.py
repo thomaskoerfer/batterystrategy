@@ -42,6 +42,9 @@ async def async_get_config_entry_diagnostics(hass, entry) -> dict:
         },
         "inputs": asdict(data["inputs"]) if data.get("inputs") else None,
         "command": asdict(data["command"]) if data.get("command") else None,
+        "live_diagnostics": asdict(data["live_diagnostics"])
+        if data.get("live_diagnostics")
+        else None,
         "plan_to_live": asdict(data["plan_to_live"])
         if data.get("plan_to_live")
         else None,

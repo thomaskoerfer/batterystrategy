@@ -50,9 +50,8 @@ rollback release and the shortest practical Home Assistant interruption.
 ## Migration status
 
 The vendor translation, write tracker and all Home Assistant battery service
-calls are owned by `HomeAssistantZendureActuator`. The coordinator decides when
-normal, disabled or fail-safe actuation is required, but it cannot write
-hardware entities directly. The coordinator adapts its established live result
-to the approved `BatteryCommand`; every normal, disabled and fail-safe request
-then uses the single `apply(BatteryCommand) -> ActuationResult` port. The
-concrete vendor adapter has no alternative public zero or strategy-command path.
+calls are owned by `HomeAssistantZendureActuator`. The live controller produces
+the final normal or fail-safe `BatteryCommand`; the coordinator passes it
+unchanged through the single `apply(BatteryCommand) -> ActuationResult` port.
+Control disable also uses this port. The concrete vendor adapter has no
+alternative public zero or strategy-command path.

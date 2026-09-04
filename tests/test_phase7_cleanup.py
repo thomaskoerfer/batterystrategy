@@ -20,6 +20,7 @@ def test_completed_shadow_and_legacy_optimizer_modules_are_absent():
         "forecasting/shadow.py",
         "compiler_evaluation.py",
         "optimizer_engine.py",
+        "plan_compiler_adapter.py",
     )
     assert all(not (PACKAGE / name).exists() for name in obsolete)
 
@@ -123,16 +124,21 @@ def test_compiler_path_never_reconstructs_canonical_plan_from_operator_profiles(
 
 def test_coordinator_preserves_runtime_account_compile_persist_order():
     source = (PACKAGE / "coordinator.py").read_text(encoding="utf-8")
+    runtime = (PACKAGE / "compiler_runtime.py").read_text(encoding="utf-8")
     update = source[source.index("async def _async_update_data") :]
     positions = [
         update.index("self._compiler_runtime.account("),
-        update.index("self._compiler_runtime.sync_slot("),
         update.index("self._compiler_runtime.compile("),
         update.index("await self._async_persist_compiler_runtime("),
-        update.index("live_command_from_directive("),
+        update.index("self._live_controller.command("),
         update.index("await self._async_apply_command("),
     ]
     assert positions == sorted(positions)
+    assert "self._compiler_runtime.sync_slot(" not in update
+    compile_method = runtime[runtime.index("    def compile(") :]
+    assert compile_method.index("self.sync_slot(") < compile_method.index(
+        "self._compiler.compile("
+    )
 
 
 def test_actuator_is_the_only_hardware_service_writer():
@@ -174,6 +180,22 @@ def test_concrete_actuator_implements_only_the_generic_command_port():
     assert "async def zero(" not in actuator
     assert "async def failsafe_zero_once(" not in actuator
     assert "StrategyCommand" not in actuator
+
+
+def test_live_runtime_has_one_contract_model_per_seam():
+    production = "\n".join(
+        path.read_text(encoding="utf-8") for path in PACKAGE.glob("*.py")
+    )
+    models = (PACKAGE / "models.py").read_text(encoding="utf-8")
+    plan_models = (PACKAGE / "plan_models.py").read_text(encoding="utf-8")
+    coordinator = (PACKAGE / "coordinator.py").read_text(encoding="utf-8")
+
+    assert "class StrategyInputs" not in models
+    assert "class StrategyCommand" not in models
+    assert "class PlanLiveDirective" not in plan_models
+    assert "def _battery_command(" not in coordinator
+    assert "plan_compiler_adapter" not in production
+    assert "self._actuator.apply(command)" in coordinator
 
 
 def test_application_boundaries_do_not_cross_layer_ownership():

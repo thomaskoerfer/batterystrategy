@@ -19,6 +19,7 @@ from custom_components.battery_strategy.contracts import (
 )
 from custom_components.battery_strategy.forecasting import FeatureStoreForecastNotReady
 from custom_components.battery_strategy.optimizer_state import save_state_document
+from custom_components.battery_strategy.planning_state import STATE_SCHEMA_VERSION
 
 
 class ForecastProductionTests(unittest.TestCase):
@@ -179,7 +180,7 @@ class ForecastProductionTests(unittest.TestCase):
             data = planning_pipeline.load_state(runtime)
         self.assertNotIn("forecast_shadow_trace", data)
         self.assertNotIn("forecast_parity_trace", data)
-        self.assertEqual(data["state_schema"], 10)
+        self.assertEqual(data["state_schema"], STATE_SCHEMA_VERSION)
 
 
 if __name__ == "__main__":

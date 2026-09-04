@@ -20,13 +20,16 @@ from custom_components.battery_strategy.const import (
 )
 from custom_components.battery_strategy.contracts import (
     ActuationResult,
+    CommandMode,
+    LiveControlState,
+    LiveMeasurements,
     PlanCompilationState,
+    PlanLiveDirective,
     SlotKey,
 )
 from custom_components.battery_strategy.coordinator import BatteryStrategyCoordinator
-from custom_components.battery_strategy.models import StrategyInputs, StrategyOptions
+from custom_components.battery_strategy.models import StrategyOptions
 from custom_components.battery_strategy.plan_models import (
-    PlanLiveDirective,
     PlanPoint,
     StrategyPlan,
 )
@@ -35,6 +38,12 @@ from tests.plan_helpers import canonical_plan
 
 SLOT_START_MS = 1_800_000_000_000
 SLOT = SlotKey(SLOT_START_MS, SLOT_START_MS + 900_000)
+
+
+def _measurements(grid_import_w=1000.0, *, soc_pct=50.0, captured_at_ms=SLOT_START_MS):
+    return LiveMeasurements(
+        captured_at_ms, grid_import_w, 0.0, 0.0, 0.0, 0.0, 0.0, soc_pct
+    )
 
 
 def test_domain_services_register_once_across_entry_reload_cycles():
@@ -145,10 +154,10 @@ def test_clean_reload_restores_latched_budget_without_energy_counters():
     directive = runtime.compile(
         _plan(),
         _options(),
-        StrategyInputs(1000, 0, 0, 0, soc_pct=50),
+        _measurements(),
         SLOT_START_MS + 120_000,
     )
-    assert directive.discharge_budget_kwh == pytest.approx(0.4)
+    assert directive.discharge_budget_remaining_kwh == pytest.approx(0.4)
 
 
 def test_unclean_restart_reconstructs_progress_from_monotonic_counters():
@@ -176,7 +185,7 @@ def test_unclean_restart_without_counters_fails_commercially_closed():
     directive = runtime.compile(
         _plan(),
         _options(),
-        StrategyInputs(1000, 0, 0, 0, soc_pct=50),
+        _measurements(),
         SLOT_START_MS + 180_000,
     )
 
@@ -184,7 +193,7 @@ def test_unclean_restart_without_counters_fails_commercially_closed():
     assert runtime.error == "slot_progress_unrecoverable"
     assert directive.pv_charge_allowed
     assert not directive.grid_charge_allowed
-    assert directive.discharge_budget_kwh == 0.0
+    assert directive.discharge_budget_remaining_kwh == 0.0
 
 
 def test_running_process_resets_progress_only_at_next_slot():
@@ -200,8 +209,75 @@ def test_running_process_resets_progress_only_at_next_slot():
 
     assert runtime.progress_reconstructable
     assert runtime.charged_kwh == 0.0
-    assert runtime.discharged_kwh == 0.0
+    assert runtime.discharged_kwh == pytest.approx(0.15)
     assert runtime.compilation_state == PlanCompilationState()
+
+
+def test_unavailable_battery_feedback_breaks_energy_accounting_continuity():
+    runtime = PlanCompilerRuntime()
+    start = dt.datetime.fromtimestamp(SLOT_START_MS / 1000, dt.timezone.utc)
+    runtime.sync_slot(SLOT_START_MS, SLOT_START_MS, (None, None))
+    runtime.account(start, 1000.0)
+    runtime.suspend_accounting(start + dt.timedelta(minutes=5))
+    runtime.account(start + dt.timedelta(minutes=10), 1000.0)
+    runtime.account(start + dt.timedelta(minutes=15), 1000.0)
+
+    assert runtime.discharged_kwh == pytest.approx(1.0 / 12.0)
+
+
+def test_compile_selects_current_slot_instead_of_stale_first_plan_slot():
+    second_start_ms = SLOT.end_ms
+    plan = StrategyPlan(
+        points=[
+            PlanPoint(
+                ts_ms=SLOT_START_MS,
+                date="2027-01-15",
+                price_ct=20,
+                load_fc_w=500,
+                pv_fc_w=0,
+                grid_import_fc_w=500,
+                grid_export_fc_w=0,
+                grid_net_fc_w=500,
+                mode="idle",
+                power_w=0,
+                charge_fc_w=0,
+                discharge_fc_w=0,
+                soc_pct=50,
+                discharge_budget_kwh=0,
+            ),
+            PlanPoint(
+                ts_ms=second_start_ms,
+                date="2027-01-15",
+                price_ct=40,
+                load_fc_w=1000,
+                pv_fc_w=0,
+                grid_import_fc_w=1000,
+                grid_export_fc_w=0,
+                grid_net_fc_w=1000,
+                mode="output",
+                power_w=1000,
+                charge_fc_w=0,
+                discharge_fc_w=1000,
+                soc_pct=50,
+                discharge_budget_kwh=0.25,
+            ),
+        ],
+        current_mode="output",
+        current_power_w=1000,
+        reason="rollover",
+    )
+    canonical = canonical_plan(plan, _options(), SLOT_START_MS)
+    runtime = PlanCompilerRuntime()
+
+    directive = runtime.compile(
+        canonical,
+        _options(),
+        _measurements(captured_at_ms=second_start_ms),
+        second_start_ms,
+    )
+
+    assert directive.slot.start_ms == second_start_ms
+    assert directive.discharge_budget_remaining_kwh == pytest.approx(0.25)
 
 
 def test_optimizer_prefetch_and_expiry_are_each_requested_once():
@@ -226,7 +302,7 @@ def test_coordinator_cycle_preserves_runtime_order_and_compiled_permission():
     now = dt.datetime.now(dt.timezone.utc)
     slot_start_ms = int(now.timestamp() * 1000) // 900_000 * 900_000
     options = _options()
-    inputs = StrategyInputs(500.0, 0.0, 0.0, 0.0, soc_pct=50.0)
+    inputs = _measurements(500.0, captured_at_ms=slot_start_ms)
     plan = StrategyPlan(
         points=[
             PlanPoint(
@@ -251,16 +327,20 @@ def test_coordinator_cycle_preserves_runtime_order_and_compiled_permission():
         reason="cycle-test",
     )
     directive = PlanLiveDirective(
-        slot_id=str(slot_start_ms),
-        slot_start_ts=slot_start_ms,
-        slot_end_ts=slot_start_ms + 900_000,
+        directive_id=f"test:{slot_start_ms}",
+        plan_id="test-plan",
+        issued_at_ms=slot_start_ms,
+        slot=SlotKey(slot_start_ms, slot_start_ms + 900_000),
         pv_charge_allowed=True,
-        must_charge_w=0,
-        must_charge_remaining_kwh=0.0,
         grid_charge_allowed=False,
-        discharge_budget_kwh=0.125,
-        battery_min_soc_pct=10.0,
-        battery_max_soc_pct=100.0,
+        required_charge_power_w=0.0,
+        required_charge_remaining_kwh=0.0,
+        max_pv_charge_power_w=2400.0,
+        max_grid_charge_power_w=0.0,
+        max_discharge_power_w=2400.0,
+        discharge_budget_remaining_kwh=0.125,
+        min_soc_pct=10.0,
+        max_soc_pct=100.0,
     )
 
     class CompilerRuntime:
@@ -281,10 +361,17 @@ def test_coordinator_cycle_preserves_runtime_order_and_compiled_permission():
             calls.append("sync")
 
         @staticmethod
-        def compile(compiled_plan, compiled_options, compiled_inputs, _now_ms):
+        def compile(
+            compiled_plan,
+            compiled_options,
+            compiled_inputs,
+            _now_ms,
+            energy_totals,
+        ):
             assert compiled_plan is canonical
             assert compiled_options is options
             assert compiled_inputs is inputs
+            CompilerRuntime.sync_slot(slot_start_ms, _now_ms, energy_totals)
             calls.append("compile")
             return directive
 
@@ -343,7 +430,11 @@ def test_coordinator_cycle_preserves_runtime_order_and_compiled_permission():
         diagnostics=lambda _coverage: {}, last_error=None
     )
     coordinator._strategy_options = lambda: options
-    coordinator._strategy_inputs = lambda: inputs
+    coordinator._live_measurements = lambda _captured_at_ms: inputs
+    coordinator._live_control_state = LiveControlState(CommandMode.IDLE, 0.0, None)
+    from custom_components.battery_strategy.strategy import DeterministicLiveController
+
+    coordinator._live_controller = DeterministicLiveController()
     coordinator._schedule_weather_refresh = lambda *_args: None
     coordinator._current_price_ct = lambda _now: 40.0
     coordinator._feature_quality_flags = lambda: ()

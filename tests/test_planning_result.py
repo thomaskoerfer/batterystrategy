@@ -63,7 +63,7 @@ def test_canonical_plan_round_trips_without_using_operator_profiles():
     result, options, start_ms = _result_fixture()
 
     restored = result_from_persisted_output(
-        persisted_output(result),
+        persisted_output(result, options),
         options,
         timezone=dt.timezone.utc,
         now_ms=start_ms,
@@ -92,7 +92,7 @@ def test_legacy_operator_snapshot_remains_visible_but_cannot_authorize_control()
 
 def test_corrupt_canonical_plan_fails_closed_instead_of_partially_loading():
     result, options, start_ms = _result_fixture()
-    stored = persisted_output(result)
+    stored = persisted_output(result, options)
     stored[PERSISTED_PLAN_KEY]["slots"].append("invalid")
 
     restored = result_from_persisted_output(
@@ -106,8 +106,21 @@ def test_changed_physical_constraints_invalidate_persisted_plan():
     result, _, start_ms = _result_fixture()
 
     restored = result_from_persisted_output(
-        persisted_output(result),
+        persisted_output(result, StrategyOptions()),
         StrategyOptions(battery_capacity_kwh=8.0),
+        timezone=dt.timezone.utc,
+        now_ms=start_ms,
+    )
+
+    assert restored.battery_plan is None
+
+
+def test_changed_execution_policy_invalidates_persisted_plan():
+    result, options, start_ms = _result_fixture()
+
+    restored = result_from_persisted_output(
+        persisted_output(result, options),
+        StrategyOptions(grid_charging="price_sensitive"),
         timezone=dt.timezone.utc,
         now_ms=start_ms,
     )
