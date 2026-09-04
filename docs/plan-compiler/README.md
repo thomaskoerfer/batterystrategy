@@ -22,6 +22,10 @@ It returns one `PlanLiveDirective` and the next immutable compilation state. It
 may translate and reduce optimizer permission, but it never creates economic
 permission, moves energy between slots or changes a future SoC trajectory.
 
+The compiler receives `PlanningResult.battery_plan` directly. It must never
+reconstruct a plan from `StrategyPlan`, dashboard profiles or diagnostics. A
+missing canonical plan is a closed commercial directive.
+
 ## A slot is a commitment
 
 At the start of each UTC-aligned 15-minute slot, the compiler latches the latest

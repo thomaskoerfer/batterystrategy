@@ -19,15 +19,21 @@ This is an internal ownership change. Published directives and persistence
 payloads are unchanged. A behavioral coordinator-cycle test verifies the order
 of accounting, planning, slot synchronization, compilation and persistence.
 
-### 2. Typed planning output: defer
+### 2. Typed planning output: implement
 
-Replacing the established planning mapping with a typed result would improve
-local discoverability, but it would also affect persistence and multiple public
-projection consumers. The benefit does not currently justify that migration.
+The owner approved this contract change on 2026-09-04. The planning pipeline now
+returns an immutable `PlanningResult` containing the optimizer's canonical
+`BatteryPlan`, an immutable `StrategyPlan` operator projection and a separate
+diagnostic/profile mapping. The compiler receives only the canonical plan;
+production no longer contains a `StrategyPlan`/profile-to-`BatteryPlan`
+reconstruction path.
 
-Any future implementation requires a separate impact analysis and explicit
-approval for every affected interface contract. An adapter must protect stored
-state and entity behavior during migration.
+Planning persistence advances from schema 9 to schema 10 and stores the
+canonical plan through one codec. Existing schema-9 operator data remains
+visible, but is deliberately non-executable until a new optimizer result is
+available. Invalid canonical data and a mismatch with current physical battery
+constraints also fail closed. This is a one-time migration without a runtime
+compatibility facade.
 
 ### 3. Live-control model convergence: defer
 
@@ -55,8 +61,11 @@ behavior change while removing duplicated literals.
 
 ## Contract impact
 
-No normative contract or contract schema changes are made. In particular,
-`INTERFACE_CONTRACTS.md` and the contract model package remain unchanged.
+Recommendation 2 changes the planning-publication interface and persisted
+planning schema as described above. `BatteryPlan`, optimizer, compiler,
+live-control and actuator semantics are unchanged. The contract model package
+does not change shape; `INTERFACE_CONTRACTS.md` now makes the canonical-plan and
+operator-projection separation normative.
 
 ## Verification
 
@@ -65,3 +74,6 @@ No normative contract or contract schema changes are made. In particular,
 - Compiler-runtime restart and fail-closed tests.
 - Behavioral coordinator-cycle ordering test.
 - Configuration default and form-constraint regression tests.
+- Canonical-plan persistence round trip, legacy display-only migration,
+  malformed-state fail-closed and physical-constraint mismatch tests.
+- Static guard proving no production profile-to-`BatteryPlan` reconstruction.

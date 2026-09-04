@@ -22,10 +22,10 @@ from custom_components.battery_strategy.plan_compiler import (
 )
 from custom_components.battery_strategy.plan_compiler_adapter import (
     closed_published_directive,
-    contract_plan_from_strategy_plan,
     published_directive_from_contract,
 )
 from custom_components.battery_strategy.plan_models import PlanPoint, StrategyPlan
+from tests.plan_helpers import canonical_plan
 
 
 def _point(
@@ -91,14 +91,14 @@ def test_compiler_adapter_publishes_grid_charge_directive():
         reason="test",
     )
     options = _options()
-    contract_plan = contract_plan_from_strategy_plan(plan, options, start_ms)
+    contract_plan = canonical_plan(plan, options, start_ms)
     compiled, _ = DeterministicPlanCompiler().compile(
         contract_plan,
         SlotProgress(contract_plan.slots[0].slot, 0.0, 0.0, 50.0),
         PlanCompilationState(),
         start_ms,
     )
-    candidate = published_directive_from_contract(compiled, plan, options)
+    candidate = published_directive_from_contract(compiled, contract_plan, options)
 
     assert candidate.grid_charge_allowed
     assert candidate.must_charge_w == 1700
@@ -123,14 +123,14 @@ def test_compiler_adapter_preserves_discharge_progress_and_budget():
         reason="test",
     )
     options = _options()
-    contract_plan = contract_plan_from_strategy_plan(plan, options, start_ms)
+    contract_plan = canonical_plan(plan, options, start_ms)
     compiled, _ = DeterministicPlanCompiler().compile(
         contract_plan,
         SlotProgress(contract_plan.slots[0].slot, 0.0, 0.2, 50.0),
         PlanCompilationState(),
         start_ms + 300_000,
     )
-    candidate = published_directive_from_contract(compiled, plan, options)
+    candidate = published_directive_from_contract(compiled, contract_plan, options)
     assert candidate.discharge_budget_kwh == 0.4
     assert candidate.must_charge_w == 0
 
@@ -171,12 +171,15 @@ def test_cutover_compiler_owns_progress_and_replan_latch():
     )
     runtime = _compiler_runtime(start_ms)
 
-    first = runtime.compile(first_plan, _options(), _inputs(), start_ms)
+    options = _options()
+    first_contract = canonical_plan(first_plan, options, start_ms)
+    reduced_contract = canonical_plan(reduced_plan, options, start_ms + 60_000)
+    first = runtime.compile(first_contract, options, _inputs(), start_ms)
     started = dt.datetime.fromtimestamp(start_ms / 1000, dt.timezone.utc)
     runtime.account(started, 1000.0)
     runtime.account(started + dt.timedelta(minutes=6), 1000.0)
-    reduced = runtime.compile(reduced_plan, _options(), _inputs(), start_ms + 60_000)
-    reopened = runtime.compile(first_plan, _options(), _inputs(), start_ms + 120_000)
+    reduced = runtime.compile(reduced_contract, options, _inputs(), start_ms + 60_000)
+    reopened = runtime.compile(first_contract, options, _inputs(), start_ms + 120_000)
 
     assert first.discharge_budget_kwh == 0.6
     assert reduced.discharge_budget_kwh == 0.1
@@ -185,9 +188,7 @@ def test_cutover_compiler_owns_progress_and_replan_latch():
 
 def test_cutover_compiler_fails_closed_without_plan():
     runtime = PlanCompilerRuntime()
-    plan = StrategyPlan([], "idle", 0, "missing")
-
-    directive = runtime.compile(plan, _options(), _inputs(), 1_800_000_000_000)
+    directive = runtime.compile(None, _options(), _inputs(), 1_800_000_000_000)
 
     assert runtime.error == "no_plan"
     assert not directive.pv_charge_allowed

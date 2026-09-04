@@ -6,6 +6,7 @@ import asyncio
 import datetime as dt
 import logging
 import time
+from collections.abc import Mapping
 from dataclasses import asdict, replace
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -132,7 +133,7 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         self._planning_pipeline = PlanningPipelineAdapter(hass, entry)
         self._planning_pipeline.hydrate_output(last_optimizer_output)
         self._planner = BackgroundPlanner(hass, self._planning_pipeline)
-        self._optimizer_attrs: dict = {}
+        self._optimizer_attrs: Mapping[str, object] = {}
         self.last_actuation = ActuationResult(
             command_id="not-started",
             applied=False,
@@ -320,14 +321,20 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             optimizer_scheduled = self._planner.maybe_schedule(
                 inputs, options, runtime_context, force=force_optimizer
             )
-        plan, self._optimizer_attrs = self._planner.current(inputs, options)
+        planning_result = self._planner.current(inputs, options)
+        plan = planning_result.operator_plan
+        self._optimizer_attrs = planning_result.operator_data
         now_ms = int(now.timestamp() * 1000)
-        slot_start_ms = int(plan.points[0].ts_ms) if plan.points else 0
+        slot_start_ms = (
+            planning_result.battery_plan.slots[0].slot.start_ms
+            if planning_result.battery_plan is not None
+            else 0
+        )
         self._compiler_runtime.sync_slot(
             slot_start_ms, now_ms, self._battery_energy_totals()
         )
         directive = self._compiler_runtime.compile(
-            plan,
+            planning_result.battery_plan,
             options,
             inputs,
             now_ms,

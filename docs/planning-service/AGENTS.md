@@ -6,13 +6,14 @@ guidance before changing orchestration.
 ## Allowed
 
 Compose explicit market, forecast, battery and configuration inputs, invoke the
-pure optimizer and adapt its result for publication.
+pure optimizer and return its canonical `BatteryPlan` with separate
+non-authoritative publication metadata.
 
 ## Forbidden
 
 Do not fetch provider data, build forecasts, read persistence, calculate live
 power, write hardware or maintain a second optimizer path. Do not add economics
-to publication.
+to publication or reconstruct executable intent from profile data.
 
 ## Required checks
 

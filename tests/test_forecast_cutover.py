@@ -179,7 +179,7 @@ class ForecastProductionTests(unittest.TestCase):
             data = planning_pipeline.load_state(runtime)
         self.assertNotIn("forecast_shadow_trace", data)
         self.assertNotIn("forecast_parity_trace", data)
-        self.assertEqual(data["state_schema"], 9)
+        self.assertEqual(data["state_schema"], 10)
 
 
 if __name__ == "__main__":

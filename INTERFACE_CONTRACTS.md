@@ -193,6 +193,28 @@ history may be joined up to the observation time, but a live directive or live
 command must never rewrite future plan SoC, power or budget values. Live
 deviations become optimizer input at the next planning run instead.
 
+### Planning publication
+
+The planning application returns one immutable `PlanningResult` containing:
+
+- the canonical `BatteryPlan`, or `None` when no executable plan is available;
+- an immutable `StrategyPlan` operator projection for established entities and
+  dashboards;
+- non-authoritative diagnostics and profile data.
+
+Only `PlanningResult.battery_plan` may cross into the plan compiler. Operator
+profiles, `StrategyPlan`, diagnostics and dashboard data must never be parsed or
+combined to reconstruct executable intent. This keeps display compatibility
+separate from safety-critical permission.
+
+Planning state schema 10 persists the canonical plan alongside operator data.
+A schema-9 or malformed snapshot may still populate operator displays, but it
+has no executable plan and therefore fails commercially closed until a fresh
+optimizer run succeeds. A persisted plan whose physical constraints differ
+from current configuration is also non-executable. This contract migration was
+approved by the owner on 2026-09-04; see
+`docs/impact-analyses/2026-09-04-architecture-followup.md`.
+
 ### Optimization to plan compiler
 
 The plan compiler combines `BatteryPlan` with measured `SlotProgress`. It may
@@ -323,8 +345,8 @@ unrelated live-control change.
 
 ## Transitional mapping
 
-Current `StrategyInputs`, `StrategyPlan` and `PlanLiveDirective` are production
-models and remain supported while behavior is migrated. New code should target
-the contracts package. Each phase replaces one adapter boundary, then deletes
-the superseded transitional model only after live observation and rollback
-criteria are satisfied.
+`StrategyInputs`, `StrategyPlan` and the operator-facing `PlanLiveDirective`
+remain integration projection models. They do not authorize the compiler.
+Executable planning intent uses `BatteryPlan`; the compiler-to-live contract
+continues to use the contract `PlanLiveDirective`. New safety-critical code
+must target the contracts package rather than presentation models.

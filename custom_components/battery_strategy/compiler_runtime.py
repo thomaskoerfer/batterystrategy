@@ -6,16 +6,15 @@ import datetime as dt
 import logging
 from typing import TYPE_CHECKING
 
-from .contracts import PlanCompilationState, SlotProgress
+from .contracts import BatteryPlan, PlanCompilationState, SlotProgress
 from .contracts.common import SLOT_MS
 from .models import StrategyInputs, StrategyOptions
 from .plan_compiler import DeterministicPlanCompiler
 from .plan_compiler_adapter import (
     closed_published_directive,
-    contract_plan_from_strategy_plan,
     published_directive_from_contract,
 )
-from .plan_models import PlanLiveDirective, StrategyPlan
+from .plan_models import PlanLiveDirective
 
 if TYPE_CHECKING:
     from .compiler_runtime_store import CompilerRuntimeSnapshot
@@ -98,13 +97,13 @@ class PlanCompilerRuntime:
 
     def compile(
         self,
-        plan: StrategyPlan,
+        plan: BatteryPlan | None,
         options: StrategyOptions,
         inputs: StrategyInputs,
         now_ms: int,
     ) -> PlanLiveDirective:
         """Compile the directive consumed by the established live controller."""
-        if not plan.points:
+        if plan is None:
             self._state = PlanCompilationState()
             self._error = "no_plan"
             return closed_published_directive(options)
@@ -112,14 +111,13 @@ class PlanCompilerRuntime:
             self._error = "slot_progress_unrecoverable"
             return closed_published_directive(
                 options,
-                slot_start_ms=int(plan.points[0].ts_ms),
+                slot_start_ms=plan.slots[0].slot.start_ms,
                 allow_pv_charge=True,
             )
         try:
-            contract_plan = contract_plan_from_strategy_plan(plan, options, now_ms)
-            current_slot = contract_plan.slots[0].slot
+            current_slot = plan.slots[0].slot
             compiled, next_state = self._compiler.compile(
-                contract_plan,
+                plan,
                 SlotProgress(
                     slot=current_slot,
                     charged_kwh=max(0.0, self._charged_kwh),
@@ -140,7 +138,7 @@ class PlanCompilerRuntime:
             LOGGER.error("Plan compiler failed closed: %s", self._error)
             return closed_published_directive(
                 options,
-                slot_start_ms=int(plan.points[0].ts_ms),
+                slot_start_ms=plan.slots[0].slot.start_ms,
             )
 
     def storage_snapshot(

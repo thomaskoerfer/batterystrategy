@@ -6,8 +6,8 @@ import asyncio
 import logging
 
 from .models import StrategyInputs, StrategyOptions
-from .plan_models import StrategyPlan
 from .planning_adapter import PlanningPipelineAdapter
+from .planning_result import PlanningResult
 
 LOGGER = logging.getLogger(__name__)
 
@@ -27,7 +27,7 @@ class BackgroundPlanner:
         self,
         inputs: StrategyInputs,
         options: StrategyOptions,
-    ) -> tuple[StrategyPlan, dict]:
+    ) -> PlanningResult:
         """Return the latest valid plan re-evaluated against current inputs."""
         return self._adapter.cached_result(inputs, options)
 

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
+from types import MappingProxyType
 
 
 @dataclass(frozen=True)
@@ -59,14 +61,14 @@ class PlanLiveDirective:
 
 @dataclass(frozen=True)
 class StrategyPlan:
-    """Full optimizer output."""
+    """Immutable operator-facing projection of optimizer output."""
 
-    points: list[PlanPoint]
+    points: tuple[PlanPoint, ...]
     current_mode: str
     current_power_w: int
     reason: str
-    daily_costs: dict[str, DailyCost] = field(default_factory=dict)
-    price_stats: dict[str, float | None] = field(default_factory=dict)
+    daily_costs: Mapping[str, DailyCost] = field(default_factory=dict)
+    price_stats: Mapping[str, float | None] = field(default_factory=dict)
     load_forecast_next_1h_kwh: float = 0.0
     pv_forecast_corrected_next_1h_kwh: float = 0.0
     net_load_forecast_next_1h_kwh: float = 0.0
@@ -75,7 +77,19 @@ class StrategyPlan:
     virtual_soc_end_tomorrow_pct: float = 0.0
     override_active: bool = False
 
+    def __post_init__(self) -> None:
+        """Defensively freeze collection inputs supplied by projection adapters."""
+        object.__setattr__(self, "points", tuple(self.points))
+        object.__setattr__(
+            self, "daily_costs", MappingProxyType(dict(self.daily_costs))
+        )
+        object.__setattr__(
+            self, "price_stats", MappingProxyType(dict(self.price_stats))
+        )
+
     def profile(self, key: str, date: str | None = None) -> list[list[float]]:
         """Return a chart profile for a plan point key."""
-        selected = self.points if date is None else [p for p in self.points if p.date == date]
+        selected = (
+            self.points if date is None else [p for p in self.points if p.date == date]
+        )
         return [[p.ts_ms, getattr(p, key)] for p in selected]

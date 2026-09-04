@@ -30,6 +30,8 @@ from custom_components.battery_strategy.plan_models import (
     PlanPoint,
     StrategyPlan,
 )
+from custom_components.battery_strategy.planning_result import PlanningResult
+from tests.plan_helpers import canonical_plan
 
 SLOT_START_MS = 1_800_000_000_000
 SLOT = SlotKey(SLOT_START_MS, SLOT_START_MS + 900_000)
@@ -90,8 +92,8 @@ def _options() -> StrategyOptions:
     )
 
 
-def _plan(discharge_budget_kwh: float = 0.6) -> StrategyPlan:
-    return StrategyPlan(
+def _plan(discharge_budget_kwh: float = 0.6):
+    plan = StrategyPlan(
         points=[
             PlanPoint(
                 ts_ms=SLOT_START_MS,
@@ -114,6 +116,7 @@ def _plan(discharge_budget_kwh: float = 0.6) -> StrategyPlan:
         current_power_w=1000,
         reason="test",
     )
+    return canonical_plan(plan, _options(), SLOT_START_MS)
 
 
 def test_compiler_snapshot_round_trip_is_strict_and_lossless():
@@ -279,7 +282,7 @@ def test_coordinator_cycle_preserves_runtime_order_and_compiled_permission():
 
         @staticmethod
         def compile(compiled_plan, compiled_options, compiled_inputs, _now_ms):
-            assert compiled_plan is plan
+            assert compiled_plan is canonical
             assert compiled_options is options
             assert compiled_inputs is inputs
             calls.append("compile")
@@ -311,9 +314,10 @@ def test_coordinator_cycle_preserves_runtime_order_and_compiled_permission():
 
         @staticmethod
         def current(*_args):
-            return plan, {}
+            return PlanningResult(canonical, plan, {})
 
     components = SimpleNamespace(powers_w={}, features={}, drivers=(), specs=())
+    canonical = canonical_plan(plan, options, slot_start_ms)
     coordinator = object.__new__(BatteryStrategyCoordinator)
     coordinator.entry = SimpleNamespace(
         data={}, options={"strategy_enabled": False, "trace_enabled": False}

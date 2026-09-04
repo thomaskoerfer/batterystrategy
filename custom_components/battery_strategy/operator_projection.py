@@ -181,7 +181,7 @@ def _command_source(data: Mapping[str, object]) -> str:
 
 def _raw_float(raw: object, key: str, default: float = 0.0) -> float:
     try:
-        return float((raw if isinstance(raw, dict) else {}).get(key, default))
+        return float((raw if isinstance(raw, Mapping) else {}).get(key, default))
     except (TypeError, ValueError):
         return default
 
@@ -287,7 +287,7 @@ def _raw_profile_attrs(
     today: str,
     tomorrow: str,
 ) -> dict[str, object] | None:
-    if not isinstance(raw, dict):
+    if not isinstance(raw, Mapping):
         return None
     if date is None:
         prefix = "profile_48h"

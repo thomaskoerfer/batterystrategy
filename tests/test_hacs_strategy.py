@@ -15,6 +15,7 @@ from custom_components.battery_strategy import (
     config_flow,
     planning_adapter,
     planning_pipeline,
+    planning_result,
 )
 from custom_components.battery_strategy import number as battery_number
 from custom_components.battery_strategy import select as battery_select
@@ -79,7 +80,6 @@ from custom_components.battery_strategy.optimizer_state import (
 )
 from custom_components.battery_strategy.plan_compiler import DeterministicPlanCompiler
 from custom_components.battery_strategy.plan_compiler_adapter import (
-    contract_plan_from_strategy_plan,
     published_directive_from_contract,
 )
 from custom_components.battery_strategy.plan_models import (
@@ -93,6 +93,7 @@ from custom_components.battery_strategy.strategy import (
     calculate_command,
     live_command_from_directive,
 )
+from tests.plan_helpers import canonical_plan
 
 TEST_TIMEZONE = ZoneInfo("Europe/Berlin")
 TEST_CAPACITY_KWH = 6.0
@@ -107,9 +108,7 @@ TEST_PV_INVERTER_KW = 1.0
 
 def plan_live_directive_from_plan(plan, options, current_soc_pct=None):
     """Compile a plan through the production Phase-7 boundary for tests."""
-    contract_plan = contract_plan_from_strategy_plan(
-        plan, options, plan.points[0].ts_ms
-    )
+    contract_plan = canonical_plan(plan, options, plan.points[0].ts_ms)
     directive, _ = DeterministicPlanCompiler().compile(
         contract_plan,
         SlotProgress(
@@ -125,7 +124,7 @@ def plan_live_directive_from_plan(plan, options, current_soc_pct=None):
         PlanCompilationState(),
         plan.points[0].ts_ms,
     )
-    return published_directive_from_contract(directive, plan, options)
+    return published_directive_from_contract(directive, contract_plan, options)
 
 
 def live_command_from_plan(plan, live_command, inputs, options):
@@ -245,13 +244,17 @@ class HacsStrategyTests(unittest.TestCase):
             pv_global_bias=float(kwargs.get("pv_global_bias", 1.0)),
         )
         kwargs["forecast_diagnostics"] = {"source": "test_fixture"}
-        return planning_pipeline._planning_service(self._planning_settings()).plan(
-            intervals=intervals,
-            samples=samples,
-            start_energy_kwh=start_energy_kwh,
-            eex_days=eex_days,
-            forecast_bundle=kwargs["forecast_bundle"],
-            forecast_diagnostics=kwargs["forecast_diagnostics"],
+        return (
+            planning_pipeline._planning_service(self._planning_settings())
+            .plan(
+                intervals=intervals,
+                samples=samples,
+                start_energy_kwh=start_energy_kwh,
+                eex_days=eex_days,
+                forecast_bundle=kwargs["forecast_bundle"],
+                forecast_diagnostics=kwargs["forecast_diagnostics"],
+            )
+            .data
         )
 
     def _optimizer_runtime_context(self):
@@ -677,7 +680,11 @@ class HacsStrategyTests(unittest.TestCase):
                 self.finished = True
 
             def cached_result(self, _inputs, _options):
-                return StrategyPlan([], COMMAND_IDLE, 0, "cached"), {}
+                return planning_result.PlanningResult(
+                    None,
+                    StrategyPlan([], COMMAND_IDLE, 0, "cached"),
+                    {},
+                )
 
         class Hass:
             @staticmethod
@@ -690,8 +697,8 @@ class HacsStrategyTests(unittest.TestCase):
             options = StrategyOptions()
             started = time.monotonic()
             self.assertTrue(planner.maybe_schedule(inputs, options, {}))
-            plan, _ = planner.current(inputs, options)
-            self.assertEqual(plan.reason, "cached")
+            result = planner.current(inputs, options)
+            self.assertEqual(result.operator_plan.reason, "cached")
             self.assertLess(time.monotonic() - started, 0.05)
             await asyncio.sleep(0.15)
             self.assertFalse(planner.running)
@@ -3544,7 +3551,9 @@ class HacsStrategyTests(unittest.TestCase):
             "profile_48h_grid_export_fc_power": [[old_ts, 0.0], [current_ts, 0.0]],
             "profile_48h_grid_net_fc_power": [[old_ts, 0.0], [current_ts, 0.0]],
         }
-        points = planning_adapter._points_from_output(output, now_ms=current_ts)
+        points = planning_result._points_from_output(
+            output, now_ms=current_ts, timezone=dt.timezone.utc
+        )
         self.assertEqual([point.ts_ms for point in points], [current_ts])
 
     def test_planning_adapter_preserves_explicit_charge_sources_and_requirement(self):
@@ -3561,7 +3570,9 @@ class HacsStrategyTests(unittest.TestCase):
             "profile_48h_house_fc_power": [[ts, 500.0]],
         }
 
-        point = planning_adapter._points_from_output(output, now_ms=ts)[0]
+        point = planning_result._points_from_output(
+            output, now_ms=ts, timezone=dt.timezone.utc
+        )[0]
 
         self.assertEqual(point.pv_charge_fc_w, 500)
         self.assertEqual(point.grid_charge_fc_w, 1200)
@@ -3575,7 +3586,7 @@ class HacsStrategyTests(unittest.TestCase):
             "profile_48h_price": [[ts, 30.0]],
             "profile_48h_house_fc_power": [[ts, 200.0]],
         }
-        points = planning_adapter._points_from_output(
+        points = planning_result._points_from_output(
             output,
             now_ms=ts,
             timezone=ZoneInfo("Europe/Berlin"),

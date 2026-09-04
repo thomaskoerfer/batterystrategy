@@ -22,6 +22,10 @@ All notable changes to Battery Strategy are documented here.
   fail-safe commands.
 - Persist compact active-slot compiler state and throughput so config-entry
   reloads cannot reopen consumed charge or discharge permission.
+- Carry the optimizer's canonical `BatteryPlan` through an immutable planning
+  result instead of reconstructing compiler intent from dashboard profiles.
+- Migrate planning state to schema 10 so canonical intent and operator-facing
+  data remain explicitly separate across restarts.
 
 ### Safety
 
@@ -30,9 +34,10 @@ All notable changes to Battery Strategy are documented here.
   closed until the next slot while PV-follow remains available.
 - Optimizer, forecast, compiler and live-control semantics are unchanged. This
   release remains local until validation and explicit deployment approval.
-- Typed planning-result and live-model convergence remain intentionally
-  deferred: both require separate impact analysis and contract approval before
-  changing persisted or live-control boundaries.
+- Legacy or malformed schema-10 plan data remains visible to operators but
+  fails commercially closed until a fresh optimizer run succeeds.
+- Live-model convergence remains intentionally deferred pending separate
+  impact analysis and contract approval.
 
 ## [0.2.0-rc.6] - 2026-09-03
 

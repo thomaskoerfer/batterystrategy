@@ -13,6 +13,8 @@
 - Keep HA entity projection in `operator_projection.py`; sensor properties may
   only read the precomputed projection. Own coordinators through typed config
   entry runtime data and register integration services at domain setup.
+- Return `PlanningResult` from the planning pipeline. Preserve the canonical
+  `BatteryPlan` for the compiler and keep operator data non-authoritative.
 
 ## Forbidden
 
@@ -25,6 +27,8 @@
   globals.
 - Recompute profiles, timestamps or planning fallbacks from entity properties,
   or expose large changing profile attributes to Recorder.
+- Reconstruct a `BatteryPlan` or compiler permission from `StrategyPlan`,
+  profiles, diagnostics or persisted display-only data.
 
 ## Required checks
 

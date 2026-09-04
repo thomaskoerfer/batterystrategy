@@ -111,6 +111,16 @@ def test_coordinator_has_one_authoritative_plan_compiler_path():
     assert "def live_command_from_plan" not in strategy
 
 
+def test_compiler_path_never_reconstructs_canonical_plan_from_operator_profiles():
+    package_sources = "\n".join(
+        path.read_text(encoding="utf-8") for path in PACKAGE.glob("*.py")
+    )
+    coordinator = (PACKAGE / "coordinator.py").read_text(encoding="utf-8")
+
+    assert "contract_plan_from_strategy_plan" not in package_sources
+    assert "planning_result.battery_plan" in coordinator
+
+
 def test_coordinator_preserves_runtime_account_compile_persist_order():
     source = (PACKAGE / "coordinator.py").read_text(encoding="utf-8")
     update = source[source.index("async def _async_update_data") :]

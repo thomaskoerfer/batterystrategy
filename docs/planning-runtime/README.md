@@ -39,13 +39,18 @@ properties only read that projection; they never repeat profile construction,
 time conversion or planning fallbacks. Large changing profile attributes are
 excluded from Recorder while remaining available to the current dashboard.
 
-The pipeline returns the current plan, diagnostics, profiles and
-measured-savings values as one in-process Python mapping. It does not expose a
-command-line or stdout JSON protocol.
+The pipeline returns one immutable `PlanningResult`. It carries the optimizer's
+canonical `BatteryPlan` separately from the established `StrategyPlan`,
+diagnostics, profiles and measured-savings projection. Only the canonical plan
+may authorize compilation; presentation mappings are never converted back into
+an executable plan. It does not expose a command-line or stdout JSON protocol.
 
-The serialized planning state uses schema 9. Schema upgrades are one-time data
-migrations; they do not retain an alternative runtime implementation or
-compatibility planning path.
+The serialized planning state uses schema 10 and stores the canonical plan next
+to operator data. Schema-9 display data remains readable after upgrade, but it
+cannot authorize control and fails closed until the optimizer publishes a new
+canonical plan. Invalid plans and plans built with different physical battery
+constraints follow the same rule. This is a one-time data migration, not an
+alternative runtime implementation or compatibility planning path.
 
 ## Setup independence
 

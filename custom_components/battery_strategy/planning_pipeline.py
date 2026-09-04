@@ -13,10 +13,16 @@ from .forecast_application import (
 )
 from .forecast_evaluation import update_forecast_evaluation
 from .market_context import MarketContextConfig, MarketContextService
+from .models import StrategyOptions
 from .plan_presentation import (
     build_price_profile,
     build_published_plan_profiles,
     derive_planned_dispatch,
+)
+from .planning_result import (
+    build_planning_result,
+    persisted_output,
+    result_from_persisted_output,
 )
 from .planning_runtime import PlanningRuntime, PlanningRuntimeSettings
 from .planning_service import PlanningService, PlanningSettings
@@ -277,7 +283,12 @@ def run(runtime_context):
     inputs = collect_inputs(runtime)
     if inputs.get("error"):
         out = fallback_output("no_price", inputs["error"], data, now.isoformat())
-        return out
+        return result_from_persisted_output(
+            out,
+            _result_options(settings),
+            timezone=settings.timezone,
+            now_ms=int(now.timestamp() * 1000),
+        )
 
     p_now = inputs["p_now"]
     p_future_max = inputs["p_future_max"]
@@ -467,7 +478,7 @@ def run(runtime_context):
         weather=runtime.forecast_weather,
         component_specs=runtime.forecast_component_specs,
     )
-    plan = _planning_service(settings).plan(
+    publication = _planning_service(settings).plan(
         intervals=intervals,
         samples=data["samples"],
         start_energy_kwh=start_e,
@@ -475,6 +486,7 @@ def run(runtime_context):
         forecast_bundle=forecast_bundle,
         forecast_diagnostics=forecast_diagnostics,
     )
+    plan = publication.data
     forecast_diagnostics = plan.get("forecast_diagnostics", {})
     future_points = plan["points"]
     next_hour_points = future_points[:4]
@@ -786,6 +798,25 @@ def run(runtime_context):
         "timestamp": now.isoformat(),
     }
 
-    data["last_output"] = out
+    result = build_planning_result(
+        publication.battery_plan,
+        out,
+        timezone=settings.timezone,
+        now_ms=now_ts_ms,
+        override_active=False,
+    )
+    data["last_output"] = persisted_output(result)
     save_state(runtime, data)
-    return out
+    return result
+
+
+def _result_options(settings: PlanningRuntimeSettings) -> StrategyOptions:
+    """Build only the physical fallback needed to validate a persisted plan."""
+    return StrategyOptions(
+        min_soc_pct=settings.min_soc_pct,
+        max_soc_pct=settings.max_soc_pct,
+        battery_capacity_kwh=settings.battery_capacity_kwh,
+        max_charge_power_w=settings.max_charge_power_w,
+        max_discharge_power_w=settings.max_discharge_power_w,
+        round_trip_efficiency=settings.round_trip_efficiency,
+    )

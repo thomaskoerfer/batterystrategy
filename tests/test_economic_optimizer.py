@@ -277,11 +277,15 @@ def test_pure_optimizer_matches_current_economic_kernel(prices, loads, pv, soc):
             "feed_in_tariff_ct_per_kwh": 0.0,
         }
     ).settings
-    current = planning_pipeline._planning_service(settings).plan(
-        intervals=intervals,
-        samples=[],
-        start_energy_kwh=6.0 * soc / 100.0,
-        forecast_bundle=candidate.forecast,
+    current = (
+        planning_pipeline._planning_service(settings)
+        .plan(
+            intervals=intervals,
+            samples=[],
+            start_energy_kwh=6.0 * soc / 100.0,
+            forecast_bundle=candidate.forecast,
+        )
+        .data
     )
     pure = DynamicProgrammingOptimizer().optimize(candidate)
     for point, slot in zip(current["points"], pure.slots, strict=True):

@@ -11,6 +11,7 @@ SLOTS_PER_DAY = 96
 TRACE_MIN_INTERVAL_S = 240
 TRACE_RETENTION_DAYS = 14
 TRACE_MAX_POINTS = 8000
+STATE_SCHEMA_VERSION = 10
 
 
 def _clamp(value, lower, upper):
@@ -63,7 +64,7 @@ def load_state(runtime):
         "daily_savings": {},
         "actual_daily_savings": {},
         "last_output": {},
-        "state_schema": 9,
+        "state_schema": STATE_SCHEMA_VERSION,
     }
     try:
         data = load_state_document(settings.state_file)
@@ -89,7 +90,10 @@ def load_state(runtime):
             ]
         else:
             data["samples"] = normalize_samples(data.get("samples", []))
-        data["state_schema"] = 9
+        # Schema 10 stores the canonical BatteryPlan beside operator data.
+        # Schema 9 display data remains readable, but cannot authorize control;
+        # the first successful planning run writes the canonical plan snapshot.
+        data["state_schema"] = STATE_SCHEMA_VERSION
         data["virtual_trace"] = compact_virtual_trace(data.get("virtual_trace", []))
         return data
     except (OSError, TypeError, ValueError):

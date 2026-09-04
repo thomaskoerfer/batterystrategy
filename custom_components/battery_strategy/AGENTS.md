@@ -26,6 +26,9 @@ documented impact analysis and explicit owner approval.
 - Plan compiler: `plan_compiler.py`; `compiler_runtime.py` owns active-slot
   progress, commitment and restart continuity around it. The coordinator
   supplies measurements but may not recreate these semantics.
+- Planning result: `planning_result.py` preserves the canonical `BatteryPlan`
+  separately from immutable operator projections and owns its versioned state
+  codec. Presentation data must never be converted back into compiler intent.
 - Plan-compiler persistence adapter: `compiler_runtime_store.py`; it may store
   explicit compiler state and measured progress but may not interpret prices or
   create permission.

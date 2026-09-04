@@ -125,6 +125,11 @@ and discharge actions, commercial discharge budgets and plan diagnostics. It
 does not read Home Assistant, history, weather, files, network resources or the
 wall clock.
 
+The planning application publishes that same canonical plan in an immutable
+`PlanningResult` together with a separate operator projection. The compiler
+consumes only the canonical plan. Dashboard profiles and diagnostics remain
+non-authoritative and are never parsed back into executable permission.
+
 ### Plan compiler
 
 The plan compiler converts the economic `BatteryPlan` into explicit slot-bound
@@ -202,6 +207,12 @@ battery counters, paid charge and discharge fail closed for the rest of that
 slot while live PV-follow remains available. The coordinator retains HA
 lifecycle, scheduling and the single actuator call; this extraction does not
 change the compiler or live-control contracts.
+
+Planning state schema 10 stores the canonical `BatteryPlan` beside operator
+data. Older or malformed display snapshots remain readable but fail closed for
+control until a fresh optimizer result exists. `planning_result.py` owns this
+single persistence codec and the separation between canonical intent and
+operator projection.
 
 Configuration defaults and numeric constraints are owned once in
 `config_definitions.py`; profile-aware entry validation is owned by

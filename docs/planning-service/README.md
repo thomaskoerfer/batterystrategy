@@ -5,17 +5,22 @@
 The planning service is the thin application orchestrator for one immutable
 planning snapshot. It combines an existing forecast and market context with
 battery constraints, invokes the single pure optimizer once and adapts the
-typed `BatteryPlan` into the stable published plan representation.
+typed `BatteryPlan` into stable operator metadata.
 
 ```text
 ForecastBundle + price horizon + battery snapshot + configuration
     -> commercial policy -> OptimizationProblem -> optimizer -> published plan
 ```
 
-It contains no forecast model, market network access, measured-savings
-accounting, live meter following or hardware writes. Existing forecast,
-optimization and plan contracts remain authoritative; `PlanningService` is an
-internal application boundary, not a new public schema.
+It returns `PlanningPublication`: the exact canonical `BatteryPlan` plus
+non-authoritative presentation metadata. It contains no forecast model, market
+network access, measured-savings accounting, live meter following or hardware
+writes. It never reconstructs executable intent from presentation data.
+
+The surrounding planning runtime combines the publication with diagnostics as
+an immutable `PlanningResult`. Only its `battery_plan` member may enter the plan
+compiler; the `StrategyPlan` and mapping projections exist for Home Assistant
+entities and dashboards.
 
 ## Setup independence
 

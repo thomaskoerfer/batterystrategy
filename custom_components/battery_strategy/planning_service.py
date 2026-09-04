@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from .contracts import (
@@ -35,6 +36,14 @@ class PlanningSettings:
     slot_hours: float = 0.25
 
 
+@dataclass(frozen=True, slots=True)
+class PlanningPublication:
+    """Canonical optimizer plan and its presentation metadata."""
+
+    battery_plan: BatteryPlan | None
+    data: Mapping[str, object]
+
+
 class PlanningService:
     """Compose market policy, pure optimization and plan publication."""
 
@@ -56,23 +65,14 @@ class PlanningService:
         forecast_bundle: ForecastBundle,
         eex_days: dict | None = None,
         forecast_diagnostics: dict | None = None,
-    ) -> dict:
-        """Return the existing published plan shape from one captured snapshot."""
+    ) -> PlanningPublication:
+        """Return canonical intent together with its presentation metadata."""
         metadata = self._market_context.build_plan_metadata(
             intervals,
             samples,
             eex_days=eex_days,
             forecast_diagnostics=forecast_diagnostics,
         )
-        if not intervals:
-            return {
-                **metadata,
-                "points": [],
-                "end_soc": 0.0,
-                "daily_costs": {},
-                "optimizer_source": OPTIMIZER_VERSION,
-            }
-
         price_stats = metadata["price_stats"]
         constraints = BatteryConstraints(
             self._settings.battery_capacity_kwh,
@@ -97,6 +97,18 @@ class PlanningService:
             pv_recovery_confidence=self._settings.pv_recovery_confidence,
             pv_recovery_reserve_kwh=self._settings.pv_recovery_reserve_kwh,
         )
+        if not intervals:
+            return PlanningPublication(
+                None,
+                {
+                    **metadata,
+                    "points": [],
+                    "end_soc": 0.0,
+                    "daily_costs": {},
+                    "optimizer_source": OPTIMIZER_VERSION,
+                },
+            )
+
         _, candidate = optimize_snapshot(
             intervals=intervals,
             forecast=forecast_bundle,
@@ -118,7 +130,7 @@ class PlanningService:
         intervals: list[dict],
         forecast_bundle: ForecastBundle,
         publication_metadata: dict,
-    ) -> dict:
+    ) -> PlanningPublication:
         if not (
             len(candidate.slots)
             == len(intervals)
@@ -232,4 +244,4 @@ class PlanningService:
                 "optimizer_source": candidate.optimizer_version,
             }
         )
-        return result
+        return PlanningPublication(candidate, result)
