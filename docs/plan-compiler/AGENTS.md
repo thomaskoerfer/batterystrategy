@@ -15,10 +15,15 @@ Do not read prices, forecasts, Home Assistant, persistence or the wall clock.
 Do not create economic permission, move energy between slots or raise an active
 slot commitment after it has been latched.
 
+Home Assistant persistence belongs to the adjacent runtime adapter. It may
+serialize the explicit state and measured progress but must not add compiler
+rules or silently reopen permission.
+
 ## Required checks
 
 Test progress accounting, within-slot lower-only replans, next-slot refresh,
-required-charge source rules, mode switches and restart fail-closed behavior.
+required-charge source rules, mode switches, clean reload continuation,
+counter-based crash recovery and restart fail-closed behavior.
 
 ## Setup independence
 

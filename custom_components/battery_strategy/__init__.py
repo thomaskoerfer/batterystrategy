@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from datetime import timedelta
 from pathlib import Path
 
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 
 from .command_trace import COMMAND_TRACE_FILE
+from .compiler_runtime_store import CompilerRuntimeStore
 from .const import CONFIG_ENTRY_VERSION, DOMAIN
 from .coordinator import (
     FEATURE_STORE_FILE,
@@ -19,9 +23,18 @@ from .coordinator import (
 from .optimizer_state import runtime_snapshot
 
 PLATFORMS = [Platform.SENSOR, Platform.SELECT, Platform.SWITCH, Platform.NUMBER]
+type BatteryStrategyConfigEntry = ConfigEntry[BatteryStrategyCoordinator]
 
 
-async def async_setup_entry(hass, entry) -> bool:
+async def async_setup(hass: HomeAssistant, _config: dict) -> bool:
+    """Register integration-level services once during domain setup."""
+    _async_register_services(hass)
+    return True
+
+
+async def async_setup_entry(
+    hass: HomeAssistant, entry: BatteryStrategyConfigEntry
+) -> bool:
     """Set up Battery Strategy from a config entry."""
     _async_remove_deprecated_entities(hass, entry)
     await hass.async_add_executor_job(_migrate_runtime_files, hass.config.config_dir)
@@ -36,6 +49,8 @@ async def async_setup_entry(hass, entry) -> bool:
     feature_history = await hass.async_add_executor_job(
         feature_store.load, 0, 2**63 - 1
     )
+    compiler_runtime_store = CompilerRuntimeStore(hass, entry.entry_id)
+    restored_compiler_runtime = await compiler_runtime_store.load()
     coordinator = BatteryStrategyCoordinator(
         hass,
         entry,
@@ -44,12 +59,13 @@ async def async_setup_entry(hass, entry) -> bool:
         last_optimizer_output=last_optimizer_output,
         feature_store=ExecutorFeatureStore(feature_store, hass.async_add_executor_job),
         feature_history=feature_history,
+        compiler_runtime_store=compiler_runtime_store,
+        restored_compiler_runtime=restored_compiler_runtime,
     )
     await coordinator.async_config_entry_first_refresh()
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
+    entry.runtime_data = coordinator
     coordinator.async_start_live_tracking()
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-    _async_register_services(hass)
     return True
 
 
@@ -93,16 +109,14 @@ def _migrate_runtime_files(config_dir: str) -> None:
         break
 
 
-async def async_unload_entry(hass, entry) -> bool:
+async def async_unload_entry(
+    hass: HomeAssistant, entry: BatteryStrategyConfigEntry
+) -> bool:
     """Unload Battery Strategy."""
-    coordinator = hass.data.get(DOMAIN, {}).get(entry.entry_id)
-    if coordinator is not None:
-        await coordinator.async_prepare_unload()
+    coordinator = entry.runtime_data
+    await coordinator.async_prepare_unload()
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-    if not unload_ok:
-        return False
-    hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
-    return True
+    return bool(unload_ok)
 
 
 async def async_migrate_entry(hass, entry) -> bool:
@@ -127,16 +141,15 @@ async def async_migrate_entry(hass, entry) -> bool:
 
 def _async_register_services(hass) -> None:
     """Register minimal runtime services once."""
-    if hass.data.setdefault(DOMAIN, {}).get("_services_registered"):
+    if hass.services.has_service(DOMAIN, "recalculate"):
         return
 
     async def _set_manual_mode(call, mode: str) -> None:
         power = float(call.data.get("power_w", 0.0) or 0.0)
         duration = int(call.data.get("duration_min", 0) or 0)
-        for coordinator in hass.data.get(DOMAIN, {}).values():
-            if isinstance(coordinator, BatteryStrategyCoordinator):
-                coordinator.set_manual_override(mode, power, duration)
-                await coordinator.async_request_refresh()
+        for coordinator in _coordinators(hass):
+            coordinator.set_manual_override(mode, power, duration)
+            await coordinator.async_request_refresh()
 
     async def manual_charge(call) -> None:
         await _set_manual_mode(call, "charge")
@@ -145,21 +158,26 @@ def _async_register_services(hass) -> None:
         await _set_manual_mode(call, "discharge")
 
     async def stop_manual(call) -> None:
-        for coordinator in hass.data.get(DOMAIN, {}).values():
-            if isinstance(coordinator, BatteryStrategyCoordinator):
-                coordinator.clear_manual_override()
-                await coordinator.async_request_refresh()
+        for coordinator in _coordinators(hass):
+            coordinator.clear_manual_override()
+            await coordinator.async_request_refresh()
 
     async def recalculate(call) -> None:
-        for coordinator in hass.data.get(DOMAIN, {}).values():
-            if isinstance(coordinator, BatteryStrategyCoordinator):
-                await coordinator.async_request_refresh()
+        for coordinator in _coordinators(hass):
+            await coordinator.async_request_refresh()
 
     hass.services.async_register(DOMAIN, "manual_charge", manual_charge)
     hass.services.async_register(DOMAIN, "manual_discharge", manual_discharge)
     hass.services.async_register(DOMAIN, "stop_manual", stop_manual)
     hass.services.async_register(DOMAIN, "recalculate", recalculate)
-    hass.data[DOMAIN]["_services_registered"] = True
+
+
+def _coordinators(hass: HomeAssistant) -> Iterable[BatteryStrategyCoordinator]:
+    """Yield loaded coordinators without maintaining a parallel registry."""
+    for entry in hass.config_entries.async_entries(DOMAIN):
+        coordinator = getattr(entry, "runtime_data", None)
+        if isinstance(coordinator, BatteryStrategyCoordinator):
+            yield coordinator
 
 
 def _async_remove_deprecated_entities(hass, entry) -> None:

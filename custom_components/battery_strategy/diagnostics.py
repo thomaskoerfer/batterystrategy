@@ -6,8 +6,6 @@ from dataclasses import asdict
 
 from homeassistant.components.diagnostics import async_redact_data
 
-from .const import DOMAIN
-
 TO_REDACT = {
     "signed_grid_power_entity",
     "grid_l1_entity",
@@ -34,7 +32,7 @@ TO_REDACT = {
 
 async def async_get_config_entry_diagnostics(hass, entry) -> dict:
     """Return bounded, privacy-safe diagnostics for one config entry."""
-    coordinator = hass.data[DOMAIN][entry.entry_id]
+    coordinator = entry.runtime_data
     data = coordinator.data or {}
     plan = data.get("plan")
     return {

@@ -11,11 +11,11 @@ from custom_components.battery_strategy.const import (
     GRID_CHARGING_PRICE_SENSITIVE,
     PV_CHARGING_ON,
 )
-from custom_components.battery_strategy.coordinator import BatteryStrategyCoordinator
 from custom_components.battery_strategy.contracts import (
     PlanCompilationState,
     SlotProgress,
 )
+from custom_components.battery_strategy.coordinator import BatteryStrategyCoordinator
 from custom_components.battery_strategy.models import StrategyInputs, StrategyOptions
 from custom_components.battery_strategy.plan_compiler import (
     DeterministicPlanCompiler,
@@ -152,6 +152,8 @@ def _cutover_coordinator() -> BatteryStrategyCoordinator:
     coordinator._plan_compiler_error = None
     coordinator._slot_charged_kwh = 0.0
     coordinator._slot_discharged_kwh = 0.0
+    coordinator._compiler_progress_reconstructable = True
+    coordinator._compiler_snapshot_dirty = False
     return coordinator
 
 

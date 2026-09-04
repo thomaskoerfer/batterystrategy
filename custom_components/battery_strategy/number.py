@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from homeassistant.components.number import NumberEntity
 from homeassistant.const import PERCENTAGE, UnitOfPower
 
-from .const import DOMAIN
 from .entity import BatteryStrategyEntity
 
 
@@ -96,7 +95,7 @@ NUMBERS = (
 
 async def async_setup_entry(hass, entry, async_add_entities) -> None:
     """Set up Battery Strategy number controls."""
-    coordinator = hass.data[DOMAIN][entry.entry_id]
+    coordinator = entry.runtime_data
     async_add_entities(
         BatteryStrategyNumber(coordinator, description) for description in NUMBERS
     )

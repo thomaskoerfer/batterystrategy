@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from homeassistant.components.switch import SwitchEntity
 
-from .const import DOMAIN
 from .entity import BatteryStrategyEntity
 
 SWITCHES = (
@@ -18,7 +17,7 @@ SWITCHES = (
 
 async def async_setup_entry(hass, entry, async_add_entities) -> None:
     """Set up Battery Strategy switches."""
-    coordinator = hass.data[DOMAIN][entry.entry_id]
+    coordinator = entry.runtime_data
     async_add_entities(
         BatteryStrategySwitch(coordinator, key, name, default)
         for key, name, default in SWITCHES

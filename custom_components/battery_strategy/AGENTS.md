@@ -25,12 +25,18 @@ documented impact analysis and explicit owner approval.
   publishes the stable entity payload. None may own another layer's rules.
 - Plan compiler: `plan_compiler.py`; the coordinator supplies explicit plan and
   progress state but may not recreate compiler semantics.
+- Plan-compiler persistence adapter: `compiler_runtime_store.py`; it may store
+  explicit compiler state and measured progress but may not interpret prices or
+  create permission.
 - Live control: `live_control.py`, `strategy.py` and live orchestration in
   `coordinator.py`.
 - Actuation: `actuator.py`; it is the only module allowed to call Home
   Assistant services for battery hardware.
 - Evaluation: `forecast_evaluation.py`, `command_trace.py`, diagnostics,
   backtests and measured-savings reporting.
+- Home Assistant operator projection: `operator_projection.py` precomputes
+  entity values and non-recorded dashboard attributes once per refresh;
+  `sensor.py` is a read-only entity adapter.
 
 ## Boundary rules
 

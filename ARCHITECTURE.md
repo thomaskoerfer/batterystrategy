@@ -188,16 +188,26 @@ The coordinator never writes hardware directly; `actuator.py` is the sole Home
 Assistant battery-service writer. There are no compatibility facades,
 alternative optimizers, compilers, forecast runners or hardware writers.
 
+Home Assistant owns each loaded runtime through typed
+`ConfigEntry.runtime_data`; integration services are registered once at domain
+setup. The coordinator builds one immutable operator projection per refresh so
+entity property reads perform no planning, conversion or wall-clock work.
+Changing profile attributes are exposed to dashboards but excluded from
+Recorder storage. Active-slot compiler state and measured progress are stored
+through a small versioned HA adapter so a reload cannot reopen already consumed
+economic permission. If an unclean restart cannot reconstruct progress from
+monotonic battery counters, paid charge and discharge fail closed for the rest
+of that slot while live PV-follow remains available.
+
 ## Migration plan and gates
 
-Current status: `0.2.0-rc.5` is deployed. The finalized feature store, pure
-optimizer and deterministic plan compiler are authoritative. Their retained
-shadow gates passed before each cutover. The `0.2.0-rc.6` Phase-7 candidate
-removes those completed comparison paths, the superseded optimizer kernel and
-direct recorder-schema access. It also completes the market-context, planning,
-savings and actuator boundaries without changing the approved contracts.
-Deployment remains subject only to candidate validation and explicit owner
-approval, not another behavioral shadow phase.
+Current status: `0.2.0-rc.6` is deployed. The finalized feature store, pure
+optimizer and deterministic plan compiler are authoritative, and all completed
+shadow and compatibility paths have been removed. The `0.2.0-rc.7` candidate
+hardens the Home Assistant boundary, Recorder hygiene, active-slot restart
+continuity and concrete actuator conformance without changing economic,
+forecast, compiler or live-control contract semantics. Deployment remains
+subject to candidate validation and explicit owner approval.
 
 ### Phase 0: Baseline and contracts
 

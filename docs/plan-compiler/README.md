@@ -88,6 +88,20 @@ discharge ceilings. A restart may restore a directive only from a valid current
 plan and real progress inputs; missing or stale SoC fails closed rather than
 inventing a nominal value.
 
+The Home Assistant adapter persists one compact, versioned snapshot containing
+the active compilation state, measured slot throughput and the corresponding
+monotonic battery energy counters. On a clean config-entry reload, the same-slot
+commitment and progress resume directly. After an unclean restart, progress is
+advanced by valid monotonic counter deltas. Counter rollback, missing counters
+or malformed state makes commercial grid charge and discharge fail closed until
+the next slot boundary; actual PV export may still be captured because PV-follow
+does not create paid economic permission. A running process always resets
+progress normally when it observes the next slot itself.
+
+Persistence is an application adapter and is not part of the pure compiler. The
+compiler continues to receive only `BatteryPlan`, `SlotProgress`, explicit
+`PlanCompilationState` and an issue timestamp.
+
 ## Setup independence
 
 The compiler consumes only typed plans, progress and explicit state. It must not
@@ -106,6 +120,10 @@ Required regression scenarios include:
 - PV-only charge never opens grid charge;
 - load-following discharge does not depend on economic budget;
 - mode changes preserve measured progress;
+- clean reload preserves same-slot commitments and measured progress;
+- unclean restart reconstructs progress from monotonic counters;
+- unreconstructable same-slot progress fails commercially closed without
+  disabling PV-follow;
 - stale SoC and invalid slot identity fail closed.
 
 The production migration and rollback gate is maintained in

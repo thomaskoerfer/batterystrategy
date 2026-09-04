@@ -116,6 +116,40 @@ def test_actuator_is_the_only_hardware_service_writer():
     assert "services.async_call" in actuator
 
 
+def test_home_assistant_runtime_uses_config_entry_ownership():
+    package_sources = "\n".join(
+        path.read_text(encoding="utf-8") for path in PACKAGE.glob("*.py")
+    )
+    integration = (PACKAGE / "__init__.py").read_text(encoding="utf-8")
+
+    assert "hass.data" not in package_sources
+    assert "entry.runtime_data = coordinator" in integration
+    assert "async def async_setup(" in integration
+    assert "_async_register_services(hass)" in integration
+
+
+def test_sensor_entities_only_read_precomputed_operator_projection():
+    sensor = (PACKAGE / "sensor.py").read_text(encoding="utf-8")
+    projection = (PACKAGE / "operator_projection.py").read_text(encoding="utf-8")
+
+    assert "build_operator_projection" not in sensor
+    assert "dt_util" not in sensor
+    assert 'data.get("operator_projection")' in sensor
+    assert "PROFILE_ATTRIBUTE_KEYS" in sensor
+    assert "def build_operator_projection(" in projection
+
+
+def test_concrete_actuator_implements_only_the_generic_command_port():
+    actuator = (PACKAGE / "actuator.py").read_text(encoding="utf-8")
+
+    assert (
+        "async def apply(self, command: BatteryCommand) -> ActuationResult:" in actuator
+    )
+    assert "async def zero(" not in actuator
+    assert "async def failsafe_zero_once(" not in actuator
+    assert "StrategyCommand" not in actuator
+
+
 def test_application_boundaries_do_not_cross_layer_ownership():
     planning = (PACKAGE / "planning_service.py").read_text(encoding="utf-8")
     market = (PACKAGE / "market_context.py").read_text(encoding="utf-8")

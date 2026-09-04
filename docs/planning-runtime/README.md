@@ -31,6 +31,14 @@ The runtime is split by application responsibility:
 - `plan_presentation.py` creates the stable Home Assistant profile and dispatch
   representation.
 
+The Home Assistant integration owns each coordinator through typed config-entry
+runtime data and registers domain services once, independently of entry reloads.
+`operator_projection.py` converts the completed coordinator result into one
+immutable set of entity values and dashboard attributes per refresh. Entity
+properties only read that projection; they never repeat profile construction,
+time conversion or planning fallbacks. Large changing profile attributes are
+excluded from Recorder while remaining available to the current dashboard.
+
 The pipeline returns the current plan, diagnostics, profiles and
 measured-savings values as one in-process Python mapping. It does not expose a
 command-line or stdout JSON protocol.
@@ -51,3 +59,5 @@ Run the complete test suite, retained-history optimizer replay, current-horizon
 parity replay, architecture boundary tests and Home Assistant integration tests
 after changing this boundary. Tests must also prove that two independently
 constructed runtime snapshots cannot modify each other's settings or inputs.
+Config-entry lifecycle tests must prove runtime-data ownership, one-time service
+registration and planner shutdown ordering.

@@ -21,8 +21,7 @@ from custom_components.battery_strategy import select as battery_select
 from custom_components.battery_strategy import sensor as battery_sensor
 from custom_components.battery_strategy import switch as battery_switch
 from custom_components.battery_strategy.actuator import (
-    should_write_limit,
-    should_write_mode,
+    ActuationWriteTracker,
     zendure_targets,
 )
 from custom_components.battery_strategy.const import (
@@ -42,6 +41,8 @@ from custom_components.battery_strategy.const import (
     PV_CHARGING_ON,
 )
 from custom_components.battery_strategy.contracts import (
+    BatteryCommand,
+    CommandMode,
     ForecastRequest,
     LoadForecastContext,
     PlanCompilationState,
@@ -62,6 +63,10 @@ from custom_components.battery_strategy.models import (
     StrategyCommand,
     StrategyInputs,
     StrategyOptions,
+)
+from custom_components.battery_strategy.operator_projection import (
+    PROFILE_ATTRIBUTE_KEYS,
+    build_operator_projection,
 )
 from custom_components.battery_strategy.optimizer_state import (
     load_state_document,
@@ -122,6 +127,35 @@ def live_command_from_plan(plan, live_command, inputs, options):
     """Run plan compilation and the established live policy in tests."""
     directive = plan_live_directive_from_plan(plan, options, inputs.soc_pct)
     return live_command_from_directive(directive, live_command, inputs, options)
+
+
+def operator_projection(data, local_date):
+    """Build the production entity projection with neutral live defaults."""
+    complete = {
+        "command": StrategyCommand(COMMAND_IDLE, 0, "test", 0, 0, 0, 0, 0, 0),
+        "inputs": StrategyInputs(0, 0, 0, 0, 0, 50),
+        "plan_to_live": PlanLiveDirective(
+            slot_id="test",
+            slot_start_ts=0,
+            slot_end_ts=900_000,
+            pv_charge_allowed=False,
+            must_charge_w=0,
+            must_charge_remaining_kwh=0,
+            grid_charge_allowed=False,
+            discharge_budget_kwh=0,
+            battery_min_soc_pct=10,
+            battery_max_soc_pct=100,
+        ),
+        "optimizer_attrs": {},
+        "strategy_enabled": True,
+        "send_commands": True,
+        **data,
+    }
+    return build_operator_projection(
+        complete,
+        local_date=local_date,
+        timezone="Europe/Berlin",
+    )
 
 
 class HacsStrategyTests(unittest.TestCase):
@@ -474,6 +508,7 @@ class HacsStrategyTests(unittest.TestCase):
         coordinator.entry = SimpleNamespace(options={"strategy_enabled": False})
         coordinator._strategy_was_enabled = True
         coordinator._planner = Planner()
+        coordinator._compiler_runtime_store = None
 
         async def zero_limits(*, blocking=False):
             events.append(("zero_limits", blocking))
@@ -498,6 +533,7 @@ class HacsStrategyTests(unittest.TestCase):
         coordinator.entry = SimpleNamespace(options={"strategy_enabled": False})
         coordinator._strategy_was_enabled = False
         coordinator._planner = Planner()
+        coordinator._compiler_runtime_store = None
 
         async def unexpected_zero(*, blocking=False):
             events.append(("zero_limits", blocking))
@@ -521,9 +557,8 @@ class HacsStrategyTests(unittest.TestCase):
                 events.append("platforms")
                 return True
 
-        entry = SimpleNamespace(entry_id="entry-1")
+        entry = SimpleNamespace(entry_id="entry-1", runtime_data=Coordinator())
         hass = SimpleNamespace(
-            data={"battery_strategy": {"entry-1": Coordinator()}},
             config_entries=ConfigEntries(),
         )
         self.assertTrue(asyncio.run(async_unload_entry(hass, entry)))
@@ -536,6 +571,7 @@ class HacsStrategyTests(unittest.TestCase):
         coordinator._last_actual_battery_power_w = -1000.0
         coordinator._slot_charged_kwh = 0.0
         coordinator._slot_discharged_kwh = 0.0
+        coordinator._compiler_snapshot_dirty = False
         coordinator._account_actual_battery_power(now)
         self.assertAlmostEqual(coordinator._slot_charged_kwh, 0.01, places=4)
         self.assertEqual(coordinator._slot_discharged_kwh, 0.0)
@@ -726,7 +762,9 @@ class HacsStrategyTests(unittest.TestCase):
             ),
         }
 
-        attrs = battery_sensor._profile_attrs(data, today)
+        attrs = operator_projection(data, dt.date.fromisoformat(today)).attrs(
+            "profile_today"
+        )
 
         self.assertEqual(attrs["price"], raw_price)
         self.assertEqual(attrs["soc"], [[1_800_000_000_000, 40.0]])
@@ -773,7 +811,9 @@ class HacsStrategyTests(unittest.TestCase):
             reason="test",
         )
 
-        attrs = battery_sensor._plan_slot_attrs({"plan": plan})
+        attrs = operator_projection(
+            {"plan": plan}, dt.date(2027, 1, 15)
+        ).attrs("plan_slots")
 
         self.assertEqual(
             attrs["rows"],
@@ -825,14 +865,16 @@ class HacsStrategyTests(unittest.TestCase):
         )
 
         encoded = json.dumps(
-            battery_sensor._plan_slot_attrs({"plan": plan}),
+            operator_projection(
+                {"plan": plan}, dt.date(2027, 1, 15)
+            ).attrs("plan_slots"),
             separators=(",", ":"),
         ).encode()
 
         self.assertLess(len(encoded), 16_384)
         self.assertEqual(
             battery_sensor.BatteryStrategySensor._unrecorded_attributes,
-            frozenset({"columns", "rows"}),
+            PROFILE_ATTRIBUTE_KEYS,
         )
 
     def test_optimizer_discharge_budget_sensor_is_separate_from_live_remaining_budget(
@@ -877,8 +919,9 @@ class HacsStrategyTests(unittest.TestCase):
             ),
         }
 
-        self.assertEqual(battery_sensor._optimizer_discharge_budget_kwh(data), 0.6)
-        self.assertEqual(battery_sensor._plan_to_live(data).discharge_budget_kwh, 0.2)
+        projection = operator_projection(data, dt.date.fromisoformat(today))
+        self.assertEqual(projection.value("optimizer_discharge_budget"), 0.6)
+        self.assertEqual(projection.value("plan_live_discharge_budget"), 0.2)
 
     def _coordinator_for_strategy_enabled(self, strategy_enabled=True):
         coordinator = object.__new__(BatteryStrategyCoordinator)
@@ -907,8 +950,13 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertEqual(display.mode, COMMAND_IDLE)
         self.assertEqual(display.power_w, 0)
         self.assertEqual(display.reason, "strategy_disabled_external_control")
+        plan = StrategyPlan([], COMMAND_IDLE, 0, "test")
+        projection = operator_projection(
+            {**data, "plan": plan}, dt.date(2027, 1, 15)
+        )
         self.assertEqual(
-            battery_sensor._command_source(data), "external_control_strategy_disabled"
+            projection.value("command_source"),
+            "external_control_strategy_disabled",
         )
 
     def test_current_simple_mode_discharges_against_load_without_feeding_ev(self):
@@ -2276,15 +2324,14 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertEqual(cmd.reason, "min_soc")
 
     def test_zendure_targets_clear_opposite_limit(self):
-        charge = calculate_command(
-            StrategyInputs(
-                grid_import_w=0,
-                grid_export_w=500,
-                pv_w=500,
-                battery_power_w=0,
-                soc_pct=80,
-            ),
-            StrategyOptions(discharge=DISCHARGE_OFF),
+        charge = BatteryCommand(
+            command_id="test-charge",
+            directive_id="test-directive",
+            created_at_ms=0,
+            valid_until_ms=900_000,
+            mode=CommandMode.INPUT,
+            power_w=500,
+            reason="test",
         )
         targets = zendure_targets(charge)
         self.assertEqual(targets.mode_option, "Input mode")
@@ -2292,17 +2339,32 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertEqual(targets.output_limit_w, 0)
 
     def test_limit_write_respects_delta_and_min_interval(self):
-        options = StrategyOptions(min_command_delta_w=20)
-        self.assertFalse(should_write_limit(500, 510, 30, options))
-        self.assertFalse(should_write_limit(500, 600, 10, options))
-        self.assertTrue(should_write_limit(500, 600, 30, options))
-        self.assertTrue(should_write_limit(10, 0, 30, options, force_zero=True))
+        tracker = ActuationWriteTracker()
+        self.assertFalse(tracker.should_write_limit("limit", 500, 510, 30, 20))
+        self.assertTrue(tracker.should_write_limit("limit", 500, 600, 10, 20))
+        tracker.record("limit", 600, 10)
+        self.assertFalse(tracker.should_write_limit("limit", 500, 600, 17, 20))
+        self.assertTrue(tracker.should_write_limit("limit", 500, 600, 18, 20))
+        self.assertTrue(
+            tracker.should_write_limit("limit", 10, 0, 30, 20, force_zero=True)
+        )
 
     def test_mode_write_respects_min_interval_and_current_mode(self):
-        self.assertFalse(should_write_mode("Input mode", "Input mode", 30))
-        self.assertFalse(should_write_mode("input", "Input mode", 30))
-        self.assertFalse(should_write_mode("Output mode", "Input mode", 10))
-        self.assertTrue(should_write_mode("Output mode", "Input mode", 30))
+        tracker = ActuationWriteTracker()
+        self.assertFalse(
+            tracker.should_write_mode("mode", "Input mode", "Input mode", 30)
+        )
+        self.assertFalse(tracker.should_write_mode("mode", "input", "Input mode", 30))
+        self.assertTrue(
+            tracker.should_write_mode("mode", "Output mode", "Input mode", 10)
+        )
+        tracker.record("mode", "Input mode", 10)
+        self.assertFalse(
+            tracker.should_write_mode("mode", "Output mode", "Input mode", 17)
+        )
+        self.assertTrue(
+            tracker.should_write_mode("mode", "Output mode", "Input mode", 18)
+        )
 
     def test_eex_proxy_fills_missing_tomorrow_prices(self):
         tz = dt.timezone(dt.timedelta(hours=2))

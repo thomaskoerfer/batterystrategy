@@ -143,14 +143,15 @@ def closed_published_directive(
     options: StrategyOptions,
     *,
     slot_start_ms: int = 0,
+    allow_pv_charge: bool = False,
 ) -> PublishedDirective:
-    """Return a fail-closed directive without commercial permissions."""
+    """Return a directive without commercial charge or discharge permission."""
     slot_start_ms = max(0, int(slot_start_ms))
     return PublishedDirective(
         slot_id=str(slot_start_ms) if slot_start_ms else "current",
         slot_start_ts=slot_start_ms,
         slot_end_ts=slot_start_ms + SLOT_MS if slot_start_ms else 0,
-        pv_charge_allowed=False,
+        pv_charge_allowed=allow_pv_charge and options.pv_charging == PV_CHARGING_ON,
         must_charge_w=0,
         must_charge_remaining_kwh=0.0,
         grid_charge_allowed=False,

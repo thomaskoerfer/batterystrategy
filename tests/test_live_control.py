@@ -13,6 +13,7 @@ from custom_components.battery_strategy.const import (
     COMMAND_OUTPUT,
     DISCHARGE_LOAD,
 )
+from custom_components.battery_strategy.contracts import BatteryCommand, CommandMode
 from custom_components.battery_strategy.live_control import (
     DirectionHysteresis,
     P1UpdateGate,
@@ -32,6 +33,19 @@ from custom_components.battery_strategy.strategy import (
 def command(mode: str, power_w: int) -> StrategyCommand:
     """Return a minimal command for live-controller tests."""
     return StrategyCommand(mode, power_w, "test", 0, 0, 0, 0, 0, 0)
+
+
+def actuator_command(mode: CommandMode, power_w: float, reason: str = "test"):
+    """Return one valid command at the hardware boundary."""
+    return BatteryCommand(
+        command_id=f"test:{mode}:{power_w}:{reason}",
+        directive_id="test-directive",
+        created_at_ms=1,
+        valid_until_ms=9_999_999_999_999,
+        mode=mode,
+        power_w=power_w,
+        reason=reason,
+    )
 
 
 def test_p1_gate_copies_zendure_fast_and_normal_intervals():
@@ -77,14 +91,12 @@ def test_idle_device_uses_zendure_50_watt_start_threshold():
 
 def test_write_tracker_uses_own_write_time_and_confirms_or_retries():
     tracker = ActuationWriteTracker()
-    options = StrategyOptions(min_command_delta_w=5)
-
-    assert tracker.should_write_limit("output", 500, 600, 0, options)
+    assert tracker.should_write_limit("output", 500, 600, 0, 5)
     tracker.record("output", 600, 0)
-    assert not tracker.should_write_limit("output", 500, 600, 4, options)
-    assert tracker.should_write_limit("output", 500, 600, 8, options)
-    assert not tracker.should_write_limit("output", 598, 600, 9, options)
-    assert tracker.should_write_limit("output", 600, 700, 10.3, options)
+    assert not tracker.should_write_limit("output", 500, 600, 4, 5)
+    assert tracker.should_write_limit("output", 500, 600, 8, 5)
+    assert not tracker.should_write_limit("output", 598, 600, 9, 5)
+    assert tracker.should_write_limit("output", 600, 700, 10.3, 5)
 
 
 def test_direction_change_stops_opposite_limit_before_mode_and_target():
@@ -105,7 +117,7 @@ def test_direction_change_stops_opposite_limit_before_mode_and_target():
         hass, "ac_mode", "input_limit", "output_limit"
     )
 
-    asyncio.run(actuator.apply(command(COMMAND_OUTPUT, 600), StrategyOptions()))
+    asyncio.run(actuator.apply(actuator_command(CommandMode.OUTPUT, 600)))
 
     assert calls == [
         (
@@ -150,17 +162,22 @@ def test_actuator_failsafe_and_disabled_zero_write_semantics():
     )
 
     async def scenario():
-        first = await actuator.failsafe_zero_once("grid_inputs_stale")
-        second = await actuator.failsafe_zero_once("grid_inputs_stale")
-        disabled = await actuator.zero(
-            "strategy_disabled", blocking=True, always_write=True
+        first = await actuator.apply(
+            actuator_command(CommandMode.IDLE, 0, "grid_inputs_stale")
+        )
+        second = await actuator.apply(
+            actuator_command(CommandMode.IDLE, 0, "grid_inputs_stale")
+        )
+        disabled = await actuator.apply(
+            actuator_command(CommandMode.IDLE, 0, "strategy_disabled")
         )
         return first, second, disabled
 
     first, second, disabled = asyncio.run(scenario())
-    assert first["status"] == "failsafe_zeroed"
-    assert second["status"] == "failsafe_no_write"
-    assert disabled["status"] == "disabled_zeroed"
+    assert first.applied
+    assert first.detail.startswith("written:")
+    assert second.detail == "failsafe_no_write"
+    assert disabled.applied
     assert [call[2] for call in calls] == [
         {"entity_id": "output_limit", "value": 0},
         {"entity_id": "input_limit", "value": 0},

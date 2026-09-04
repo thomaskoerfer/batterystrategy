@@ -8,7 +8,6 @@ from .const import (
     DISCHARGE_LOAD,
     DISCHARGE_OFF,
     DISCHARGE_PRICE_SENSITIVE,
-    DOMAIN,
     GRID_CHARGING_OFF,
     GRID_CHARGING_PRICE_SENSITIVE,
     MANUAL_CHARGE,
@@ -63,7 +62,7 @@ SELECTS = (
 
 async def async_setup_entry(hass, entry, async_add_entities) -> None:
     """Set up Battery Strategy select controls."""
-    coordinator = hass.data[DOMAIN][entry.entry_id]
+    coordinator = entry.runtime_data
     async_add_entities(
         BatteryStrategySelect(coordinator, key, name, default, options)
         for key, name, default, options in SELECTS

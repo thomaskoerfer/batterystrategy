@@ -2,6 +2,30 @@
 
 All notable changes to Battery Strategy are documented here.
 
+## [0.2.0-rc.7] - 2026-09-04
+
+### Changed
+
+- Precompute Home Assistant sensor values and profile attributes once per
+  coordinator refresh; entity properties are now read-only projections.
+- Exclude all changing profile and plan-table attributes from Recorder while
+  keeping them available to dashboards.
+- Move per-entry runtime ownership to typed `ConfigEntry.runtime_data` and
+  register integration services once during domain setup.
+- Align the Zendure adapter with the approved generic
+  `apply(BatteryCommand) -> ActuationResult` contract for normal, disabled and
+  fail-safe commands.
+- Persist compact active-slot compiler state and throughput so config-entry
+  reloads cannot reopen consumed charge or discharge permission.
+
+### Safety
+
+- Unclean same-slot restarts reconstruct throughput from monotonic battery
+  energy counters. If that is impossible, commercial charge and discharge fail
+  closed until the next slot while PV-follow remains available.
+- Optimizer, forecast, compiler and live-control semantics are unchanged. This
+  release remains local until validation and explicit deployment approval.
+
 ## [0.2.0-rc.6] - 2026-09-03
 
 ### Changed

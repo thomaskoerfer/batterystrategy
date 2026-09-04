@@ -10,6 +10,9 @@
 - Keep state migration/persistence in `planning_state.py`, forecast invocation
   and evaluation in their application modules, and entity/profile projection in
   `plan_presentation.py`.
+- Keep HA entity projection in `operator_projection.py`; sensor properties may
+  only read the precomputed projection. Own coordinators through typed config
+  entry runtime data and register integration services at domain setup.
 
 ## Forbidden
 
@@ -20,6 +23,8 @@
 - Access Recorder schemas, database engines or battery services directly.
 - Store per-entry configuration, state, history, weather or prices in module
   globals.
+- Recompute profiles, timestamps or planning fallbacks from entity properties,
+  or expose large changing profile attributes to Recorder.
 
 ## Required checks
 
