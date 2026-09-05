@@ -172,6 +172,30 @@ class PlanningPipelineAdapter:
                     result.operator_plan, override_active=override_active
                 ),
             )
+        current_point = next(
+            (
+                point
+                for point in result.operator_plan.points
+                if point.ts_ms <= inputs.captured_at_ms < point.ts_ms + SLOT_MS
+            ),
+            None,
+        )
+        projected_mode = current_point.mode if current_point is not None else "idle"
+        projected_power_w = current_point.power_w if current_point is not None else 0
+        if (
+            result.operator_plan.current_mode != projected_mode
+            or result.operator_plan.current_power_w != projected_power_w
+        ):
+            # Presentation follows the current cached slot. Executable intent
+            # remains the separately carried canonical BatteryPlan.
+            result = replace(
+                result,
+                operator_plan=replace(
+                    result.operator_plan,
+                    current_mode=projected_mode,
+                    current_power_w=projected_power_w,
+                ),
+            )
         return result
 
     def needs_run(self, options: StrategyOptions, *, force: bool = False) -> bool:

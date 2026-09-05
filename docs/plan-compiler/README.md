@@ -30,16 +30,22 @@ missing canonical plan is a closed commercial directive.
 
 ## A slot is a commitment
 
-At the start of each UTC-aligned 15-minute slot, the compiler latches the latest
-economic directive for that slot. This prevents rolling optimizer runs from
-causing charge or discharge permission to jump repeatedly inside the interval.
+At the start of each UTC-aligned 15-minute slot, the compiler takes the latest
+economic directive for that slot. If its plan was generated before the slot
+boundary, the discharge commitment is `provisional`: the first eligible plan
+generated at or after the boundary may replace it once. The commitment then becomes
+`final`. This corrects the pre-boundary SoC projection without allowing rolling
+optimizer runs to make discharge permission jump repeatedly inside the slot.
 
 For the active slot:
 
 - actual charged energy reduces remaining required charge;
 - actual discharged energy reduces remaining commercial discharge budget;
-- a later optimizer plan may lower or withdraw an economic commitment;
-- a later optimizer plan may not increase or newly open that commitment;
+- the first eligible post-boundary plan may replace a provisional commitment;
+- that replacement may increase only when the SoC source is currently available;
+- after reload/recovery, a cached plan predating live SoC waits for the forced run;
+- after reconciliation, later plans may lower or withdraw discharge permission;
+- after reconciliation, later plans may not increase or newly open it;
 - physical SoC and power limits may always reduce executable permission;
 - increases and new economic choices apply from the next slot.
 
@@ -48,11 +54,14 @@ previous slot's economic ceiling forward.
 
 ### Example
 
-The 20:00 slot opens with `0.40 kWh` discharge permission. By 20:05 the battery
-has discharged `0.10 kWh`, leaving `0.30 kWh`.
+At 19:59, the plan gives the future 20:00 slot `0.20 kWh` discharge permission.
+The compiler takes that value provisionally at 20:00. By the time the first
+post-boundary plan completes, `0.05 kWh` has already been discharged and the
+new plan gives the slot a total budget of `0.40 kWh`.
 
-- a rolling replan proposes `0.60 kWh`: remaining permission stays `0.30 kWh`;
-- a rolling replan proposes `0.20 kWh`: remaining permission becomes `0.10 kWh`;
+- the one-time reconciliation leaves `0.35 kWh` remaining;
+- a later rolling replan proposes `0.60 kWh`: remaining stays `0.35 kWh`;
+- a later rolling replan proposes `0.20 kWh`: remaining becomes `0.15 kWh`;
 - at 20:15, the latest plan for the new slot is accepted in full.
 
 The optimizer still starts every new calculation from the measured current SoC.
@@ -105,16 +114,32 @@ the next slot boundary; actual PV export may still be captured because PV-follow
 does not create paid economic permission. A running process always resets
 progress normally when it observes the next slot itself.
 
+The provisional/final phase is part of the persisted compilation state. After
+a reload or SoC recovery, a cached post-boundary plan that predates the live SoC
+source leaves the commitment unchanged and provisional until the acknowledged
+forced planner run completes. With an unavailable/bridged source, the first
+post-boundary plan may only lower the provisional value and still makes the
+state `final`; a later plan cannot reopen the slot. A snapshot from a version
+without that field is migrated as `final`, which cannot reopen permission.
+Clean reload and counter-reconstructable crash recovery retain the phase.
+
 If no usable snapshot exists at all when a deployment starts inside an active
 slot, the runtime cannot distinguish prior execution from downtime. It therefore
 opens only the fraction of the optimizer's discharge budget corresponding to
-the unelapsed slot time. That proportional ceiling is latched and cannot rise
-during later replans. Required grid charge remains closed. An exact clean
-snapshot or progress reconstructed from monotonic counters always takes
-precedence over this fallback.
+the unelapsed slot time. That proportional ceiling is latched, cannot rise
+during later replans and is immediately `final`. Required grid charge remains
+closed. An exact clean snapshot or progress reconstructed from monotonic
+counters always takes precedence over this fallback.
+
+The coordinator forces one optimizer refresh at or after each slot boundary.
+There is no separate last-minute prefetch run: it previously modeled the nearly
+elapsed current slot as a complete interval and could distort the next slot's
+SoC. A boundary force is acknowledged only after the planner accepts or queues
+it, so input-capture failure cannot consume the refresh.
 
 A temporary missing or incomplete planner result fails commercially closed for
 that refresh but does not erase an already established active-slot commitment.
+The same preservation applies to an invalid or causally impossible plan.
 When a valid plan returns for the same slot, compilation resumes from the
 latched ceiling and measured progress. This prevents an asynchronous optimizer
 refresh from reopening permission after a restart or replan.

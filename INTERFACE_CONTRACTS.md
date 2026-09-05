@@ -224,20 +224,34 @@ between slots. It publishes the optimizer's explicit required total charge only
 when that slot also contains an explicit grid commitment. Any economic deferral
 must already be represented in `BatteryPlan` and its SoC trajectory.
 
-The active slot is a latched economic commitment. Rolling replans may lower or
-withdraw required grid charge and commercial discharge budget in that slot, but
-may not increase or newly open them. Actual charged/discharged energy reduces
-the corresponding remaining commitment. At the next slot boundary the latest
-valid plan is accepted in full. This behavior is represented by explicit
-`PlanCompilationState`; it must not be hidden in coordinator state. Detailed
-semantics and examples are normative in
-`docs/plan-compiler/README.md`. They were approved by the owner on 2026-08-31.
+The active slot is a latched economic commitment. A discharge commitment taken
+from a plan generated before the slot starts is explicitly `provisional`. The
+first eligible plan generated at or after the slot boundary may replace that discharge
+commitment once, upward or downward, provided the optimizer used a currently
+available real SoC measurement. After a reload or SoC recovery, a cached plan
+that predates the restored live source is ignored while the forced fresh run is
+pending. With an unavailable/bridged source, the first post-boundary plan may
+only lower the provisional value and makes it `final`. Subsequent rolling
+replans may lower or withdraw it, but may not increase or newly open it. Actual
+discharged energy is always subtracted from the accepted total commitment.
+
+Required grid charge retains the stricter rule: rolling replans may lower or
+withdraw it in the active slot, but may not increase or newly open it. At the
+next slot boundary the latest valid plan is accepted under the same lifecycle.
+This behavior is represented by explicit `PlanCompilationState`; it must not be
+hidden in coordinator state or inferred from elapsed seconds. Detailed
+semantics and examples are normative in `docs/plan-compiler/README.md`. The base
+contract was approved on 2026-08-31 and the one-time discharge reconciliation
+extension was approved by the owner on 2026-09-05; see
+`docs/impact-analyses/2026-09-05-slot-boundary-reconciliation.md`.
 
 If the battery SoC source becomes unavailable, the last measured SoC remains
 the displayed estimate. After the bounded availability bridge expires,
 actuation and new optimizer runs remain blocked; the estimate is explicitly
 stale and must not be replaced by a fabricated nominal SoC. A valid recovered
-measurement forces a new optimizer run.
+measurement forces a new optimizer run. During the bridge, existing live
+permission may continue safely, but the bridged value cannot seed a new
+economic plan or authorize a provisional discharge increase.
 
 Freshness is source-semantic, not value-semantic. SoC, EV power and battery
 power may be change-driven states: while their Home Assistant entities remain

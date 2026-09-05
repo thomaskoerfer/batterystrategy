@@ -2,6 +2,23 @@
 
 All notable changes to Battery Strategy are documented here.
 
+## [0.2.0-rc.14] - 2026-09-05
+
+### Fixed
+
+- Reconcile a future plan's provisional discharge commitment exactly once with
+  the first optimizer plan generated at or after the slot boundary.
+- Keep measured discharge deducted and preserve the strict no-increase rule
+  after that reconciliation.
+- Remove the last-minute forced optimizer prefetch and make boundary refreshes
+  and SoC-recovery refreshes retry until the planner accepts or queues them.
+- Persist the commitment phase, migrate older snapshots conservatively as
+  final and prevent bridged SoC from authorizing a budget increase.
+- Reject plans timestamped after directive issuance and default reconciliation
+  permission to fail closed for every caller.
+- Project operator-facing current mode and power from the current cached slot,
+  without changing the separately carried executable plan.
+
 ## [0.2.0-rc.13] - 2026-09-04
 
 - Recast the completed architecture as five production layers and moved

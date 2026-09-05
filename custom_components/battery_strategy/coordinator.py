@@ -64,8 +64,10 @@ from .contracts import (
     ActuationResult,
     AutomaticDischargeMode,
     BatteryCommand,
+    BatteryPlan,
     CommandMode,
     DataQuality,
+    DischargeReconciliation,
     ForecastRequest,
     LiveControlResult,
     LiveControlState,
@@ -97,7 +99,6 @@ from .strategy import DeterministicLiveController
 from .weather import OpenMeteoWeatherProvider
 
 LOGGER = logging.getLogger(__name__)
-OPTIMIZER_PREFETCH_LEAD_S = 60
 SOC_BRIDGE_MAX_AGE_S = 300
 SOC_COLD_START_PLACEHOLDER_PCT = 50.0
 EV_POWER_BRIDGE_MAX_AGE_S = 180
@@ -161,6 +162,8 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         self._compiler_runtime_store = compiler_runtime_store
         self._last_known_soc_pct = last_known_soc_pct
         self._soc_control_ready = last_known_soc_pct is not None
+        self._soc_measurement_live = False
+        self._soc_live_since_ms: int | None = None
         self._soc_recovered = False
         self._last_valid_soc_at = (
             dt.datetime.now(dt.UTC) if last_known_soc_pct is not None else None
@@ -342,10 +345,13 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
                 inputs.battery_discharge_w - inputs.battery_charge_w
             )
             self._compiler_runtime.account(now, measured_battery_power_w)
-        force_optimizer = self._should_force_optimizer(now) or self._soc_recovered
-        self._soc_recovered = False
+        boundary_force_key = self._optimizer_boundary_force_key(now)
+        soc_recovery_pending = self._soc_recovered
+        force_optimizer = boundary_force_key is not None or soc_recovery_pending
         optimizer_scheduled = False
-        if self._soc_control_ready:
+        # Bridged SoC keeps the fast safety loop alive, but must not seed a new
+        # economic plan or authorize boundary reconciliation.
+        if getattr(self, "_soc_measurement_live", self._soc_control_ready):
             try:
                 runtime_context = self._planning_pipeline.runtime_context(
                     inputs, options
@@ -353,18 +359,30 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
                 optimizer_scheduled = self._planner.maybe_schedule(
                     inputs, options, runtime_context, force=force_optimizer
                 )
+                if boundary_force_key is not None and (
+                    optimizer_scheduled
+                    or getattr(self._planner, "force_pending", False)
+                ):
+                    self._last_optimizer_force_key = boundary_force_key
+                if soc_recovery_pending and (
+                    optimizer_scheduled
+                    or getattr(self._planner, "force_pending", False)
+                ):
+                    self._soc_recovered = False
             except Exception as err:  # Planner capture must not interrupt live control.
                 LOGGER.warning("Planning snapshot capture failed: %s", err)
         planning_result = self._planner.current(inputs, options)
         plan = planning_result.operator_plan
         self._optimizer_attrs = planning_result.operator_data
         now_ms = int(now.timestamp() * 1000)
+        canonical_plan = planning_result.battery_plan
         directive = self._compiler_runtime.compile(
-            planning_result.battery_plan,
+            canonical_plan,
             options,
             inputs,
             now_ms,
             self._battery_energy_totals(),
+            discharge_reconciliation=self._discharge_reconciliation(canonical_plan),
         )
         if self._compiler_runtime.snapshot_dirty:
             await self._async_persist_compiler_runtime(clean_shutdown=False)
@@ -596,21 +614,29 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         )
         return all(entity and self._state_available(entity) for entity in entities)
 
-    def _should_force_optimizer(self, now: dt.datetime) -> bool:
-        """Refresh planning once before and once after the active slot boundary."""
-        slot_end_ms = self._compiler_runtime.active_slot_end_ms
-        if slot_end_ms <= 0:
-            return False
+    def _optimizer_boundary_force_key(self, now: dt.datetime) -> str | None:
+        """Return the current slot's unconsumed optimizer refresh key.
+
+        The caller acknowledges the key only after the planner accepts or
+        queues the forced run. Snapshot capture failures therefore retry.
+        """
         now_ms = int(now.timestamp() * 1000)
-        lead_ms = OPTIMIZER_PREFETCH_LEAD_S * 1000
-        if now_ms < slot_end_ms - lead_ms:
-            return False
-        phase = "expired" if now_ms >= slot_end_ms else "prefetch"
-        key = f"{self._compiler_runtime.active_slot_id}:{slot_end_ms}:{phase}"
+        slot_start_ms = now_ms // SLOT_MS * SLOT_MS
+        key = f"{slot_start_ms}:boundary"
         if key == self._last_optimizer_force_key:
-            return False
-        self._last_optimizer_force_key = key
-        return True
+            return None
+        return key
+
+    def _discharge_reconciliation(
+        self, plan: BatteryPlan | None
+    ) -> DischargeReconciliation:
+        """Classify the first post-boundary plan from its SoC provenance."""
+        if plan is None or not getattr(self, "_soc_measurement_live", False):
+            return DischargeReconciliation.FINALIZE_CONSERVATIVELY
+        live_since_ms = getattr(self, "_soc_live_since_ms", None)
+        if live_since_ms is not None and plan.generated_at_ms < live_since_ms:
+            return DischargeReconciliation.WAIT
+        return DischargeReconciliation.RECONCILE
 
     def _strategy_options(self) -> StrategyOptions:
         opts = dict(self.entry.options)
@@ -707,7 +733,7 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         grid_import, grid_export = self._grid_import_export()
         battery_power_w = self._battery_power_w()
         ev_power_w = self._ev_power_w()
-        soc_pct = self._battery_soc_pct()
+        soc_pct = self._battery_soc_pct(captured_at_ms)
         quality_flags = self._feature_quality_flags()
         return LiveMeasurements(
             captured_at_ms=captured_at_ms,
@@ -747,7 +773,7 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             manual_power_w=options.manual_power_w,
         )
 
-    def _battery_soc_pct(self) -> float:
+    def _battery_soc_pct(self, captured_at_ms: int | None = None) -> float:
         """Return real SoC and briefly bridge an unavailable source."""
         entity_id = self.entry.data.get(CONF_BATTERY_SOC_ENTITY)
         if entity_id:
@@ -763,13 +789,21 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
                 except TypeError, ValueError:
                     value = None
                 if value is not None and 0.0 <= value <= 100.0:
-                    was_control_ready = self._soc_control_ready
+                    was_measurement_live = getattr(self, "_soc_measurement_live", False)
                     self._last_known_soc_pct = value
                     self._soc_control_ready = True
-                    self._soc_recovered = not was_control_ready
+                    if not was_measurement_live:
+                        self._soc_recovered = True
+                    if not was_measurement_live:
+                        self._soc_live_since_ms = (
+                            captured_at_ms
+                            if captured_at_ms is not None
+                            else int(dt.datetime.now(dt.UTC).timestamp() * 1000)
+                        )
                     # Event-driven integrations may not rewrite an unchanged
                     # value. Availability, not state age, defines validity.
                     self._last_valid_soc_at = dt.datetime.now(dt.UTC)
+                    self._soc_measurement_live = True
                     return value
         last_valid_soc_at = getattr(self, "_last_valid_soc_at", dt.datetime.now(dt.UTC))
         if self._last_known_soc_pct is not None:
@@ -779,8 +813,10 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
                 else float("inf")
             )
             self._soc_control_ready = age_s <= SOC_BRIDGE_MAX_AGE_S
+            self._soc_measurement_live = False
             return float(self._last_known_soc_pct)
         self._soc_control_ready = False
+        self._soc_measurement_live = False
         return SOC_COLD_START_PLACEHOLDER_PCT
 
     def _grid_import_export(self) -> tuple[float, float]:

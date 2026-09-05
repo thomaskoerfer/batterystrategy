@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from .contracts import (
     BatteryPlan,
+    DischargeCommitmentPhase,
+    DischargeReconciliation,
     PlanCompilationState,
     PlanLiveDirective,
     SlotProgress,
@@ -21,10 +23,16 @@ class DeterministicPlanCompiler:
         progress: SlotProgress,
         state: PlanCompilationState,
         issued_at_ms: int,
+        *,
+        discharge_reconciliation: DischargeReconciliation = (
+            DischargeReconciliation.FINALIZE_CONSERVATIVELY
+        ),
     ) -> tuple[PlanLiveDirective, PlanCompilationState]:
         """Return the complete live permission for ``progress.slot``."""
         if issued_at_ms < 0:
             raise ValueError("issued_at_ms must be non-negative")
+        if plan.generated_at_ms > issued_at_ms:
+            raise ValueError("plan cannot be generated after the directive")
 
         try:
             plan_slot = next(item for item in plan.slots if item.slot == progress.slot)
@@ -46,20 +54,51 @@ class DeterministicPlanCompiler:
                     plan_slot.required_charge_kwh if has_grid_commitment else 0.0
                 ),
                 discharge_budget_commitment_kwh=plan_slot.discharge_budget_kwh,
+                discharge_commitment_phase=(
+                    DischargeCommitmentPhase.PROVISIONAL
+                    if plan.generated_at_ms < progress.slot.start_ms
+                    else DischargeCommitmentPhase.FINAL
+                ),
                 grid_charge_allowed=has_grid_commitment,
             )
         else:
+            first_post_boundary_plan = (
+                state.discharge_commitment_phase is DischargeCommitmentPhase.PROVISIONAL
+                and plan.generated_at_ms >= progress.slot.start_ms
+            )
+            reconcile_discharge = (
+                first_post_boundary_plan
+                and discharge_reconciliation is DischargeReconciliation.RECONCILE
+            )
+            finalize_discharge = (
+                first_post_boundary_plan
+                and discharge_reconciliation is not DischargeReconciliation.WAIT
+            )
             next_required = min(
                 state.required_charge_commitment_kwh,
                 plan_slot.required_charge_kwh if has_grid_commitment else 0.0,
             )
             next_state = PlanCompilationState(
                 slot=state.slot,
-                committed_plan_id=state.committed_plan_id,
+                committed_plan_id=(
+                    plan.plan_id if finalize_discharge else state.committed_plan_id
+                ),
                 required_charge_commitment_kwh=next_required,
-                discharge_budget_commitment_kwh=min(
-                    state.discharge_budget_commitment_kwh,
-                    plan_slot.discharge_budget_kwh,
+                discharge_budget_commitment_kwh=(
+                    plan_slot.discharge_budget_kwh
+                    if reconcile_discharge
+                    else state.discharge_budget_commitment_kwh
+                    if first_post_boundary_plan
+                    and discharge_reconciliation is DischargeReconciliation.WAIT
+                    else min(
+                        state.discharge_budget_commitment_kwh,
+                        plan_slot.discharge_budget_kwh,
+                    )
+                ),
+                discharge_commitment_phase=(
+                    DischargeCommitmentPhase.FINAL
+                    if finalize_discharge
+                    else state.discharge_commitment_phase
                 ),
                 grid_charge_allowed=(
                     state.grid_charge_allowed

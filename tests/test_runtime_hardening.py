@@ -2,6 +2,7 @@
 
 import asyncio
 import datetime as dt
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -21,6 +22,8 @@ from custom_components.battery_strategy.const import (
 from custom_components.battery_strategy.contracts import (
     ActuationResult,
     CommandMode,
+    DischargeCommitmentPhase,
+    DischargeReconciliation,
     LiveControlState,
     LiveMeasurements,
     PlanCompilationState,
@@ -72,6 +75,7 @@ def _snapshot(
     discharged_kwh: float = 0.1,
     input_energy_kwh: float | None = None,
     output_energy_kwh: float | None = None,
+    discharge_phase: DischargeCommitmentPhase = DischargeCommitmentPhase.FINAL,
 ) -> CompilerRuntimeSnapshot:
     return CompilerRuntimeSnapshot(
         saved_at_ms=SLOT_START_MS + 60_000,
@@ -79,6 +83,7 @@ def _snapshot(
             slot=SLOT,
             committed_plan_id="plan-before-restart",
             discharge_budget_commitment_kwh=0.6,
+            discharge_commitment_phase=discharge_phase,
         ),
         charged_kwh=charged_kwh,
         discharged_kwh=discharged_kwh,
@@ -144,6 +149,28 @@ def test_compiler_snapshot_round_trip_is_strict_and_lossless():
     assert CompilerRuntimeSnapshot.from_storage_dict({"slot_start_ms": 0}) is None
 
 
+def test_compiler_snapshot_persists_phase_and_migrates_old_state_as_final():
+    provisional = _snapshot(
+        clean=True,
+        discharge_phase=DischargeCommitmentPhase.PROVISIONAL,
+    )
+    assert (
+        CompilerRuntimeSnapshot.from_storage_dict(
+            provisional.as_storage_dict()
+        ).compilation_state.discharge_commitment_phase
+        is DischargeCommitmentPhase.PROVISIONAL
+    )
+
+    old_payload = provisional.as_storage_dict()
+    old_payload.pop("discharge_commitment_phase")
+    migrated = CompilerRuntimeSnapshot.from_storage_dict(old_payload)
+    assert migrated is not None
+    assert (
+        migrated.compilation_state.discharge_commitment_phase
+        is DischargeCommitmentPhase.FINAL
+    )
+
+
 def test_clean_reload_restores_latched_budget_without_energy_counters():
     runtime = PlanCompilerRuntime(_snapshot(clean=True, discharged_kwh=0.2))
 
@@ -158,6 +185,52 @@ def test_clean_reload_restores_latched_budget_without_energy_counters():
         SLOT_START_MS + 120_000,
     )
     assert directive.discharge_budget_remaining_kwh == pytest.approx(0.4)
+
+
+def test_clean_reload_reconciles_provisional_budget_once_and_persists_final():
+    runtime = PlanCompilerRuntime(
+        _snapshot(
+            clean=True,
+            discharged_kwh=0.2,
+            discharge_phase=DischargeCommitmentPhase.PROVISIONAL,
+        )
+    )
+    now_ms = SLOT_START_MS + 120_000
+    runtime.sync_slot(SLOT_START_MS, now_ms, (None, None))
+
+    reconciled = runtime.compile(
+        _plan(discharge_budget_kwh=0.4),
+        _options(),
+        _measurements(captured_at_ms=now_ms),
+        now_ms,
+        discharge_reconciliation=DischargeReconciliation.RECONCILE,
+    )
+    assert reconciled.discharge_budget_remaining_kwh == pytest.approx(0.2)
+    assert (
+        runtime.compilation_state.discharge_commitment_phase
+        is DischargeCommitmentPhase.FINAL
+    )
+
+    persisted = runtime.storage_snapshot(
+        saved_at_ms=now_ms,
+        energy_totals=(None, None),
+        clean_shutdown=True,
+    )
+    assert persisted is not None
+    restored = PlanCompilerRuntime(persisted)
+    restored.sync_slot(SLOT_START_MS, now_ms + 10_000, (None, None))
+    still_final = restored.compile(
+        _plan(discharge_budget_kwh=0.6),
+        _options(),
+        _measurements(captured_at_ms=now_ms + 10_000),
+        now_ms + 10_000,
+        discharge_reconciliation=DischargeReconciliation.RECONCILE,
+    )
+    assert still_final.discharge_budget_remaining_kwh == pytest.approx(0.2)
+    assert (
+        restored.compilation_state.discharge_commitment_phase
+        is DischargeCommitmentPhase.FINAL
+    )
 
 
 def test_unclean_restart_reconstructs_progress_from_monotonic_counters():
@@ -212,6 +285,10 @@ def test_mid_slot_restart_without_snapshot_prorates_discharge_budget():
     assert not directive.grid_charge_allowed
     assert directive.required_charge_remaining_kwh == 0.0
     assert runtime.snapshot_dirty
+    assert (
+        runtime.compilation_state.discharge_commitment_phase
+        is DischargeCommitmentPhase.FINAL
+    )
 
     replanned = runtime.compile(
         _plan(discharge_budget_kwh=0.6),
@@ -253,6 +330,42 @@ def test_transient_plan_gap_preserves_prorated_discharge_commitment():
     assert unavailable.discharge_budget_remaining_kwh == 0.0
     assert unavailable.plan_id == "closed"
     assert resumed.discharge_budget_remaining_kwh == pytest.approx(0.3)
+
+
+def test_compiler_error_fails_closed_without_erasing_active_commitment():
+    runtime = PlanCompilerRuntime()
+    now_ms = SLOT_START_MS
+    initial = runtime.compile(
+        _plan(discharge_budget_kwh=0.4),
+        _options(),
+        _measurements(captured_at_ms=now_ms),
+        now_ms,
+    )
+    assert initial.discharge_budget_remaining_kwh == pytest.approx(0.4)
+
+    future_plan = replace(
+        _plan(discharge_budget_kwh=0.6),
+        generated_at_ms=now_ms + 1,
+    )
+    closed = runtime.compile(
+        future_plan,
+        _options(),
+        _measurements(captured_at_ms=now_ms),
+        now_ms,
+    )
+    assert closed.plan_id == "closed"
+    assert closed.discharge_budget_remaining_kwh == 0.0
+    assert runtime.compilation_state.discharge_budget_commitment_kwh == pytest.approx(
+        0.4
+    )
+
+    resumed = runtime.compile(
+        _plan(discharge_budget_kwh=0.6),
+        _options(),
+        _measurements(captured_at_ms=now_ms + 10_000),
+        now_ms + 10_000,
+    )
+    assert resumed.discharge_budget_remaining_kwh == pytest.approx(0.4)
 
 
 def test_running_process_resets_progress_only_at_next_slot():
@@ -339,21 +452,50 @@ def test_compile_selects_current_slot_instead_of_stale_first_plan_slot():
     assert directive.discharge_budget_remaining_kwh == pytest.approx(0.25)
 
 
-def test_optimizer_prefetch_and_expiry_are_each_requested_once():
-    runtime = PlanCompilerRuntime()
-    runtime.sync_slot(SLOT_START_MS, SLOT_START_MS, (None, None))
+def test_optimizer_boundary_refresh_key_is_acknowledged_by_caller():
     coordinator = object.__new__(BatteryStrategyCoordinator)
-    coordinator._compiler_runtime = runtime
     coordinator._last_optimizer_force_key = None
 
     def at(timestamp_ms: int) -> dt.datetime:
         return dt.datetime.fromtimestamp(timestamp_ms / 1000, dt.UTC)
 
-    assert not coordinator._should_force_optimizer(at(SLOT.end_ms - 60_001))
-    assert coordinator._should_force_optimizer(at(SLOT.end_ms - 60_000))
-    assert not coordinator._should_force_optimizer(at(SLOT.end_ms - 30_000))
-    assert coordinator._should_force_optimizer(at(SLOT.end_ms))
-    assert not coordinator._should_force_optimizer(at(SLOT.end_ms + 1_000))
+    key = coordinator._optimizer_boundary_force_key(at(SLOT_START_MS + 60_000))
+    assert key == f"{SLOT_START_MS}:boundary"
+    # Reading the key must not consume it after a planning-capture failure.
+    assert coordinator._optimizer_boundary_force_key(at(SLOT_START_MS + 120_000)) == key
+    coordinator._last_optimizer_force_key = key
+    assert (
+        coordinator._optimizer_boundary_force_key(at(SLOT_START_MS + 180_000)) is None
+    )
+    assert coordinator._optimizer_boundary_force_key(at(SLOT.end_ms)) == (
+        f"{SLOT.end_ms}:boundary"
+    )
+
+
+def test_reconciliation_requires_plan_generated_after_live_soc_recovery():
+    coordinator = object.__new__(BatteryStrategyCoordinator)
+    coordinator._soc_measurement_live = True
+    coordinator._soc_live_since_ms = SLOT_START_MS + 30_000
+
+    before_recovery = _plan()
+    after_recovery = replace(
+        before_recovery,
+        generated_at_ms=SLOT_START_MS + 30_000,
+    )
+
+    assert (
+        coordinator._discharge_reconciliation(before_recovery)
+        is DischargeReconciliation.WAIT
+    )
+    assert (
+        coordinator._discharge_reconciliation(after_recovery)
+        is DischargeReconciliation.RECONCILE
+    )
+    coordinator._soc_measurement_live = False
+    assert (
+        coordinator._discharge_reconciliation(after_recovery)
+        is DischargeReconciliation.FINALIZE_CONSERVATIVELY
+    )
 
 
 def test_coordinator_cycle_preserves_runtime_order_and_compiled_permission():
@@ -426,6 +568,7 @@ def test_coordinator_cycle_preserves_runtime_order_and_compiled_permission():
             compiled_inputs,
             _now_ms,
             energy_totals,
+            **_kwargs,
         ):
             assert compiled_plan is canonical
             assert compiled_options is options

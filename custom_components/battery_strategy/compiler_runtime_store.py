@@ -8,9 +8,10 @@ from dataclasses import dataclass
 from homeassistant.helpers.storage import Store
 
 from .const import DOMAIN
-from .contracts import PlanCompilationState, SlotKey
+from .contracts import DischargeCommitmentPhase, PlanCompilationState, SlotKey
 
 STORE_VERSION = 1
+STORE_MINOR_VERSION = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +50,7 @@ class CompilerRuntimeSnapshot:
             "committed_plan_id": state.committed_plan_id,
             "required_charge_commitment_kwh": state.required_charge_commitment_kwh,
             "discharge_budget_commitment_kwh": state.discharge_budget_commitment_kwh,
+            "discharge_commitment_phase": state.discharge_commitment_phase.value,
             "grid_charge_allowed": state.grid_charge_allowed,
             "charged_kwh": self.charged_kwh,
             "discharged_kwh": self.discharged_kwh,
@@ -82,6 +84,11 @@ class CompilerRuntimeSnapshot:
                 discharge_budget_commitment_kwh=float(
                     raw["discharge_budget_commitment_kwh"]
                 ),
+                # Pre-RC14 snapshots hold an already latched commitment and
+                # therefore migrate conservatively as final.
+                discharge_commitment_phase=DischargeCommitmentPhase(
+                    raw.get("discharge_commitment_phase", "final")
+                ),
                 grid_charge_allowed=grid_charge_allowed,
             )
             return cls(
@@ -106,6 +113,7 @@ class CompilerRuntimeStore:
             STORE_VERSION,
             f"{DOMAIN}.compiler_runtime.{entry_id}",
             atomic_writes=True,
+            minor_version=STORE_MINOR_VERSION,
         )
 
     async def load(self) -> CompilerRuntimeSnapshot | None:

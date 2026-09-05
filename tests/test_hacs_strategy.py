@@ -1081,6 +1081,59 @@ class HacsStrategyTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_cached_operator_projection_tracks_current_plan_slot(self):
+        now_ms = 1_800_000
+        options = StrategyOptions()
+        point = PlanPoint(
+            ts_ms=now_ms,
+            date="2027-01-15",
+            price_ct=40,
+            load_fc_w=500,
+            pv_fc_w=0,
+            grid_import_fc_w=0,
+            grid_export_fc_w=0,
+            grid_net_fc_w=0,
+            mode=COMMAND_OUTPUT,
+            power_w=500,
+            charge_fc_w=0,
+            discharge_fc_w=500,
+            soc_pct=50,
+        )
+        adapter = object.__new__(planning_adapter.PlanningPipelineAdapter)
+        adapter._last_output = {}
+        adapter._last_options = options
+        adapter._last_result = planning_result.PlanningResult(
+            None,
+            StrategyPlan(
+                (point,),
+                current_mode=COMMAND_INPUT,
+                current_power_w=900,
+                reason="cached-before-boundary",
+            ),
+            {},
+        )
+
+        result = adapter.cached_result(
+            measurements(0, 0, 0, 0, captured_at_ms=now_ms),
+            options,
+        )
+
+        self.assertEqual(result.operator_plan.current_mode, COMMAND_OUTPUT)
+        self.assertEqual(result.operator_plan.current_power_w, 500)
+
+        expired = adapter.cached_result(
+            measurements(
+                0,
+                0,
+                0,
+                0,
+                captured_at_ms=now_ms + planning_adapter.SLOT_MS,
+            ),
+            options,
+        )
+        self.assertEqual(expired.operator_plan.current_mode, COMMAND_IDLE)
+        self.assertEqual(expired.operator_plan.current_power_w, 0)
+
     def test_background_planner_refreshes_coordinator_when_run_finishes(self):
         refreshed = asyncio.Event()
 
@@ -1112,6 +1165,45 @@ class HacsStrategyTests(unittest.TestCase):
             )
             await asyncio.wait_for(refreshed.wait(), timeout=1)
             assert not planner.running
+            await planner.async_shutdown()
+
+        asyncio.run(scenario())
+
+    def test_background_planner_runs_one_pending_boundary_force(self):
+        scheduled = []
+        force_checks = []
+
+        class Adapter:
+            @staticmethod
+            def needs_run(_options, force=False):
+                force_checks.append(force)
+                return True
+
+            @staticmethod
+            def run(*_args):
+                return None
+
+        class Hass:
+            @staticmethod
+            def async_add_executor_job(_target, *_args):
+                future = asyncio.get_running_loop().create_future()
+                scheduled.append(future)
+                return future
+
+        async def scenario():
+            planner = BackgroundPlanner(Hass(), Adapter())
+            inputs = measurements(0, 0, 0, 0)
+            options = StrategyOptions()
+            assert planner.maybe_schedule(inputs, options, {})
+            assert not planner.maybe_schedule(inputs, options, {}, force=True)
+            assert planner.force_pending
+
+            scheduled[0].set_result(None)
+            assert planner.maybe_schedule(inputs, options, {})
+            assert not planner.force_pending
+            assert len(scheduled) == 2
+            assert force_checks == [False, True]
+            scheduled[1].set_result(None)
             await planner.async_shutdown()
 
         asyncio.run(scenario())
@@ -2771,6 +2863,24 @@ class HacsStrategyTests(unittest.TestCase):
 
         self.assertEqual(coordinator._battery_soc_pct(), 41.0)
         self.assertTrue(coordinator._soc_control_ready)
+
+    def test_pending_soc_recovery_is_not_cleared_by_repeated_valid_reads(self):
+        coordinator = object.__new__(BatteryStrategyCoordinator)
+        coordinator.entry = SimpleNamespace(
+            data={"battery_soc_entity": "sensor.battery_soc"}
+        )
+        coordinator.hass = SimpleNamespace(
+            states=SimpleNamespace(get=lambda _entity_id: SimpleNamespace(state="41"))
+        )
+        coordinator._last_known_soc_pct = 41.0
+        coordinator._last_valid_soc_at = dt.datetime.now(dt.UTC)
+        coordinator._soc_control_ready = True
+        coordinator._soc_measurement_live = True
+        coordinator._soc_live_since_ms = 1_000
+        coordinator._soc_recovered = True
+
+        self.assertEqual(coordinator._battery_soc_pct(2_000), 41.0)
+        self.assertTrue(coordinator._soc_recovered)
 
     def test_unchanged_available_ev_power_remains_control_ready(self):
         stale_at = dt.datetime.now(dt.UTC) - dt.timedelta(minutes=10)

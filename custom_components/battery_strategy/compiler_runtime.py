@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 from .const import PV_CHARGING_ON
 from .contracts import (
     BatteryPlan,
+    DischargeReconciliation,
     LiveMeasurements,
     PlanCompilationState,
     PlanLiveDirective,
@@ -155,6 +156,10 @@ class PlanCompilerRuntime:
         measurements: LiveMeasurements,
         now_ms: int,
         energy_totals: tuple[float | None, float | None] = (None, None),
+        *,
+        discharge_reconciliation: DischargeReconciliation = (
+            DischargeReconciliation.FINALIZE_CONSERVATIVELY
+        ),
     ) -> PlanLiveDirective:
         """Select and compile the current plan slot as one atomic operation."""
         if plan is None:
@@ -222,6 +227,7 @@ class PlanCompilerRuntime:
                 ),
                 self._state,
                 issued_at_ms=now_ms,
+                discharge_reconciliation=discharge_reconciliation,
             )
             if next_state != self._state:
                 self._snapshot_dirty = True
@@ -230,7 +236,6 @@ class PlanCompilerRuntime:
             return compiled
         # This control boundary contains compiler failures and fails closed.
         except Exception as err:
-            self._state = PlanCompilationState()
             self._error = f"{type(err).__name__}: {err}"
             LOGGER.error("Plan compiler failed closed: %s", self._error)
             return self._closed_directive(

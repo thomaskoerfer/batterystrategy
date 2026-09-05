@@ -40,6 +40,21 @@ class ManualControlMode(StrEnum):
     DISCHARGE = "discharge"
 
 
+class DischargeCommitmentPhase(StrEnum):
+    """Lifecycle of the active slot's commercial discharge commitment."""
+
+    PROVISIONAL = "provisional"
+    FINAL = "final"
+
+
+class DischargeReconciliation(StrEnum):
+    """How the compiler handles the first post-boundary discharge plan."""
+
+    WAIT = "wait"
+    RECONCILE = "reconcile"
+    FINALIZE_CONSERVATIVELY = "finalize_conservatively"
+
+
 @dataclass(frozen=True, slots=True)
 class SlotProgress:
     """Measured progress used when compiling a current-slot directive."""
@@ -63,6 +78,9 @@ class PlanCompilationState:
     committed_plan_id: str | None = None
     required_charge_commitment_kwh: float = 0.0
     discharge_budget_commitment_kwh: float = 0.0
+    discharge_commitment_phase: DischargeCommitmentPhase = (
+        DischargeCommitmentPhase.FINAL
+    )
     grid_charge_allowed: bool = False
 
     def __post_init__(self) -> None:
@@ -79,6 +97,7 @@ class PlanCompilationState:
                 self.committed_plan_id is not None
                 or self.required_charge_commitment_kwh > 0.0
                 or self.discharge_budget_commitment_kwh > 0.0
+                or self.discharge_commitment_phase is not DischargeCommitmentPhase.FINAL
                 or self.grid_charge_allowed
             ):
                 raise ValueError("empty compilation state cannot contain a commitment")
@@ -298,6 +317,10 @@ class PlanCompiler(Protocol):
         progress: SlotProgress,
         state: PlanCompilationState,
         issued_at_ms: int,
+        *,
+        discharge_reconciliation: DischargeReconciliation = (
+            DischargeReconciliation.FINALIZE_CONSERVATIVELY
+        ),
     ) -> tuple[PlanLiveDirective, PlanCompilationState]: ...
 
 

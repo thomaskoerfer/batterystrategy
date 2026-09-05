@@ -12,6 +12,8 @@ from custom_components.battery_strategy.contracts import (
     BatteryConstraints,
     BatteryPlan,
     BatteryPlanSlot,
+    DischargeCommitmentPhase,
+    DischargeReconciliation,
     PlanCompilationState,
     PlanMode,
     SlotKey,
@@ -285,3 +287,177 @@ def test_new_slot_accepts_the_latest_plan_commitment():
 
     assert directive.discharge_budget_remaining_kwh == pytest.approx(0.6)
     assert next_state.committed_plan_id == "plan-next"
+
+
+def test_first_post_boundary_plan_reconciles_provisional_discharge_once():
+    compiler = DeterministicPlanCompiler()
+    slot_key = SlotKey(SLOT_MS, 2 * SLOT_MS)
+    provisional_slot = replace(
+        plan_slot(),
+        slot=slot_key,
+        planned_discharge_kwh=0.0,
+        discharge_budget_kwh=0.0,
+    )
+    provisional_plan = replace(
+        battery_plan(provisional_slot),
+        generated_at_ms=SLOT_MS - 1,
+    )
+    progress = SlotProgress(slot_key, 0.0, 0.05, 50.0)
+
+    provisional, state = compiler.compile(
+        provisional_plan,
+        progress,
+        PlanCompilationState(),
+        SLOT_MS,
+    )
+    assert provisional.discharge_budget_remaining_kwh == 0.0
+    assert state.discharge_commitment_phase is DischargeCommitmentPhase.PROVISIONAL
+
+    reconciled_slot = replace(
+        provisional_slot,
+        mode=PlanMode.DISCHARGE,
+        planned_discharge_kwh=0.4,
+        discharge_budget_kwh=0.4,
+    )
+    reconciled_plan = replace(
+        battery_plan(reconciled_slot),
+        plan_id="post-boundary",
+        generated_at_ms=SLOT_MS + 20_000,
+    )
+    reconciled, state = compiler.compile(
+        reconciled_plan,
+        progress,
+        state,
+        SLOT_MS + 20_000,
+        discharge_reconciliation=DischargeReconciliation.RECONCILE,
+    )
+    assert reconciled.discharge_budget_remaining_kwh == pytest.approx(0.35)
+    assert state.discharge_commitment_phase is DischargeCommitmentPhase.FINAL
+    assert state.committed_plan_id == "post-boundary"
+
+    later_higher_slot = replace(
+        reconciled_slot,
+        planned_discharge_kwh=0.6,
+        discharge_budget_kwh=0.6,
+    )
+    later_higher_plan = replace(
+        battery_plan(later_higher_slot),
+        plan_id="later-higher",
+        generated_at_ms=SLOT_MS + 60_000,
+    )
+    stable, state = compiler.compile(
+        later_higher_plan,
+        progress,
+        state,
+        SLOT_MS + 60_000,
+    )
+    assert stable.discharge_budget_remaining_kwh == pytest.approx(0.35)
+    assert state.discharge_budget_commitment_kwh == pytest.approx(0.4)
+
+
+def test_provisional_discharge_does_not_increase_on_bridged_soc():
+    compiler = DeterministicPlanCompiler()
+    slot_key = SlotKey(SLOT_MS, 2 * SLOT_MS)
+    base_slot = replace(plan_slot(), slot=slot_key)
+    provisional_plan = replace(
+        battery_plan(base_slot),
+        generated_at_ms=SLOT_MS - 1,
+    )
+    progress = SlotProgress(slot_key, 0.0, 0.0, 50.0)
+    _directive, state = compiler.compile(
+        provisional_plan,
+        progress,
+        PlanCompilationState(),
+        SLOT_MS,
+    )
+    higher_slot = replace(
+        base_slot,
+        mode=PlanMode.DISCHARGE,
+        planned_discharge_kwh=0.4,
+        discharge_budget_kwh=0.4,
+    )
+    higher_plan = replace(
+        battery_plan(higher_slot),
+        generated_at_ms=SLOT_MS + 20_000,
+    )
+
+    blocked, state = compiler.compile(
+        higher_plan,
+        progress,
+        state,
+        SLOT_MS + 20_000,
+        discharge_reconciliation=DischargeReconciliation.FINALIZE_CONSERVATIVELY,
+    )
+
+    assert blocked.discharge_budget_remaining_kwh == 0.0
+    assert state.discharge_commitment_phase is DischargeCommitmentPhase.FINAL
+
+    later_plan = replace(
+        higher_plan,
+        plan_id="later-real",
+        generated_at_ms=SLOT_MS + 40_000,
+    )
+    still_blocked, state = compiler.compile(
+        later_plan,
+        progress,
+        state,
+        SLOT_MS + 40_000,
+        discharge_reconciliation=DischargeReconciliation.RECONCILE,
+    )
+    assert still_blocked.discharge_budget_remaining_kwh == 0.0
+    assert state.discharge_budget_commitment_kwh == 0.0
+
+
+def test_compiler_rejects_plan_generated_after_directive_time():
+    slot = plan_slot(discharge_kwh=0.2, discharge_budget_kwh=0.2)
+    future_plan = replace(battery_plan(slot), generated_at_ms=60_001)
+
+    with pytest.raises(ValueError, match="generated after"):
+        DeterministicPlanCompiler().compile(
+            future_plan,
+            SlotProgress(slot.slot, 0.0, 0.0, 50.0),
+            PlanCompilationState(),
+            60_000,
+        )
+
+
+def test_first_post_boundary_plan_can_finalize_provisional_budget_downward():
+    compiler = DeterministicPlanCompiler()
+    slot_key = SlotKey(SLOT_MS, 2 * SLOT_MS)
+    provisional_slot = replace(
+        plan_slot(discharge_kwh=0.4, discharge_budget_kwh=0.4),
+        slot=slot_key,
+    )
+    provisional_plan = replace(
+        battery_plan(provisional_slot),
+        generated_at_ms=SLOT_MS - 1,
+    )
+    progress = SlotProgress(slot_key, 0.0, 0.05, 50.0)
+    _directive, state = compiler.compile(
+        provisional_plan,
+        progress,
+        PlanCompilationState(),
+        SLOT_MS,
+    )
+    lower_slot = replace(
+        provisional_slot,
+        planned_discharge_kwh=0.2,
+        discharge_budget_kwh=0.2,
+    )
+    lower_plan = replace(
+        battery_plan(lower_slot),
+        plan_id="post-boundary-lower",
+        generated_at_ms=SLOT_MS + 10_000,
+    )
+
+    directive, state = compiler.compile(
+        lower_plan,
+        progress,
+        state,
+        SLOT_MS + 10_000,
+        discharge_reconciliation=DischargeReconciliation.RECONCILE,
+    )
+
+    assert directive.discharge_budget_remaining_kwh == pytest.approx(0.15)
+    assert state.discharge_budget_commitment_kwh == pytest.approx(0.2)
+    assert state.discharge_commitment_phase is DischargeCommitmentPhase.FINAL

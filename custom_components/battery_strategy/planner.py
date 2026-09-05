@@ -93,6 +93,11 @@ class BackgroundPlanner:
         return self._task is not None and not self._task.done()
 
     @property
+    def force_pending(self) -> bool:
+        """Return whether a forced refresh waits behind the active run."""
+        return self._pending_force
+
+    @property
     def last_error(self) -> str | None:
         self._collect_finished()
         return self._last_error
