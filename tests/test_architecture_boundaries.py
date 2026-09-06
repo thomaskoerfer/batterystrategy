@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -54,6 +56,27 @@ def test_optimizer_orchestration_has_no_recorder_schema_dependency():
         "open_meteo_url",
     )
     assert all(token not in source for token in forbidden)
+
+
+def test_forecast_evaluation_cannot_reach_execution_or_actuation():
+    source = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (
+            PACKAGE / "forecast_trace.py",
+            ROOT / "scripts" / "battery_strategy_forecast_backtest.py",
+        )
+    )
+
+    forbidden = (
+        "from .actuator",
+        "from .live_control",
+        "from .plan_compiler",
+        "BatteryActuator",
+        "BatteryCommand",
+        "PlanningService",
+    )
+    assert all(token not in source for token in forbidden)
+    assert "non_authoritative" in source
 
 
 def test_planning_pipeline_uses_owned_application_boundaries_without_facades():
@@ -357,6 +380,127 @@ def test_stale_planning_result_records_changed_options_without_retry_loop(
     assert adapter._last_result is result
     assert adapter._last_options == new_options
     assert adapter.needs_run(new_options) is False
+
+
+def test_planning_result_is_returned_before_forecast_trace_persistence(
+    monkeypatch, tmp_path
+):
+    options = StrategyOptions()
+    inputs = measurements(0, 0, 0, 0, 0, 50)
+    result = planning_adapter.result_from_persisted_output(
+        {"timestamp": "2027-01-15T10:15:00+00:00"},
+        options,
+        timezone=ZoneInfo("UTC"),
+        now_ms=inputs.captured_at_ms,
+    )
+    adapter = planning_adapter.PlanningPipelineAdapter(
+        state_store=PlanningStateStore(str(tmp_path / "state.json")),
+    )
+    bundle = object()
+
+    def successful_plan(_runtime, state):
+        return planning_pipeline.PlanningRunOutcome(result, state, False, bundle)
+
+    monkeypatch.setattr(planning_pipeline, "run", successful_plan)
+    scheduled = []
+    adapter._entry = object()
+    adapter._forecast_trace_scheduler = SimpleNamespace(
+        schedule=lambda entry, value, *_args: scheduled.append((entry, value))
+    )
+
+    returned = adapter.run(
+        inputs,
+        options,
+        force=True,
+        runtime_context=planning_adapter.PlanningCapture(runtime_snapshot(), {}, {}),
+    )
+
+    assert returned.operator_plan == result.operator_plan
+    assert adapter._last_result is returned
+    assert scheduled == [(adapter._entry, bundle)]
+
+
+def test_forecast_trace_failure_is_contained_and_rate_limited(
+    monkeypatch, tmp_path, caplog
+):
+    async def fail(*_args):
+        raise OSError("disk unavailable")
+
+    hass = SimpleNamespace(
+        config=SimpleNamespace(path=lambda name: str(tmp_path / name)),
+        async_add_executor_job=fail,
+    )
+    scheduler = planning_adapter.ForecastTraceScheduler(
+        hass, tmp_path / "forecast_trace"
+    )
+    bundle = object()
+    monkeypatch.setattr(planning_adapter.time, "monotonic", lambda: 4000.0)
+
+    scheduler._scheduled_buckets.add(123)
+    asyncio.run(scheduler._async_write(bundle, 123))
+    scheduler._scheduled_buckets.add(123)
+    asyncio.run(scheduler._async_write(bundle, 123))
+
+    assert caplog.text.count("Forecast trace write failed") == 1
+    assert 123 not in scheduler._scheduled_buckets
+
+
+def test_forecast_trace_scheduler_is_single_bucket_and_config_entry_owned(tmp_path):
+    scheduled = []
+
+    class Loop:
+        @staticmethod
+        def call_soon_threadsafe(callback):
+            callback()
+
+    class Entry:
+        @staticmethod
+        def async_create_background_task(hass, coroutine, name):
+            scheduled.append((hass, name))
+            coroutine.close()
+
+    hass = SimpleNamespace(
+        loop=Loop(),
+        config=SimpleNamespace(time_zone="UTC", path=lambda name: str(tmp_path / name)),
+    )
+    scheduler = planning_adapter.ForecastTraceScheduler(
+        hass, tmp_path / "forecast_trace"
+    )
+    first = planning_adapter.PlanningPipelineAdapter(
+        hass=hass,
+        entry=Entry(),
+        state_store=PlanningStateStore(str(tmp_path / "state.json")),
+        forecast_trace_scheduler=scheduler,
+    )
+    bundle = SimpleNamespace(
+        load=SimpleNamespace(generated_at_ms=1_800_000_000_000),
+        pv=SimpleNamespace(generated_at_ms=1_800_000_000_000),
+    )
+
+    first._forecast_trace_scheduler.schedule(first._entry, bundle)
+    first._forecast_trace_scheduler.schedule(first._entry, bundle)
+
+    assert scheduled == [(hass, "battery_strategy_forecast_trace")]
+
+
+def test_revoked_adapter_cannot_schedule_trace_after_unload(tmp_path):
+    calls = []
+    adapter = planning_adapter.PlanningPipelineAdapter(
+        state_store=PlanningStateStore(str(tmp_path / "state.json"))
+    )
+    adapter._forecast_trace_scheduler = SimpleNamespace(
+        schedule=lambda *_args: calls.append(True)
+    )
+    adapter._entry = object()
+    adapter.revoke_state_writer()
+
+    def active():
+        return not adapter._revoked
+
+    if active():
+        adapter._forecast_trace_scheduler.schedule(adapter._entry, object(), active)
+
+    assert calls == []
 
 
 def test_planning_service_does_not_duplicate_optimizer_version():

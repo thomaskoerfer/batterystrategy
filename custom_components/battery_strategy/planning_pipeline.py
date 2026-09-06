@@ -5,7 +5,7 @@ import datetime as dt
 import math
 from dataclasses import dataclass
 
-from .contracts import PvPlant
+from .contracts import ForecastBundle, PvPlant
 from .forecast_application import (
     ProductionForecastConfig,
     ProductionForecastModule,
@@ -75,6 +75,7 @@ class PlanningRunOutcome:
     result: PlanningResult
     owner_state: PlanningOwnerState
     persist_state: bool
+    forecast_bundle: ForecastBundle | None = None
 
 
 # PV surplus anti-cycling thresholds
@@ -739,7 +740,7 @@ def run(
     )
     result_options = _result_options(settings)
     owner_state.publication.last_output = persisted_output(result, result_options)
-    return PlanningRunOutcome(result, owner_state, True)
+    return PlanningRunOutcome(result, owner_state, True, forecast_bundle)
 
 
 def _result_options(settings: PlanningRuntimeSettings) -> StrategyOptions:

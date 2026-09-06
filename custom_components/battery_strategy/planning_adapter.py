@@ -32,6 +32,7 @@ from .contracts import (
     LoadForecastContext,
     WeatherSlot,
 )
+from .forecast_trace import FORECAST_TRACE_DIRECTORY, ForecastTraceScheduler
 from .history_adapter import read_recorder_series
 from .models import StrategyOptions
 from .planning_result import (
@@ -100,6 +101,7 @@ class PlanningPipelineAdapter:
         hass=None,
         entry=None,
         state_store: PlanningStateStore | None = None,
+        forecast_trace_scheduler: ForecastTraceScheduler | None = None,
     ) -> None:
         """Initialize adapter cache."""
         self._hass = hass
@@ -123,6 +125,15 @@ class PlanningPipelineAdapter:
         self._forecast_weather: tuple[WeatherSlot, ...] = ()
         self._forecast_drivers: tuple[LoadDriverSnapshot, ...] = ()
         self._forecast_component_specs: tuple[LoadComponentSpec, ...] = ()
+        self._revoked = False
+        self._forecast_trace_scheduler = forecast_trace_scheduler or (
+            ForecastTraceScheduler(
+                hass,
+                f"{hass.config.config_dir.rstrip('/')}/{FORECAST_TRACE_DIRECTORY}",
+            )
+            if hass is not None and entry is not None
+            else None
+        )
 
     def set_forecast_environment(
         self, history=(), weather=(), drivers=(), component_specs=()
@@ -279,7 +290,17 @@ class PlanningPipelineAdapter:
         self._last_output = persisted_output(result, options)
         self._last_options = options
         self._last_run_monotonic = cache_now
-        return self.cached_result(inputs, options)
+        cached = self.cached_result(inputs, options)
+        if (
+            self._forecast_trace_scheduler is not None
+            and outcome.forecast_bundle is not None
+        ):
+            self._forecast_trace_scheduler.schedule(
+                self._entry,
+                outcome.forecast_bundle,
+                lambda: not self._revoked,
+            )
+        return cached
 
     def runtime_context(
         self, inputs: LiveMeasurements, options: StrategyOptions
@@ -507,5 +528,6 @@ class PlanningPipelineAdapter:
 
     def revoke_state_writer(self) -> None:
         """Close state publication for this unloaded coordinator generation."""
+        self._revoked = True
         if self._state_store is not None:
             self._state_store.revoke()

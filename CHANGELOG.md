@@ -2,6 +2,20 @@
 
 All notable changes to Battery Strategy are documented here.
 
+## [0.2.0-rc.17] - 2026-09-06
+
+### Added
+
+- Persist one bounded, compressed, non-authoritative forecast vintage per
+  quarter-hour outside Recorder.
+- Evaluate matured whole-house, PV and named load-component forecasts by model
+  version and lead time without changing forecast or control behavior.
+
+### Safety
+
+- Trace writes occur after authoritative plan persistence, are failure-contained
+  and have no feedback path into forecasting, optimization or execution.
+
 ## [0.2.0-rc.16] - 2026-09-06
 
 ### Fixed
