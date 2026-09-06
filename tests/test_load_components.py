@@ -78,6 +78,84 @@ class LoadComponentAdapterTests(unittest.TestCase):
         self.assertEqual(dict(result.powers_w)["heat_pump_dhw"], 2500.0)
         self.assertEqual(dict(result.powers_w)["heat_pump_space_heating"], 0.0)
 
+    def test_heat_pump_temperatures_are_normalized_to_celsius(self):
+        data = {
+            CONF_LOAD_COMPONENT_PROFILE: LOAD_PROFILE_HEAT_PUMP,
+            CONF_COMPONENT_POWER_ENTITY: "sensor.hp_power",
+            CONF_HP_ACTIVITY_ENTITY: "sensor.hp_activity",
+            CONF_HP_OUTDOOR_TEMP_ENTITY: "sensor.oat",
+            CONF_HP_DHW_TEMP_ENTITY: "sensor.dhw",
+            CONF_HP_DHW_TARGET_ENTITY: "sensor.target",
+            CONF_HP_DHW_DIFFERENTIAL_ENTITY: "number.diff",
+            CONF_DHW_ALLOWED_WINDOWS: "00:00-05:00,09:00-17:00",
+        }
+        entry = SimpleNamespace(
+            subentries={
+                "hp": SimpleNamespace(
+                    subentry_type=SUBENTRY_TYPE_LOAD_COMPONENT, data=data
+                )
+            }
+        )
+        hass = SimpleNamespace(
+            states=_States(
+                {
+                    "sensor.hp_power": _state(2500, "W"),
+                    "sensor.hp_activity": _state("hot water"),
+                    "sensor.oat": _state(50.0, "°F"),
+                    "sensor.dhw": _state(111.2, "°F"),
+                    "sensor.target": _state(127.4, "°F"),
+                    "number.diff": _state(16.2, "°F"),
+                }
+            )
+        )
+
+        result = collect_load_components(hass, entry, dt.datetime.now(dt.UTC))
+        features = {item.feature_key: item.value for item in result.drivers[0].features}
+
+        self.assertAlmostEqual(features["outdoor_temperature_c"], 10.0)
+        self.assertAlmostEqual(features["dhw_temperature_c"], 44.0)
+        self.assertAlmostEqual(features["dhw_target_c"], 53.0)
+        self.assertAlmostEqual(features["dhw_differential_c"], 9.0)
+
+    def test_heat_pump_kelvin_absolute_and_differential_values_are_distinct(self):
+        data = {
+            CONF_LOAD_COMPONENT_PROFILE: LOAD_PROFILE_HEAT_PUMP,
+            CONF_COMPONENT_POWER_ENTITY: "sensor.hp_power",
+            CONF_HP_ACTIVITY_ENTITY: "sensor.hp_activity",
+            CONF_HP_OUTDOOR_TEMP_ENTITY: "sensor.oat",
+            CONF_HP_DHW_TEMP_ENTITY: "sensor.dhw",
+            CONF_HP_DHW_TARGET_ENTITY: "sensor.target",
+            CONF_HP_DHW_DIFFERENTIAL_ENTITY: "number.diff",
+            CONF_DHW_ALLOWED_WINDOWS: "00:00-05:00,09:00-17:00",
+        }
+        entry = SimpleNamespace(
+            subentries={
+                "hp": SimpleNamespace(
+                    subentry_type=SUBENTRY_TYPE_LOAD_COMPONENT, data=data
+                )
+            }
+        )
+        hass = SimpleNamespace(
+            states=_States(
+                {
+                    "sensor.hp_power": _state(2500, "W"),
+                    "sensor.hp_activity": _state("hot water"),
+                    "sensor.oat": _state(283.15, "K"),
+                    "sensor.dhw": _state(317.15, "K"),
+                    "sensor.target": _state(326.15, "K"),
+                    "number.diff": _state(9.0, "K"),
+                }
+            )
+        )
+
+        result = collect_load_components(hass, entry, dt.datetime.now(dt.UTC))
+        features = {item.feature_key: item.value for item in result.drivers[0].features}
+
+        self.assertAlmostEqual(features["outdoor_temperature_c"], 10.0)
+        self.assertAlmostEqual(features["dhw_temperature_c"], 44.0)
+        self.assertAlmostEqual(features["dhw_target_c"], 53.0)
+        self.assertAlmostEqual(features["dhw_differential_c"], 9.0)
+
     def test_air_conditioning_uses_common_meter_once_for_four_rooms(self):
         climates = [f"climate.room_{index}" for index in range(4)]
         data = {

@@ -203,8 +203,13 @@ def validate_load_component(hass, profile: str, data: dict) -> dict[str, str]:
             CONF_HP_DHW_DIFFERENTIAL_ENTITY,
         ):
             entity_id = data.get(key)
-            if not entity_id or hass.states.get(entity_id) is None:
+            state = hass.states.get(entity_id) if entity_id else None
+            if state is None:
                 errors[key] = "entity_not_found"
+            elif key != CONF_HP_ACTIVITY_ENTITY and str(
+                state.attributes.get("unit_of_measurement") or ""
+            ).strip().lower() not in {"°c", "c", "degc", "k", "°f", "f", "degf"}:
+                errors[key] = "invalid_temperature_unit"
     if profile == LOAD_PROFILE_AIR_CONDITIONING:
         climates = data.get(CONF_CLIMATE_ENTITIES) or []
         if isinstance(climates, str):

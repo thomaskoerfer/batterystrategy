@@ -665,12 +665,207 @@ class HacsStrategyTests(unittest.TestCase):
             )
         )
 
-        self.assertTrue(asyncio.run(async_migrate_entry(hass, entry)))
+        registry = SimpleNamespace(entities={}, async_get=lambda _entity_id: None)
+        with patch(
+            "custom_components.battery_strategy.er.async_get",
+            return_value=registry,
+        ):
+            self.assertTrue(asyncio.run(async_migrate_entry(hass, entry)))
         self.assertEqual(len(updates), 1)
         self.assertIs(updates[0][0], entry)
         self.assertEqual(updates[0][1]["version"], CONFIG_ENTRY_VERSION)
         self.assertTrue(updates[0][1]["options"]["pv_to_ev_first"])
         self.assertNotIn("manual_duration_min", updates[0][1]["options"])
+
+    def test_config_entry_migration_uses_same_device_when_states_not_ready(self):
+        subentry_updates = []
+        lower_entity = "number.hp_dhw_tempecoplus"
+        target_entity = "sensor.hp_dhw_settemp"
+        subentry = SimpleNamespace(
+            data={
+                "profile": "ems_esp_heat_pump",
+                "dhw_target_entity": lower_entity,
+                "dhw_differential_entity": "number.hp_dhw_ecoplusdiff",
+            }
+        )
+        entry = SimpleNamespace(
+            version=2,
+            data={},
+            options={},
+            subentries={"heat_pump": subentry},
+        )
+        hass = SimpleNamespace(
+            states=SimpleNamespace(get=lambda _entity_id: None, async_entity_ids=tuple),
+            config_entries=SimpleNamespace(
+                async_update_entry=lambda *_args, **_changes: None,
+                async_update_subentry=lambda **changes: subentry_updates.append(
+                    changes
+                ),
+            ),
+        )
+        registry_entries = {
+            lower_entity: SimpleNamespace(device_id="heat-pump"),
+            target_entity: SimpleNamespace(device_id="heat-pump"),
+        }
+        registry = SimpleNamespace(
+            entities=registry_entries,
+            async_get=registry_entries.get,
+        )
+
+        with patch(
+            "custom_components.battery_strategy.er.async_get",
+            return_value=registry,
+        ):
+            self.assertTrue(asyncio.run(async_migrate_entry(hass, entry)))
+
+        self.assertEqual(len(subentry_updates), 1)
+        self.assertEqual(
+            subentry_updates[0]["data"]["dhw_target_entity"], target_entity
+        )
+
+    def test_config_entry_migration_replaces_verified_dhw_lower_threshold(self):
+        updates = []
+        subentry_updates = []
+        states = {
+            "number.hp_dhw_tempecoplus": SimpleNamespace(state="44"),
+            "number.hp_dhw_ecoplusdiff": SimpleNamespace(state="9"),
+            "sensor.hp_dhw_settemp": SimpleNamespace(state="53"),
+        }
+        subentry = SimpleNamespace(
+            data={
+                "profile": "ems_esp_heat_pump",
+                "dhw_target_entity": "number.hp_dhw_tempecoplus",
+                "dhw_differential_entity": "number.hp_dhw_ecoplusdiff",
+            }
+        )
+        entry = SimpleNamespace(
+            version=2,
+            data={},
+            options={},
+            subentries={"heat_pump": subentry},
+        )
+        hass = SimpleNamespace(
+            states=SimpleNamespace(
+                get=states.get,
+                async_entity_ids=lambda: tuple(states),
+            ),
+            config_entries=SimpleNamespace(
+                async_update_entry=lambda target, **changes: updates.append(
+                    (target, changes)
+                ),
+                async_update_subentry=lambda **changes: subentry_updates.append(
+                    changes
+                ),
+            ),
+        )
+
+        registry = SimpleNamespace(entities={}, async_get=lambda _entity_id: None)
+        with patch(
+            "custom_components.battery_strategy.er.async_get",
+            return_value=registry,
+        ):
+            self.assertTrue(asyncio.run(async_migrate_entry(hass, entry)))
+
+        self.assertEqual(len(subentry_updates), 1)
+        self.assertEqual(
+            subentry_updates[0]["data"]["dhw_target_entity"],
+            "sensor.hp_dhw_settemp",
+        )
+        self.assertEqual(updates[0][1]["version"], CONFIG_ENTRY_VERSION)
+
+    def test_config_entry_migration_rejects_non_finite_role_evidence(self):
+        subentry_updates = []
+        states = {
+            "number.hp_dhw_tempecoplus": SimpleNamespace(state="nan"),
+            "number.hp_dhw_ecoplusdiff": SimpleNamespace(state="9"),
+            "sensor.hp_dhw_settemp": SimpleNamespace(state="53"),
+        }
+        subentry = SimpleNamespace(
+            data={
+                "profile": "ems_esp_heat_pump",
+                "dhw_target_entity": "number.hp_dhw_tempecoplus",
+                "dhw_differential_entity": "number.hp_dhw_ecoplusdiff",
+            }
+        )
+        entry = SimpleNamespace(
+            version=2,
+            data={},
+            options={},
+            subentries={"heat_pump": subentry},
+        )
+        hass = SimpleNamespace(
+            states=SimpleNamespace(
+                get=states.get,
+                async_entity_ids=lambda: tuple(states),
+            ),
+            config_entries=SimpleNamespace(
+                async_update_entry=lambda *_args, **_changes: None,
+                async_update_subentry=lambda **changes: subentry_updates.append(
+                    changes
+                ),
+            ),
+        )
+        registry_entries = {
+            "number.hp_dhw_tempecoplus": SimpleNamespace(device_id="lower"),
+            "sensor.hp_dhw_settemp": SimpleNamespace(device_id="target"),
+        }
+        registry = SimpleNamespace(
+            entities=registry_entries,
+            async_get=registry_entries.get,
+        )
+
+        with patch(
+            "custom_components.battery_strategy.er.async_get",
+            return_value=registry,
+        ):
+            self.assertTrue(asyncio.run(async_migrate_entry(hass, entry)))
+
+        self.assertEqual(subentry_updates, [])
+
+    def test_config_entry_migration_rejects_disabled_cutout_candidate(self):
+        subentry_updates = []
+        lower_entity = "number.hp_dhw_tempecoplus"
+        target_entity = "sensor.hp_dhw_settemp"
+        subentry = SimpleNamespace(
+            data={
+                "profile": "ems_esp_heat_pump",
+                "dhw_target_entity": lower_entity,
+                "dhw_differential_entity": "number.hp_dhw_ecoplusdiff",
+            }
+        )
+        entry = SimpleNamespace(
+            version=2,
+            data={},
+            options={},
+            subentries={"heat_pump": subentry},
+        )
+        hass = SimpleNamespace(
+            states=SimpleNamespace(get=lambda _entity_id: None, async_entity_ids=tuple),
+            config_entries=SimpleNamespace(
+                async_update_entry=lambda *_args, **_changes: None,
+                async_update_subentry=lambda **changes: subentry_updates.append(
+                    changes
+                ),
+            ),
+        )
+        registry_entries = {
+            lower_entity: SimpleNamespace(device_id="heat-pump", disabled_by=None),
+            target_entity: SimpleNamespace(
+                device_id="heat-pump", disabled_by="integration"
+            ),
+        }
+        registry = SimpleNamespace(
+            entities=registry_entries,
+            async_get=registry_entries.get,
+        )
+
+        with patch(
+            "custom_components.battery_strategy.er.async_get",
+            return_value=registry,
+        ):
+            self.assertTrue(asyncio.run(async_migrate_entry(hass, entry)))
+
+        self.assertEqual(subentry_updates, [])
 
     def test_active_reload_zeros_limits_before_planner_shutdown(self):
         events = []

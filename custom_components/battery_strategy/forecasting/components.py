@@ -19,6 +19,7 @@ from ..contracts import (
     QuantileEnergy,
     WeatherSlot,
 )
+from .heat_pump import adjust_heat_pump_forecast
 from .history import ForecastHistorySample, ForecastTargetInput
 from .load import LoadForecastModelConfig, build_load_forecast
 
@@ -104,29 +105,65 @@ def build_component_load_forecast(
             residual.slots,
         )
     ]
+    component_energy: dict[str, tuple[float, ...]] = {}
+    for spec in specs:
+        component_energy[spec.component_key] = tuple(
+            _component_power_w(
+                spec,
+                target.local_start,
+                eligible,
+                context,
+                weather_by_slot.get(slot),
+                request,
+            )
+            * SLOT_H
+            / 1000.0
+            for slot, target in zip(request.slots, targets, strict=True)
+        )
+    dhw_spec = next(
+        (
+            spec
+            for spec in specs
+            if spec.profile == LOAD_PROFILE_HEAT_PUMP
+            and spec.component_key == "heat_pump_dhw"
+        ),
+        None,
+    )
+    if dhw_spec is not None and "heat_pump_space_heating" in component_energy:
+        heat_pump = adjust_heat_pump_forecast(
+            request,
+            eligible,
+            targets,
+            context,
+            dhw_spec.allowed_windows,
+            component_energy["heat_pump_dhw"],
+            component_energy["heat_pump_space_heating"],
+            tuple(
+                weather_by_slot.get(slot).temperature_c
+                if weather_by_slot.get(slot) is not None
+                and weather_by_slot.get(slot).quality.coverage >= 0.999
+                and not weather_by_slot.get(slot).quality.flags
+                else None
+                for slot in request.slots
+            ),
+        )
+        component_energy["heat_pump_dhw"] = heat_pump.dhw_kwh
+        component_energy["heat_pump_space_heating"] = heat_pump.space_heating_kwh
+
     for spec in specs:
         component_slots = tuple(
             ForecastSlot(
                 slot,
-                QuantileEnergy(
-                    _component_power_w(
-                        spec,
-                        target.local_start,
-                        eligible,
-                        context,
-                        weather_by_slot.get(slot),
-                        request,
-                    )
-                    * SLOT_H
-                    / 1000.0
-                ),
+                QuantileEnergy(component_energy[spec.component_key][index]),
             )
-            for slot, target in zip(request.slots, targets, strict=True)
+            for index, slot in enumerate(request.slots)
         )
         components.append(
             LoadForecastComponent(
                 spec.component_key,
-                f"{spec.profile}-v1",
+                f"{spec.profile}-v2"
+                if spec.profile == LOAD_PROFILE_HEAT_PUMP
+                else f"{spec.profile}-v1",
                 residual.training_cutoff_ms,
                 component_slots,
             )
@@ -144,7 +181,9 @@ def build_component_load_forecast(
         f"component-{request.as_of_ms}",
         request.as_of_ms,
         residual.training_cutoff_ms,
-        "component-load-v1",
+        "component-load-v2"
+        if any(spec.profile == LOAD_PROFILE_HEAT_PUMP for spec in specs)
+        else "component-load-v1",
         total_slots,
         tuple(components),
     )
@@ -171,7 +210,11 @@ def _component_power_w(spec, target, history, context, weather, request) -> floa
             ),
             None,
         )
-        if component is None or component.quality.coverage < 0.999:
+        if (
+            component is None
+            or component.quality.coverage < 0.999
+            or component.quality.flags
+        ):
             continue
         sample_oat = _feature(component.features, "outdoor_temperature_c")
         distance = (
@@ -191,19 +234,7 @@ def _component_power_w(spec, target, history, context, weather, request) -> floa
     if spec.profile == LOAD_PROFILE_HEAT_PUMP and spec.component_key == "heat_pump_dhw":
         if not time_allowed(target, spec.allowed_windows):
             return 0.0
-        if driver is not None and driver.power_w > 0 and horizon_h <= 0.75:
-            return max(base, driver.power_w)
-        temperature = _driver_feature(driver, "dhw_temperature_c")
-        target_temp = _driver_feature(driver, "dhw_target_c")
-        differential = _driver_feature(driver, "dhw_differential_c")
-        if (
-            horizon_h <= 1.0
-            and temperature is not None
-            and target_temp is not None
-            and differential is not None
-            and temperature <= target_temp - differential
-        ):
-            return max(base, _active_component_power(history, spec.component_key))
+        return max(0.0, float(base))
     if spec.profile == LOAD_PROFILE_AIR_CONDITIONING and driver is not None:
         indoor = _driver_feature(driver, "indoor_temperature_max_c")
         target_indoor = _driver_feature(driver, "target_temperature_mean_c")
@@ -217,16 +248,6 @@ def _component_power_w(spec, target, history, context, weather, request) -> floa
         ):
             return min(base, driver.power_w)
     return max(0.0, float(base))
-
-
-def _active_component_power(history, key: str) -> float:
-    values = [
-        component.energy_kwh / SLOT_H * 1000.0
-        for item in history[-30 * 96 :]
-        for component in item.load_components
-        if component.component_key == key and component.energy_kwh > 0.05
-    ]
-    return float(statistics.median(values)) if values else 0.0
 
 
 def _total_samples(history) -> tuple[ForecastHistorySample, ...]:
@@ -267,8 +288,17 @@ def _sample(item, load_kwh) -> ForecastHistorySample:
 
 
 def _has_components(item, keys) -> bool:
-    present = {component.component_key for component in item.load_components}
-    return item.quality.coverage >= 0.999 and all(key in present for key in keys)
+    present = {component.component_key: component for component in item.load_components}
+    return (
+        item.quality.coverage >= 0.999
+        and not frozenset(item.quality.flags) & _LOAD_INVALID_FLAGS
+        and all(
+            key in present
+            and present[key].quality.coverage >= 0.999
+            and not present[key].quality.flags
+            for key in keys
+        )
+    )
 
 
 def _residual_context(context, keys) -> LoadForecastContext:
@@ -282,7 +312,9 @@ def _residual_context(context, keys) -> LoadForecastContext:
 
 def _feature(features, key):
     item = next((item for item in features if item.feature_key == key), None)
-    return item.value if item is not None else None
+    if item is None or item.quality.coverage < 0.999 or item.quality.flags:
+        return None
+    return item.value
 
 
 def _driver_feature(driver, key):

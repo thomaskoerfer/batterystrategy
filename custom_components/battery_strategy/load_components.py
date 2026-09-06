@@ -127,10 +127,12 @@ def _collect_heat_pump(hass, data, now, powers, features, drivers, specs) -> Non
     activity = activity.lower()
     dhw_power = power if "hot water" in activity or "dhw" in activity else 0.0
     heating_power = power if "heating" in activity else 0.0
-    oat = _numeric(hass, data.get(CONF_HP_OUTDOOR_TEMP_ENTITY))
-    dhw_temp = _numeric(hass, data.get(CONF_HP_DHW_TEMP_ENTITY))
-    dhw_target = _numeric(hass, data.get(CONF_HP_DHW_TARGET_ENTITY))
-    dhw_diff = _numeric(hass, data.get(CONF_HP_DHW_DIFFERENTIAL_ENTITY))
+    oat = _temperature_c(hass, data.get(CONF_HP_OUTDOOR_TEMP_ENTITY))
+    dhw_temp = _temperature_c(hass, data.get(CONF_HP_DHW_TEMP_ENTITY))
+    dhw_target = _temperature_c(hass, data.get(CONF_HP_DHW_TARGET_ENTITY))
+    dhw_diff = _temperature_c(
+        hass, data.get(CONF_HP_DHW_DIFFERENTIAL_ENTITY), differential=True
+    )
     shared = _available_features(("outdoor_temperature_c", oat))
     dhw_features = shared + _available_features(
         ("dhw_temperature_c", dhw_temp),
@@ -147,7 +149,7 @@ def _collect_heat_pump(hass, data, now, powers, features, drivers, specs) -> Non
         ),
         (
             "target_flow_temperature_c",
-            _numeric(hass, data.get(CONF_HP_TARGET_FLOW_TEMP_ENTITY)),
+            _temperature_c(hass, data.get(CONF_HP_TARGET_FLOW_TEMP_ENTITY)),
         ),
     )
     _append_component(
@@ -238,9 +240,19 @@ def _power_w(hass, entity_id) -> float | None:
     return value * {"kw": 1000.0, "mw": 1_000_000.0}.get(unit, 1.0)
 
 
-def _numeric(hass, entity_id) -> float | None:
+def _temperature_c(hass, entity_id, *, differential: bool = False) -> float | None:
     state = hass.states.get(entity_id) if entity_id else None
-    return _finite(state.state) if state is not None else None
+    value = _finite(state.state) if state is not None else None
+    if value is None:
+        return None
+    unit = str(state.attributes.get("unit_of_measurement") or "°C").strip().lower()
+    if unit in {"°c", "c", "degc"}:
+        return value
+    if unit == "k":
+        return value if differential else value - 273.15
+    if unit in {"°f", "f", "degf"}:
+        return value * 5.0 / 9.0 if differential else (value - 32.0) * 5.0 / 9.0
+    return None
 
 
 def _binary(hass, entity_id) -> float | None:

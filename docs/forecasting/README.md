@@ -53,6 +53,32 @@ a shared-meter multi-zone air-conditioning context and a generic metered load.
 Additional profiles must use stable semantic feature keys rather than entity
 names or vendor payload fields.
 
+### Heat-pump hot water and space heating
+
+Domestic-hot-water recovery is a finite thermostat cycle, not a persistence
+forecast of current compressor power. The configured target is the cut-out
+temperature; the cut-in temperature is target minus hysteresis. While a cycle
+is active, the model estimates remaining electrical energy from the measured
+temperature deficit and robust `kWh/K` evidence from comparable completed
+cycles. Comparable cycles are selected by initial temperature deficit, source
+temperature, time of day and day type. Replanning may update that estimate from
+new measurements, but it must not restart a fixed-duration continuation.
+If a live cycle first appears inside an unfinished slot, no finalized energy
+yet proves its start time. That first partial cycle is therefore bounded to the
+current slot; the slot-boundary forecast then continues from finalized energy.
+
+Outdoor temperature is a performance feature for hot-water recovery because it
+can affect COP, electrical energy per kelvin and duration. It is not treated as
+the direct cause of a hot-water draw. Humidity is deliberately excluded until a
+walk-forward evaluation demonstrates material independent value.
+
+Hot-water and space-heating outputs remain separately observable, but their
+shared compressor constraint is modeled together. Predicted hot-water activity
+displaces simultaneous space heating. Only the incremental displacement beyond
+the historical hot-water profile is deferred into later heating slots, which
+preserves the historically learned post-cycle buffer recovery without counting
+it twice. Other load components and the PV forecast remain independent.
+
 ## PV model
 
 PV output is constrained by configured plant and inverter capability and may use

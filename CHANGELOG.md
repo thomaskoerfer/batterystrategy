@@ -2,6 +2,30 @@
 
 All notable changes to Battery Strategy are documented here.
 
+## [0.2.0-rc.15] - 2026-09-06
+
+### Changed
+
+- Forecast active domestic-hot-water recovery as a finite empirical cycle whose
+  remaining electrical energy follows the measured temperature deficit and
+  comparable historical cycles.
+- Classify completed recovery cycles by temperature deficit, source
+  temperature, time of day and day type without introducing humidity before it
+  demonstrates incremental walk-forward value.
+- Couple DHW and space-heating forecasts through their shared compressor:
+  additional DHW activity defers heating, while shorter DHW cycles restore
+  heating and remove duplicated historical recovery.
+
+### Fixed
+
+- Prevent repeated in-slot replanning from moving an unchanged active DHW cycle
+  into later slots.
+- Normalize configured temperature entities from Celsius, Fahrenheit or Kelvin
+  and migrate the known EMS-ESP lower-threshold mapping to a verified cut-out
+  target without depending on integration startup order.
+- Exclude incomplete or flagged component and feature evidence from heat-pump
+  calibration.
+
 ## [0.2.0-rc.14] - 2026-09-05
 
 ### Fixed

@@ -147,6 +147,7 @@
       "error": {
         "entity_not_found": "Diese Entity existiert nicht in Home Assistant.",
         "invalid_power_unit": "Die Leistungs-Entity muss W, kW oder MW liefern.",
+        "invalid_temperature_unit": "Temperatur-Entities müssen °C, °F oder K liefern.",
         "invalid_time_windows": "Nutze kommaseparierte Tagesfenster wie 00:00-05:00,09:00-17:00.",
         "invalid_component_key": "Nutze einen nicht leeren Kleinbuchstaben-Schluessel aus Buchstaben, Ziffern und Unterstrichen."
       },
@@ -168,7 +169,7 @@
             "activity_entity": "Waermepumpen-Aktivitaet",
             "outdoor_temperature_entity": "Aussentemperatur",
             "dhw_temperature_entity": "Warmwassertemperatur",
-            "dhw_target_entity": "Warmwasser-Solltemperatur",
+            "dhw_target_entity": "Warmwasser-Abschalttemperatur (Soll)",
             "dhw_differential_entity": "Warmwasser-Hysterese",
             "dhw_charging_entity": "Warmwasserbereitung aktiv",
             "circulation_entity": "Warmwasser-Zirkulation",
@@ -188,7 +189,7 @@
             "activity_entity": "Waermepumpen-Aktivitaet",
             "outdoor_temperature_entity": "Aussentemperatur",
             "dhw_temperature_entity": "Warmwassertemperatur",
-            "dhw_target_entity": "Warmwasser-Solltemperatur",
+            "dhw_target_entity": "Warmwasser-Abschalttemperatur (Soll)",
             "dhw_differential_entity": "Warmwasser-Hysterese",
             "dhw_charging_entity": "Warmwasserbereitung aktiv",
             "circulation_entity": "Warmwasser-Zirkulation",

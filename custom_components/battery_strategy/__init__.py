@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Iterable
 from datetime import timedelta
 from pathlib import Path
@@ -14,7 +15,14 @@ from homeassistant.helpers import entity_registry as er
 
 from .command_trace import COMMAND_TRACE_FILE
 from .compiler_runtime_store import CompilerRuntimeStore
-from .const import CONFIG_ENTRY_VERSION, DOMAIN
+from .const import (
+    CONF_HP_DHW_DIFFERENTIAL_ENTITY,
+    CONF_HP_DHW_TARGET_ENTITY,
+    CONF_LOAD_COMPONENT_PROFILE,
+    CONFIG_ENTRY_VERSION,
+    DOMAIN,
+    LOAD_PROFILE_HEAT_PUMP,
+)
 from .coordinator import (
     FEATURE_STORE_FILE,
     OPTIMIZER_STATE_FILE,
@@ -36,6 +44,9 @@ async def async_setup_entry(
     hass: HomeAssistant, entry: BatteryStrategyConfigEntry
 ) -> bool:
     """Set up Battery Strategy from a config entry."""
+    # Retry the semantic role correction during every setup. Config-entry
+    # migration can run before the source integration has restored its states.
+    _migrate_ems_esp_dhw_cutout_mapping(hass, entry)
     _async_remove_deprecated_entities(hass, entry)
     await hass.async_add_executor_job(_migrate_runtime_files, hass.config.config_dir)
     planning_state_store = PlanningStateStore.claim(
@@ -144,12 +155,87 @@ async def async_migrate_entry(hass, entry) -> bool:
     # beta.4 accidentally removed this policy. Persist the safe historic default
     # so future defaults cannot silently change an upgraded installation.
     options.setdefault("pv_to_ev_first", True)
+    if entry.version < 3:
+        _migrate_ems_esp_dhw_cutout_mapping(hass, entry)
     hass.config_entries.async_update_entry(
         entry,
         options=options,
         version=CONFIG_ENTRY_VERSION,
     )
     return True
+
+
+def _migrate_ems_esp_dhw_cutout_mapping(hass, entry) -> None:
+    """Replace a verified EMS-ESP lower threshold with its effective cut-out."""
+    subentries = getattr(entry, "subentries", {})
+    states = getattr(hass, "states", None)
+    if states is None:
+        return
+    registry = er.async_get(hass)
+    entity_ids = set(getattr(states, "async_entity_ids", lambda: ())())
+    entity_ids.update(registry.entities)
+    for subentry in subentries.values():
+        data = dict(subentry.data)
+        if data.get(CONF_LOAD_COMPONENT_PROFILE) != LOAD_PROFILE_HEAT_PUMP:
+            continue
+        lower_entity = str(data.get(CONF_HP_DHW_TARGET_ENTITY) or "")
+        if not lower_entity.endswith("dhw_tempecoplus"):
+            continue
+        prefix = lower_entity.split(".", 1)[-1][: -len("dhw_tempecoplus")]
+        candidates = [
+            entity_id
+            for entity_id in entity_ids
+            if entity_id.split(".", 1)[-1] == f"{prefix}dhw_settemp"
+            and _registered_entity_enabled(registry, entity_id)
+        ]
+        if len(candidates) != 1:
+            continue
+        lower = _state_float(hass, lower_entity)
+        differential = _state_float(hass, data.get(CONF_HP_DHW_DIFFERENTIAL_ENTITY))
+        cutout = _state_float(hass, candidates[0])
+        live_values_verify_role = (
+            lower is not None
+            and differential is not None
+            and cutout is not None
+            and abs(lower + differential - cutout) <= 0.25
+        )
+        if not live_values_verify_role and not _same_registered_device(
+            registry, lower_entity, candidates[0]
+        ):
+            continue
+        data[CONF_HP_DHW_TARGET_ENTITY] = candidates[0]
+        hass.config_entries.async_update_subentry(
+            subentry=subentry, entry=entry, data=data
+        )
+
+
+def _same_registered_device(
+    registry, first_entity_id: str, second_entity_id: str
+) -> bool:
+    """Confirm two unavailable migration candidates belong to one device."""
+    first = registry.async_get(first_entity_id)
+    second = registry.async_get(second_entity_id)
+    return bool(
+        first is not None
+        and second is not None
+        and first.device_id is not None
+        and first.device_id == second.device_id
+    )
+
+
+def _registered_entity_enabled(registry, entity_id: str) -> bool:
+    """Accept live-only candidates and reject disabled registry entities."""
+    registered = registry.async_get(entity_id)
+    return registered is None or getattr(registered, "disabled_by", None) is None
+
+
+def _state_float(hass, entity_id) -> float | None:
+    state = hass.states.get(entity_id) if entity_id else None
+    try:
+        value = float(state.state) if state is not None else None
+        return value if value is not None and math.isfinite(value) else None
+    except TypeError, ValueError:
+        return None
 
 
 def _async_register_services(hass) -> None:
