@@ -74,6 +74,8 @@ exists within it.
 - repeated active-cycle forecasts do not create a rolling 45-minute tail;
 - a cycle first observed inside a slot remains bounded to that slot until the
   boundary supplies finalized energy evidence;
+- historical target changes or corrected lower-threshold mappings cannot be
+  interpreted as thermal overshoot beyond the current cut-out;
 - remaining energy falls with decreasing remaining temperature deficit;
 - source-temperature similarity influences cycle selection;
 - extra hot-water occupation defers rather than deletes space-heating energy;

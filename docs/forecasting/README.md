@@ -63,6 +63,10 @@ temperature deficit and robust `kWh/K` evidence from comparable completed
 cycles. Comparable cycles are selected by initial temperature deficit, source
 temperature, time of day and day type. Replanning may update that estimate from
 new measurements, but it must not restart a fixed-duration continuation.
+Cycle efficiency is learned from the observed start-to-peak temperature lift.
+Recorded targets provide context, but an older, lower target cannot be treated
+as overshoot beyond the current cut-out; this keeps setpoint changes and
+corrected entity mappings from fabricating additional recovery energy.
 If a live cycle first appears inside an unfinished slot, no finalized energy
 yet proves its start time. That first partial cycle is therefore bounded to the
 current slot; the slot-boundary forecast then continues from finalized energy.

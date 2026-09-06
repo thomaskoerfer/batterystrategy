@@ -207,11 +207,15 @@ def _remaining_cycle_energy(
         weekend,
     )
     tail_k = statistics.median(
-        max(0.0, cycle.peak_temperature_c - cycle.target_temperature_c)
+        max(
+            0.0,
+            cycle.peak_temperature_c - max(cycle.target_temperature_c, target_c),
+        )
         for cycle in comparable
     )
     specific_energy = statistics.median(
-        cycle.total_energy_kwh / max(0.1, target_c + tail_k - cycle.start_temperature_c)
+        cycle.total_energy_kwh
+        / max(0.1, cycle.peak_temperature_c - cycle.start_temperature_c)
         for cycle in comparable
     )
     total_kwh = specific_energy * max(0.0, target_c + tail_k - start_temperature_c)

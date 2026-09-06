@@ -45,11 +45,12 @@ def _history_slot(
     charging_fraction: float | None,
     heating_kwh: float = 0.0,
     outdoor_temperature_c: float = 10.0,
+    target_temperature_c: float = 53.0,
     quality: DataQuality = DataQuality(),
 ) -> HistoricalFeatureSlot:
     features = [
         _feature("dhw_temperature_c", dhw_temperature_c),
-        _feature("dhw_target_c", 53.0),
+        _feature("dhw_target_c", target_temperature_c),
         _feature("dhw_differential_c", 9.0),
         _feature("outdoor_temperature_c", outdoor_temperature_c),
     ]
@@ -86,6 +87,7 @@ def _completed_cycle(
     include_charging_feature: bool = True,
     quality: DataQuality = DataQuality(),
     heating_kwh: float = 0.0,
+    target_temperature_c: float = 53.0,
 ) -> tuple[HistoricalFeatureSlot, ...]:
     base = dt.datetime(2026, 8, day, 3, 0, tzinfo=TZ)
     return (
@@ -97,6 +99,7 @@ def _completed_cycle(
             outdoor_temperature_c=outdoor_temperature_c,
             quality=quality,
             heating_kwh=heating_kwh,
+            target_temperature_c=target_temperature_c,
         ),
         _history_slot(
             base + dt.timedelta(minutes=15),
@@ -106,6 +109,7 @@ def _completed_cycle(
             outdoor_temperature_c=outdoor_temperature_c,
             quality=quality,
             heating_kwh=heating_kwh,
+            target_temperature_c=target_temperature_c,
         ),
         _history_slot(
             base + dt.timedelta(minutes=30),
@@ -115,6 +119,7 @@ def _completed_cycle(
             outdoor_temperature_c=outdoor_temperature_c,
             quality=quality,
             heating_kwh=heating_kwh,
+            target_temperature_c=target_temperature_c,
         ),
         _history_slot(
             base + dt.timedelta(minutes=45),
@@ -124,6 +129,7 @@ def _completed_cycle(
             outdoor_temperature_c=outdoor_temperature_c,
             quality=quality,
             heating_kwh=heating_kwh,
+            target_temperature_c=target_temperature_c,
         ),
     )
 
@@ -250,6 +256,32 @@ def test_cycle_starting_in_current_slot_never_creates_rolling_tail():
     assert twelve_minutes_later.dhw_kwh[1:] == (0.0, 0.0)
     assert at_slot_start.dhw_kwh[0] > four_minutes_later.dhw_kwh[0]
     assert four_minutes_later.dhw_kwh[0] > twelve_minutes_later.dhw_kwh[0]
+
+
+def test_legacy_lower_threshold_history_does_not_extend_active_cycle_past_target():
+    legacy_cycles = tuple(
+        item
+        for day in range(23, 27)
+        for item in _completed_cycle(day, target_temperature_c=44.0)
+    )
+    observed = (
+        _history_slot(
+            dt.datetime(2026, 9, 6, 3, 15, tzinfo=TZ),
+            dhw_kwh=0.72,
+            dhw_temperature_c=49.7,
+            charging_fraction=1.0,
+        ),
+    )
+
+    forecast = _case(
+        53.1,
+        history_prefix=legacy_cycles + observed,
+        include_default_cycles=False,
+        dhw_baseline=(0.30, 0.25, 0.20),
+        current_power_w=2100.0,
+    )
+
+    assert forecast.dhw_kwh[1:] == (0.0, 0.0)
 
 
 def test_smaller_remaining_delta_t_reduces_remaining_energy():

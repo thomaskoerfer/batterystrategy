@@ -2,6 +2,16 @@
 
 All notable changes to Battery Strategy are documented here.
 
+## [0.2.0-rc.16] - 2026-09-06
+
+### Fixed
+
+- Learn hot-water cycle efficiency from the observed start-to-peak temperature
+  lift and prevent historical lower targets from becoming a fabricated thermal
+  overshoot after a target-entity correction or setpoint change.
+- Stop an active hot-water forecast at the current cut-out instead of carrying
+  stale lower-threshold history into an additional planning slot.
+
 ## [0.2.0-rc.15] - 2026-09-06
 
 ### Changed
