@@ -27,8 +27,11 @@ demand. Model hot-water charging as a finite temperature-deficit cycle; never
 extend current compressor power by restarting a rolling duration. Model the
 shared-compressor and post-hot-water heating-recovery relationship inside the
 heat-pump forecast implementation while continuing to publish separate load
-components. Do not add weather features such as humidity without demonstrated
-incremental walk-forward value.
+components. Learn cycle efficiency from the observed start-to-peak temperature
+lift. A historical target below the current cut-out must not be interpreted as
+thermal overshoot beyond that cut-out; target changes and corrected source
+mappings must not fabricate remaining cycle energy. Do not add weather features
+such as humidity without demonstrated incremental walk-forward value.
 
 ## Setup independence
 

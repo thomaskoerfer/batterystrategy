@@ -18,6 +18,7 @@ from custom_components.battery_strategy.contracts import (
     QualityFlag,
     SlotKey,
 )
+from custom_components.battery_strategy.feature_store import CompressedFeatureStore
 from custom_components.battery_strategy.forecasting.heat_pump import (
     _couple_space_heating,
     adjust_heat_pump_forecast,
@@ -88,6 +89,7 @@ def _completed_cycle(
     quality: DataQuality = DataQuality(),
     heating_kwh: float = 0.0,
     target_temperature_c: float = 53.0,
+    peak_temperature_c: float = 54.0,
 ) -> tuple[HistoricalFeatureSlot, ...]:
     base = dt.datetime(2026, 8, day, 3, 0, tzinfo=TZ)
     return (
@@ -114,7 +116,7 @@ def _completed_cycle(
         _history_slot(
             base + dt.timedelta(minutes=30),
             dhw_kwh=0.30 * energy_scale,
-            dhw_temperature_c=54.0,
+            dhw_temperature_c=peak_temperature_c,
             charging_fraction=0.4 if include_charging_feature else None,
             outdoor_temperature_c=outdoor_temperature_c,
             quality=quality,
@@ -124,7 +126,7 @@ def _completed_cycle(
         _history_slot(
             base + dt.timedelta(minutes=45),
             dhw_kwh=0.0,
-            dhw_temperature_c=54.0,
+            dhw_temperature_c=peak_temperature_c,
             charging_fraction=0.0 if include_charging_feature else None,
             outdoor_temperature_c=outdoor_temperature_c,
             quality=quality,
@@ -258,7 +260,9 @@ def test_cycle_starting_in_current_slot_never_creates_rolling_tail():
     assert four_minutes_later.dhw_kwh[0] > twelve_minutes_later.dhw_kwh[0]
 
 
-def test_legacy_lower_threshold_history_does_not_extend_active_cycle_past_target():
+def test_legacy_lower_threshold_history_does_not_extend_active_cycle_past_target(
+    tmp_path,
+):
     legacy_cycles = tuple(
         item
         for day in range(23, 27)
@@ -273,15 +277,52 @@ def test_legacy_lower_threshold_history_does_not_extend_active_cycle_past_target
         ),
     )
 
+    store = CompressedFeatureStore(tmp_path / "features.json.gz")
+    store.initialize()
+    store.upsert(legacy_cycles + observed)
+
     forecast = _case(
         53.1,
-        history_prefix=legacy_cycles + observed,
+        history_prefix=store.load(0, 2**63 - 1),
         include_default_cycles=False,
         dhw_baseline=(0.30, 0.25, 0.20),
         current_power_w=2100.0,
     )
 
     assert forecast.dhw_kwh[1:] == (0.0, 0.0)
+
+
+def test_cycle_efficiency_uses_historical_start_to_peak_lift():
+    lower_target_cycles = tuple(
+        item
+        for day in range(23, 27)
+        for item in _completed_cycle(
+            day,
+            target_temperature_c=50.0,
+            peak_temperature_c=51.0,
+        )
+    )
+    observed = (
+        _history_slot(
+            dt.datetime(2026, 9, 6, 3, 15, tzinfo=TZ),
+            dhw_kwh=0.60,
+            dhw_temperature_c=44.0,
+            charging_fraction=1.0,
+        ),
+    )
+
+    forecast = _case(
+        49.7,
+        history_prefix=lower_target_cycles + observed,
+        include_default_cycles=False,
+        dhw_baseline=(0.30, 0.25, 0.20),
+        current_power_w=2100.0,
+    )
+
+    expected_specific_energy = 1.65 / (51.0 - 43.0)
+    expected_remaining = expected_specific_energy * (53.0 - 49.7)
+    assert sum(forecast.dhw_kwh) == pytest.approx(expected_remaining)
+    assert forecast.dhw_kwh[1] > 0.1
 
 
 def test_smaller_remaining_delta_t_reduces_remaining_energy():
