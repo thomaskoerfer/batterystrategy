@@ -280,10 +280,12 @@ def test_legacy_lower_threshold_history_does_not_extend_active_cycle_past_target
     store = CompressedFeatureStore(tmp_path / "features.json.gz")
     store.initialize()
     store.upsert(legacy_cycles + observed)
+    reloaded_store = CompressedFeatureStore(tmp_path / "features.json.gz")
+    reloaded_store.initialize()
 
     forecast = _case(
         53.1,
-        history_prefix=store.load(0, 2**63 - 1),
+        history_prefix=reloaded_store.load(0, 2**63 - 1),
         include_default_cycles=False,
         dhw_baseline=(0.30, 0.25, 0.20),
         current_power_w=2100.0,
