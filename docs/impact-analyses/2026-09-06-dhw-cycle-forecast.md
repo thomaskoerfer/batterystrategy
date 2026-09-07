@@ -11,6 +11,16 @@ cut-out temperature. Historical feature slots show finite, recurring recovery
 cycles and contain the temperature, hysteresis, charging-state and source-
 temperature evidence needed for a bounded model.
 
+The first implementation then over-corrected this risk: a cycle first observed
+inside an unfinished slot was capped to that slot until finalized energy became
+available. Production replay showed a valid uninterrupted cycle consequently
+losing its future tail for one forecast vintage at the slot boundary. The model
+now publishes the full thermally estimated tail immediately and deducts
+estimated unfinalized energy since the charging-state or hot-water activity
+transition on repeated runs. A missing transition timestamp fails
+conservatively by deducting no unfinalized energy until a finalized active slot
+exists.
+
 The same heat pump cannot serve domestic hot water and space heating at once.
 Historical space-heating profiles already contain the normal post-hot-water
 buffer recovery, but an unexpectedly longer hot-water cycle must defer any
@@ -72,8 +82,8 @@ exists within it.
 ## Verification
 
 - repeated active-cycle forecasts do not create a rolling 45-minute tail;
-- a cycle first observed inside a slot remains bounded to that slot until the
-  boundary supplies finalized energy evidence;
+- a cycle first observed inside a slot immediately includes its thermally
+  estimated future tail without moving that tail on repeated forecasts;
 - historical target changes or corrected lower-threshold mappings cannot be
   interpreted as thermal overshoot beyond the current cut-out;
 - remaining energy falls with decreasing remaining temperature deficit;

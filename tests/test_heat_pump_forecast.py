@@ -29,6 +29,13 @@ SLOT_MS = 900_000
 TZ = ZoneInfo("Europe/Berlin")
 
 
+def _last_active_slot(values: tuple[float, ...]) -> int | None:
+    return next(
+        (index for index in range(len(values) - 1, -1, -1) if values[index] > 0),
+        None,
+    )
+
+
 def _slot(local: dt.datetime) -> SlotKey:
     start_ms = int(local.astimezone(dt.UTC).timestamp() * 1000)
     return SlotKey(start_ms, start_ms + SLOT_MS)
@@ -147,9 +154,10 @@ def _case(
     include_default_cycles: bool = True,
     current_power_w: float = 4000.0,
     current_charging_fraction: float = 1.0,
+    current_charging_age_s: float | None = None,
 ):
     current = dt.datetime(2026, 9, 6, 3, as_of_minute, tzinfo=TZ)
-    slot_start = current.replace(minute=30)
+    slot_start = current.replace(minute=as_of_minute // 15 * 15)
     slots = tuple(
         _slot(slot_start + dt.timedelta(minutes=15 * i))
         for i in range(len(heating_baseline))
@@ -182,6 +190,12 @@ def _case(
                     _feature("dhw_target_c", 53.0),
                     _feature("dhw_differential_c", 9.0),
                     _feature("dhw_charging_fraction", current_charging_fraction),
+                    _feature(
+                        "dhw_active_age_s",
+                        current_charging_age_s
+                        if current_charging_age_s is not None
+                        else max(0, as_of_minute - 30) * 60,
+                    ),
                     _feature("outdoor_temperature_c", outdoor_temperature_c),
                 ),
             ),
@@ -248,16 +262,74 @@ def test_unchanged_active_snapshot_does_not_move_cycle_end_during_slot():
     assert twelve_minutes_later.dhw_kwh[1:] == (0.0, 0.0)
 
 
-def test_cycle_starting_in_current_slot_never_creates_rolling_tail():
-    at_slot_start = _case(49.0, as_of_minute=30)
-    four_minutes_later = _case(49.0, as_of_minute=34)
-    twelve_minutes_later = _case(49.0, as_of_minute=42)
+def test_cycle_starting_in_current_slot_forecasts_tail_without_rolling():
+    at_slot_start = _case(44.0, as_of_minute=30)
+    four_minutes_later = _case(44.0, as_of_minute=34)
+    twelve_minutes_later = _case(44.0, as_of_minute=42)
 
-    assert at_slot_start.dhw_kwh[1:] == (0.0, 0.0)
-    assert four_minutes_later.dhw_kwh[1:] == (0.0, 0.0)
-    assert twelve_minutes_later.dhw_kwh[1:] == (0.0, 0.0)
-    assert at_slot_start.dhw_kwh[0] > four_minutes_later.dhw_kwh[0]
-    assert four_minutes_later.dhw_kwh[0] > twelve_minutes_later.dhw_kwh[0]
+    assert at_slot_start.dhw_kwh[1] > 0.0
+    assert four_minutes_later.dhw_kwh[1] > 0.0
+    assert twelve_minutes_later.dhw_kwh[1] > 0.0
+    assert sum(at_slot_start.dhw_kwh) > sum(four_minutes_later.dhw_kwh)
+    assert sum(four_minutes_later.dhw_kwh) > sum(twelve_minutes_later.dhw_kwh)
+    assert _last_active_slot(at_slot_start.dhw_kwh) == _last_active_slot(
+        four_minutes_later.dhw_kwh
+    )
+    assert _last_active_slot(four_minutes_later.dhw_kwh) == _last_active_slot(
+        twelve_minutes_later.dhw_kwh
+    )
+
+
+def test_cycle_starting_near_boundary_uses_learned_power_during_live_ramp():
+    forecast = _case(
+        42.1,
+        as_of_minute=30,
+        current_power_w=1360.0,
+        heating_baseline=(0.0, 0.0, 0.0, 0.0),
+    )
+
+    current_slot_capacity = 1360.0 * 0.25 / 1000.0
+    assert forecast.dhw_kwh[0] > current_slot_capacity
+    assert forecast.dhw_kwh[1] > 0.0
+    assert forecast.dhw_kwh[2] > 0.0
+    assert forecast.dhw_kwh[3] == 0.0
+
+
+def test_cycle_starting_late_in_slot_only_deducts_actual_active_age():
+    late_start = _case(
+        44.0,
+        as_of_minute=42,
+        current_power_w=1000.0,
+        current_charging_age_s=60.0,
+    )
+    incorrectly_backdated = _case(
+        44.0,
+        as_of_minute=42,
+        current_power_w=1000.0,
+        current_charging_age_s=12 * 60.0,
+    )
+
+    assert sum(late_start.dhw_kwh) > sum(incorrectly_backdated.dhw_kwh) + 0.15
+
+
+def test_active_cycle_tail_does_not_roll_at_slot_boundary_before_store_upsert():
+    before_boundary = _case(
+        44.0,
+        as_of_minute=44,
+        current_charging_age_s=14 * 60.0,
+    )
+    at_boundary = _case(
+        44.0,
+        as_of_minute=45,
+        current_charging_age_s=15 * 60.0,
+    )
+
+    assert before_boundary.dhw_kwh[0] > 0.0
+    assert before_boundary.dhw_kwh[1] > 0.0
+    assert before_boundary.dhw_kwh[2] == 0.0
+    assert at_boundary.dhw_kwh[0] > 0.0
+    assert at_boundary.dhw_kwh[1:] == (0.0, 0.0)
+    assert sum(at_boundary.dhw_kwh) < sum(before_boundary.dhw_kwh)
 
 
 def test_legacy_lower_threshold_history_does_not_extend_active_cycle_past_target(

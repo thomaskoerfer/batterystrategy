@@ -67,9 +67,14 @@ Cycle efficiency is learned from the observed start-to-peak temperature lift.
 Recorded targets provide context, but an older, lower target cannot be treated
 as overshoot beyond the current cut-out; this keeps setpoint changes and
 corrected entity mappings from fabricating additional recovery energy.
-If a live cycle first appears inside an unfinished slot, no finalized energy
-yet proves its start time. That first partial cycle is therefore bounded to the
-current slot; the slot-boundary forecast then continues from finalized energy.
+If a live cycle first appears inside an unfinished slot, the model immediately
+publishes its complete thermally estimated remaining energy. Energy estimated
+since the configured charging or hot-water activity state actually became
+active is deducted so repeated forecasts cannot move the cycle end forward. If
+that transition time
+is unavailable, the model conservatively deducts nothing until finalized
+evidence exists. A transient compressor ramp uses learned cycle power for
+duration while measured power still contributes the current-slot evidence.
 
 Outdoor temperature is a performance feature for hot-water recovery because it
 can affect COP, electrical energy per kelvin and duration. It is not treated as

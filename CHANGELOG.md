@@ -2,6 +2,16 @@
 
 All notable changes to Battery Strategy are documented here.
 
+## [0.2.0-rc.18] - 2026-09-07
+
+### Fixed
+
+- Forecast the complete thermally estimated domestic-hot-water cycle as soon as
+  charging starts near a slot boundary instead of temporarily deleting its
+  future tail until the first active slot has finalized.
+- Use learned cycle power to avoid stretching a new cycle across excess slots
+  when the first live compressor reading is still ramping up.
+
 ## [0.2.0-rc.17] - 2026-09-06
 
 ### Added

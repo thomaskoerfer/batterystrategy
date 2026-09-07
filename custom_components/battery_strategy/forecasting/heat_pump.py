@@ -55,6 +55,7 @@ class _ObservedCycle:
     start_temperature_c: float | None
     local_start_minute: int
     weekend: bool
+    accounted_through_ms: int | None
 
 
 def adjust_heat_pump_forecast(
@@ -73,6 +74,7 @@ def adjust_heat_pump_forecast(
     target_c = _driver_feature(dhw_driver, "dhw_target_c")
     hysteresis_k = _driver_feature(dhw_driver, "dhw_differential_c")
     charging = _driver_feature(dhw_driver, "dhw_charging_fraction")
+    active_age_s = _driver_feature(dhw_driver, "dhw_active_age_s")
     active = bool(
         dhw_driver is not None
         and dhw_driver.quality.coverage > 0
@@ -117,13 +119,11 @@ def adjust_heat_pump_forecast(
                 / 3_600_000.0,
             )
             measured_power_w = dhw_driver.power_w if dhw_driver is not None else 0.0
-            unfinalized_energy_kwh = 0.0
-            if active and observed.energy_kwh > 0 and start_index == 0:
-                elapsed_slot_h = max(
-                    0.0,
-                    (request.as_of_ms - request.slots[0].start_ms) / 3_600_000.0,
-                )
-                unfinalized_energy_kwh = measured_power_w * elapsed_slot_h / 1000.0
+            unfinalized_duration_h = (
+                _unfinalized_cycle_duration_h(request, observed, active_age_s)
+                if active and start_index == 0
+                else 0.0
+            )
             remaining_kwh, active_power_w = _remaining_cycle_energy(
                 cycles,
                 observed,
@@ -139,16 +139,8 @@ def adjust_heat_pump_forecast(
                 measured_power_w,
                 remaining_slot_h,
                 observed.weekend,
-                unfinalized_energy_kwh,
+                unfinalized_duration_h,
             )
-            if active and observed.energy_kwh <= 0 and start_index == 0:
-                # No finalized energy anchors a cycle that started in this slot.
-                # Keep it in the observable current slot; the boundary replan
-                # then uses the finalized slot instead of inventing a start time.
-                remaining_kwh = min(
-                    remaining_kwh,
-                    measured_power_w * remaining_slot_h / 1000.0,
-                )
             allocated, fractions, last_index = _allocate_cycle(
                 request,
                 targets,
@@ -189,7 +181,7 @@ def _remaining_cycle_energy(
     measured_power_w: float,
     remaining_slot_h: float,
     weekend: bool,
-    unfinalized_energy_kwh: float,
+    unfinalized_duration_h: float,
 ) -> tuple[float, float]:
     if not cycles:
         # With no mature cycle evidence, contain live persistence to the current slot.
@@ -206,6 +198,10 @@ def _remaining_cycle_energy(
         observed.local_start_minute,
         weekend,
     )
+    learned_power_w = statistics.median(
+        cycle.active_power_w for cycle in comparable if cycle.active_power_w > 0
+    )
+    unfinalized_energy_kwh = learned_power_w * unfinalized_duration_h / 1000.0
     tail_k = statistics.median(
         max(
             0.0,
@@ -225,32 +221,43 @@ def _remaining_cycle_energy(
     thermally_delivered_kwh = specific_energy * max(
         0.0, temperature_c - start_temperature_c
     )
-    evidence_remaining_kwh = max(
-        temperature_remaining_kwh,
-        total_kwh - max(observed.energy_kwh, thermally_delivered_kwh),
-    )
     remaining_kwh = max(
         max(0.0, temperature_remaining_kwh - unfinalized_energy_kwh),
         total_kwh
         - max(observed.energy_kwh + unfinalized_energy_kwh, thermally_delivered_kwh),
     )
-    learned_power_w = statistics.median(
-        cycle.active_power_w for cycle in comparable if cycle.active_power_w > 0
-    )
-    active_power_w = (
-        measured_power_w if measured_power_w >= MIN_ACTIVE_POWER_W else learned_power_w
-    )
-    if measured_power_w >= MIN_ACTIVE_POWER_W:
-        # Live power proves the cycle is still active, but cannot justify moving
-        # its end beyond the current slot without new thermal or energy evidence.
-        remaining_kwh = max(
-            remaining_kwh,
-            min(
-                evidence_remaining_kwh,
-                measured_power_w * remaining_slot_h / 1000.0,
-            ),
-        )
+    if measured_power_w < MIN_ACTIVE_POWER_W:
+        active_power_w = learned_power_w
+    elif observed.energy_kwh < MIN_CYCLE_ENERGY_KWH:
+        # The current reading may still be on the compressor ramp even when a
+        # tiny part of the cycle landed in the preceding finalized slot. Use
+        # learned cycle power for duration without suppressing a higher live rate.
+        active_power_w = max(measured_power_w, learned_power_w)
+    else:
+        active_power_w = measured_power_w
     return max(0.0, remaining_kwh), max(MIN_ACTIVE_POWER_W, active_power_w)
+
+
+def _unfinalized_cycle_duration_h(
+    request: ForecastRequest,
+    observed: _ObservedCycle,
+    active_age_s: float | None,
+) -> float:
+    """Return active time not represented by finalized cycle energy."""
+    active_start_ms = None
+    if active_age_s is not None:
+        active_start_ms = request.as_of_ms - max(0.0, active_age_s) * 1000.0
+    unaccounted_start_ms = observed.accounted_through_ms
+    if unaccounted_start_ms is None:
+        unaccounted_start_ms = active_start_ms
+    elif active_start_ms is not None:
+        unaccounted_start_ms = max(unaccounted_start_ms, active_start_ms)
+    if unaccounted_start_ms is None:
+        return 0.0
+    return min(
+        SLOT_H,
+        max(0.0, request.as_of_ms - unaccounted_start_ms) / 3_600_000.0,
+    )
 
 
 def _nearest_cycles(
@@ -490,6 +497,7 @@ def _observed_cycle(
         min(temperatures) if temperatures else None,
         minute,
         weekend,
+        current[-1][0].slot.end_ms if current else None,
     )
 
 

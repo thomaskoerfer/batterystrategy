@@ -50,6 +50,13 @@ optional EV meter; quarter-hour market data; and normalized weather. Supported
 load-component profiles currently include a heat pump, shared-meter air
 conditioning and a generic metered consumer.
 
+For an active heat-pump hot-water state, the adapter exposes the elapsed time
+since Home Assistant's state transition as `dhw_active_age_s`. The configured
+charging-state transition is preferred; the required hot-water activity
+transition is the fallback. This value is cycle timing evidence, not a freshness
+check: an unchanged available state remains valid. If neither transition is
+available, the feature is omitted rather than synthesized.
+
 Transient weather-provider failures may reuse the last successful snapshot for
 the same grid for a bounded period. Reused slots are explicitly marked as
 estimated; expired or incompatible snapshots remain missing.

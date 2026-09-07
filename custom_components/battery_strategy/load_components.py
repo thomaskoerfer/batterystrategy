@@ -125,7 +125,8 @@ def _collect_heat_pump(hass, data, now, powers, features, drivers, specs) -> Non
         return
 
     activity = activity.lower()
-    dhw_power = power if "hot water" in activity or "dhw" in activity else 0.0
+    dhw_activity_active = "hot water" in activity or "dhw" in activity
+    dhw_power = power if dhw_activity_active else 0.0
     heating_power = power if "heating" in activity else 0.0
     oat = _temperature_c(hass, data.get(CONF_HP_OUTDOOR_TEMP_ENTITY))
     dhw_temp = _temperature_c(hass, data.get(CONF_HP_DHW_TEMP_ENTITY))
@@ -133,13 +134,22 @@ def _collect_heat_pump(hass, data, now, powers, features, drivers, specs) -> Non
     dhw_diff = _temperature_c(
         hass, data.get(CONF_HP_DHW_DIFFERENTIAL_ENTITY), differential=True
     )
+    dhw_charging = _binary(hass, data.get(CONF_HP_DHW_CHARGING_ENTITY))
+    dhw_active_age_s = _active_state_age_s(
+        hass, data.get(CONF_HP_DHW_CHARGING_ENTITY), now, dhw_charging
+    )
+    if dhw_active_age_s is None and dhw_activity_active:
+        dhw_active_age_s = _active_state_age_s(
+            hass, data.get(CONF_HP_ACTIVITY_ENTITY), now, 1.0
+        )
     shared = _available_features(("outdoor_temperature_c", oat))
     dhw_features = shared + _available_features(
         ("dhw_temperature_c", dhw_temp),
         ("dhw_target_c", dhw_target),
         ("dhw_differential_c", dhw_diff),
         ("dhw_allowed_fraction", 1.0 if time_allowed(now, allowed) else 0.0),
-        ("dhw_charging_fraction", _binary(hass, data.get(CONF_HP_DHW_CHARGING_ENTITY))),
+        ("dhw_charging_fraction", dhw_charging),
+        ("dhw_active_age_s", dhw_active_age_s),
         ("circulation_fraction", _binary(hass, data.get(CONF_HP_CIRCULATION_ENTITY))),
     )
     heating_features = shared + _available_features(
@@ -260,6 +270,18 @@ def _binary(hass, entity_id) -> float | None:
     if state is None:
         return None
     return 1.0 if state.lower() in ("on", "true", "yes", "active", "heating") else 0.0
+
+
+def _active_state_age_s(hass, entity_id, now, active) -> float | None:
+    if active is None or active < 0.5:
+        return None
+    state = hass.states.get(entity_id) if entity_id else None
+    changed = getattr(state, "last_changed", None)
+    if changed is None:
+        return None
+    if changed.tzinfo is None:
+        changed = changed.replace(tzinfo=dt.UTC)
+    return max(0.0, (now - changed).total_seconds())
 
 
 def _state_text(hass, entity_id) -> str | None:

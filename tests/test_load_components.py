@@ -11,6 +11,7 @@ from custom_components.battery_strategy.const import (
     CONF_COMPONENT_POWER_ENTITY,
     CONF_DHW_ALLOWED_WINDOWS,
     CONF_HP_ACTIVITY_ENTITY,
+    CONF_HP_DHW_CHARGING_ENTITY,
     CONF_HP_DHW_DIFFERENTIAL_ENTITY,
     CONF_HP_DHW_TARGET_ENTITY,
     CONF_HP_DHW_TEMP_ENTITY,
@@ -35,13 +36,78 @@ class _States:
         return self._values.get(entity_id)
 
 
-def _state(value, unit=None, **attributes):
+def _state(value, unit=None, last_changed=None, **attributes):
     if unit is not None:
         attributes["unit_of_measurement"] = unit
-    return SimpleNamespace(state=str(value), attributes=attributes)
+    return SimpleNamespace(
+        state=str(value), attributes=attributes, last_changed=last_changed
+    )
 
 
 class LoadComponentAdapterTests(unittest.TestCase):
+    def test_heat_pump_exposes_active_dhw_state_age(self):
+        now = dt.datetime(2026, 9, 7, 3, 0, tzinfo=dt.UTC)
+        data = {
+            CONF_LOAD_COMPONENT_PROFILE: LOAD_PROFILE_HEAT_PUMP,
+            CONF_COMPONENT_POWER_ENTITY: "sensor.hp_power",
+            CONF_HP_ACTIVITY_ENTITY: "sensor.hp_activity",
+            CONF_HP_DHW_CHARGING_ENTITY: "binary_sensor.dhw_charging",
+        }
+        entry = SimpleNamespace(
+            subentries={
+                "hp": SimpleNamespace(
+                    subentry_type=SUBENTRY_TYPE_LOAD_COMPONENT, data=data
+                )
+            }
+        )
+        hass = SimpleNamespace(
+            states=_States(
+                {
+                    "sensor.hp_power": _state(1800, "W"),
+                    "sensor.hp_activity": _state("hot water"),
+                    "binary_sensor.dhw_charging": _state(
+                        "on", last_changed=now - dt.timedelta(seconds=95)
+                    ),
+                }
+            )
+        )
+
+        result = collect_load_components(hass, entry, now)
+        features = {item.feature_key: item.value for item in result.drivers[0].features}
+
+        self.assertEqual(features["dhw_charging_fraction"], 1.0)
+        self.assertEqual(features["dhw_active_age_s"], 95.0)
+
+    def test_heat_pump_uses_required_activity_age_without_optional_binary(self):
+        now = dt.datetime(2026, 9, 7, 3, 0, tzinfo=dt.UTC)
+        data = {
+            CONF_LOAD_COMPONENT_PROFILE: LOAD_PROFILE_HEAT_PUMP,
+            CONF_COMPONENT_POWER_ENTITY: "sensor.hp_power",
+            CONF_HP_ACTIVITY_ENTITY: "sensor.hp_activity",
+        }
+        entry = SimpleNamespace(
+            subentries={
+                "hp": SimpleNamespace(
+                    subentry_type=SUBENTRY_TYPE_LOAD_COMPONENT, data=data
+                )
+            }
+        )
+        hass = SimpleNamespace(
+            states=_States(
+                {
+                    "sensor.hp_power": _state(1800, "W"),
+                    "sensor.hp_activity": _state(
+                        "hot water", last_changed=now - dt.timedelta(seconds=125)
+                    ),
+                }
+            )
+        )
+
+        result = collect_load_components(hass, entry, now)
+        features = {item.feature_key: item.value for item in result.drivers[0].features}
+
+        self.assertEqual(features["dhw_active_age_s"], 125.0)
+
     def test_heat_pump_power_is_split_by_activity(self):
         data = {
             CONF_LOAD_COMPONENT_PROFILE: LOAD_PROFILE_HEAT_PUMP,
