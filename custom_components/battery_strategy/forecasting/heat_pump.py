@@ -15,12 +15,14 @@ from ..contracts import (
     LoadComponentEnergy,
     LoadForecastContext,
 )
+from .dhw_timing import estimate_next_cycle_start
 from .history import ForecastTargetInput
 
 SLOT_H = 0.25
 MIN_ACTIVE_POWER_W = 100.0
 MIN_CYCLE_ENERGY_KWH = 0.02
 MIN_ACTIVE_FRACTION = 0.05
+MIN_TIMING_CORRECTION_SLOTS = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,8 +86,8 @@ def adjust_heat_pump_forecast(
         )
     )
 
-    dhw = list(dhw_baseline_kwh)
     historical_active_fraction = _historical_active_fractions(history, targets)
+    dhw = list(dhw_baseline_kwh)
     active_fraction = list(historical_active_fraction)
     if (
         temperature_c is not None
@@ -96,20 +98,41 @@ def adjust_heat_pump_forecast(
     ):
         cycles = _completed_cycles(history, request, target_c)
         observed = _observed_cycle(history, request)
-        start_index = (
-            0
-            if active
-            else _trigger_index(
+        if cycles:
+            dhw, active_fraction = _project_next_thermal_cycle(
                 request,
                 targets,
+                context,
                 allowed_windows,
+                cycles,
+                observed,
+                history,
                 temperature_c,
-                target_c - hysteresis_k,
+                target_c,
+                hysteresis_k,
+                active,
+                active_age_s,
+                forecast_outdoor_temperature_c,
+                tuple(dhw),
+                tuple(active_fraction),
             )
-        )
-        if start_index is not None and (
-            active or temperature_c <= target_c - hysteresis_k
-        ):
+        else:
+            start_index = (
+                0
+                if active
+                else _trigger_index(
+                    request,
+                    targets,
+                    allowed_windows,
+                    temperature_c,
+                    target_c - hysteresis_k,
+                )
+            )
+            if start_index is None or (
+                not active and temperature_c > target_c - hysteresis_k
+            ):
+                start_index = None
+        if not cycles and start_index is not None:
             remaining_slot_h = max(
                 0.0,
                 (
@@ -171,6 +194,225 @@ def adjust_heat_pump_forecast(
     return HeatPumpComponentForecast(tuple(dhw), heating)
 
 
+def _project_next_thermal_cycle(
+    request: ForecastRequest,
+    targets: tuple[ForecastTargetInput, ...],
+    context: LoadForecastContext,
+    allowed_windows: str,
+    cycles: tuple[_DhwCycle, ...],
+    observed: _ObservedCycle,
+    history: tuple[HistoricalFeatureSlot, ...],
+    temperature_c: float,
+    target_c: float,
+    hysteresis_k: float,
+    active: bool,
+    active_age_s: float | None,
+    forecast_outdoor_temperature_c: tuple[float | None, ...],
+    baseline_kwh: tuple[float, ...],
+    baseline_active_fraction: tuple[float, ...],
+) -> tuple[list[float], list[float]]:
+    """Refine the next historical cycle with current thermal evidence."""
+    energy = list(baseline_kwh)
+    fractions = list(baseline_active_fraction)
+    dhw_driver = _driver(context, "heat_pump_dhw")
+    baseline_cycle = _next_baseline_cycle(baseline_kwh, baseline_active_fraction)
+
+    if active:
+        remaining_slot_h = max(
+            0.0,
+            (request.slots[0].end_ms - request.as_of_ms) / 3_600_000.0,
+        )
+        outdoor_temperature_c = _cycle_outdoor_temperature(
+            dhw_driver,
+            forecast_outdoor_temperature_c,
+            0,
+            True,
+        )
+        remaining_kwh, active_power_w = _remaining_cycle_energy(
+            cycles,
+            observed,
+            temperature_c,
+            target_c,
+            hysteresis_k,
+            outdoor_temperature_c,
+            dhw_driver.power_w if dhw_driver is not None else 0.0,
+            remaining_slot_h,
+            observed.weekend,
+            _unfinalized_cycle_duration_h(request, observed, active_age_s),
+        )
+        allocated, allocated_fractions, last_index = _allocate_cycle(
+            request,
+            targets,
+            allowed_windows,
+            0,
+            remaining_kwh,
+            active_power_w,
+            respect_allowed_windows=False,
+        )
+        replacement_end = last_index if last_index is not None else 0
+        search_from = 0
+        while cycle := _next_baseline_cycle(
+            baseline_kwh,
+            baseline_active_fraction,
+            search_from,
+        ):
+            if cycle[0] > replacement_end:
+                break
+            replacement_end = max(replacement_end, cycle[1])
+            search_from = cycle[1] + 1
+        for clear_index in range(replacement_end + 1):
+            energy[clear_index] = 0.0
+            fractions[clear_index] = 0.0
+        _copy_allocation(energy, fractions, allocated, allocated_fractions)
+        return energy, fractions
+
+    cut_in_c = target_c - hysteresis_k
+    start_index = _trigger_index(
+        request,
+        targets,
+        allowed_windows,
+        temperature_c,
+        cut_in_c,
+    )
+    if temperature_c > cut_in_c:
+        if baseline_cycle is None:
+            return energy, fractions
+        start_index = estimate_next_cycle_start(
+            request,
+            history,
+            temperature_c,
+            _driver_feature(dhw_driver, "circulation_fraction"),
+        )
+        if start_index is None:
+            return energy, fractions
+        if not time_allowed(targets[start_index].local_start, allowed_windows):
+            return energy, fractions
+        if abs(start_index - baseline_cycle[0]) < MIN_TIMING_CORRECTION_SLOTS:
+            return energy, fractions
+    if start_index is None:
+        return energy, fractions
+
+    if baseline_cycle is not None and temperature_c > cut_in_c:
+        shifted_end = start_index + baseline_cycle[1] - baseline_cycle[0]
+        following_cycle = _next_baseline_cycle(
+            baseline_kwh,
+            baseline_active_fraction,
+            baseline_cycle[1] + 1,
+        )
+        if following_cycle is not None and shifted_end >= following_cycle[0]:
+            return energy, fractions
+        shifted_energy = [0.0] * len(energy)
+        shifted_fractions = [0.0] * len(fractions)
+        for source_index in range(baseline_cycle[0], baseline_cycle[1] + 1):
+            target_index = start_index + source_index - baseline_cycle[0]
+            if target_index >= len(energy):
+                break
+            shifted_energy[target_index] = baseline_kwh[source_index]
+            shifted_fractions[target_index] = baseline_active_fraction[source_index]
+        for clear_index in range(baseline_cycle[0], baseline_cycle[1] + 1):
+            energy[clear_index] = 0.0
+            fractions[clear_index] = 0.0
+        _copy_allocation(energy, fractions, shifted_energy, shifted_fractions)
+        return energy, fractions
+
+    outdoor_temperature_c = (
+        forecast_outdoor_temperature_c[start_index]
+        if start_index < len(forecast_outdoor_temperature_c)
+        else None
+    )
+    specific_energy, tail_k, active_power_w = _cycle_characteristics(
+        cycles,
+        max(0.1, target_c - temperature_c),
+        outdoor_temperature_c,
+        targets[start_index].local_start.hour * 60
+        + targets[start_index].local_start.minute,
+        targets[start_index].local_start.weekday() >= 5,
+        target_c,
+    )
+    required_kwh = specific_energy * max(0.0, target_c + tail_k - temperature_c)
+    allocated, allocated_fractions, allocated_end = _allocate_cycle(
+        request,
+        targets,
+        allowed_windows,
+        start_index,
+        required_kwh,
+        active_power_w,
+        respect_allowed_windows=False,
+    )
+    if baseline_cycle is not None:
+        following_cycle = _next_baseline_cycle(
+            baseline_kwh,
+            baseline_active_fraction,
+            baseline_cycle[1] + 1,
+        )
+        if (
+            following_cycle is not None
+            and allocated_end is not None
+            and allocated_end >= following_cycle[0]
+        ):
+            return energy, fractions
+        for clear_index in range(baseline_cycle[0], baseline_cycle[1] + 1):
+            energy[clear_index] = 0.0
+            fractions[clear_index] = 0.0
+    _copy_allocation(energy, fractions, allocated, allocated_fractions)
+    return energy, fractions
+
+
+def _next_baseline_cycle(
+    baseline_kwh: tuple[float, ...],
+    baseline_active_fraction: tuple[float, ...],
+    start_at: int = 0,
+) -> tuple[int, int] | None:
+    energy_start = next(
+        (
+            index
+            for index in range(start_at, len(baseline_kwh))
+            if baseline_kwh[index] >= MIN_CYCLE_ENERGY_KWH
+        ),
+        None,
+    )
+    start = energy_start
+    if start is not None:
+        while (
+            start > start_at
+            and baseline_active_fraction[start - 1] >= MIN_ACTIVE_FRACTION
+        ):
+            start -= 1
+    else:
+        start = next(
+            (
+                index
+                for index in range(start_at, len(baseline_active_fraction))
+                if baseline_active_fraction[index] >= MIN_ACTIVE_FRACTION
+            ),
+            None,
+        )
+    if start is None:
+        return None
+    end = start
+    for index in range(start + 1, len(baseline_kwh)):
+        if (
+            baseline_kwh[index] < MIN_CYCLE_ENERGY_KWH
+            and baseline_active_fraction[index] < MIN_ACTIVE_FRACTION
+        ):
+            break
+        end = index
+    return start, end
+
+
+def _copy_allocation(
+    target_energy: list[float],
+    target_fractions: list[float],
+    energy: list[float],
+    fractions: list[float],
+) -> None:
+    for index, value in enumerate(energy):
+        if value <= 0.0:
+            continue
+        target_energy[index] = value
+        target_fractions[index] = fractions[index]
+
+
 def _remaining_cycle_energy(
     cycles: tuple[_DhwCycle, ...],
     observed: _ObservedCycle,
@@ -191,29 +433,15 @@ def _remaining_cycle_energy(
     if start_temperature_c is None:
         start_temperature_c = min(temperature_c, target_c - hysteresis_k)
     start_delta_k = max(0.1, target_c - start_temperature_c)
-    comparable = _nearest_cycles(
+    specific_energy, tail_k, learned_power_w = _cycle_characteristics(
         cycles,
         start_delta_k,
         outdoor_temperature_c,
         observed.local_start_minute,
         weekend,
-    )
-    learned_power_w = statistics.median(
-        cycle.active_power_w for cycle in comparable if cycle.active_power_w > 0
+        target_c,
     )
     unfinalized_energy_kwh = learned_power_w * unfinalized_duration_h / 1000.0
-    tail_k = statistics.median(
-        max(
-            0.0,
-            cycle.peak_temperature_c - max(cycle.target_temperature_c, target_c),
-        )
-        for cycle in comparable
-    )
-    specific_energy = statistics.median(
-        cycle.total_energy_kwh
-        / max(0.1, cycle.peak_temperature_c - cycle.start_temperature_c)
-        for cycle in comparable
-    )
     total_kwh = specific_energy * max(0.0, target_c + tail_k - start_temperature_c)
     temperature_remaining_kwh = specific_energy * max(
         0.0, target_c + tail_k - temperature_c
@@ -236,6 +464,39 @@ def _remaining_cycle_energy(
     else:
         active_power_w = measured_power_w
     return max(0.0, remaining_kwh), max(MIN_ACTIVE_POWER_W, active_power_w)
+
+
+def _cycle_characteristics(
+    cycles: tuple[_DhwCycle, ...],
+    start_delta_k: float,
+    outdoor_temperature_c: float | None,
+    local_start_minute: int,
+    weekend: bool,
+    target_c: float,
+) -> tuple[float, float, float]:
+    comparable = _nearest_cycles(
+        cycles,
+        start_delta_k,
+        outdoor_temperature_c,
+        local_start_minute,
+        weekend,
+    )
+    specific_energy = statistics.median(
+        cycle.total_energy_kwh
+        / max(0.1, cycle.peak_temperature_c - cycle.start_temperature_c)
+        for cycle in comparable
+    )
+    tail_k = statistics.median(
+        max(
+            0.0,
+            cycle.peak_temperature_c - max(cycle.target_temperature_c, target_c),
+        )
+        for cycle in comparable
+    )
+    active_power_w = statistics.median(
+        cycle.active_power_w for cycle in comparable if cycle.active_power_w > 0
+    )
+    return specific_energy, tail_k, active_power_w
 
 
 def _unfinalized_cycle_duration_h(

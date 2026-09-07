@@ -26,6 +26,17 @@ Historical space-heating profiles already contain the normal post-hot-water
 buffer recovery, but an unexpectedly longer hot-water cycle must defer any
 additional displaced heating demand.
 
+The inactive-cycle follow-up keeps the historical cycle as its long-range
+prior and refines only the next event. Comparable continuous historical states
+are selected by tank temperature, circulation state, local time and day type.
+The median observed time from the three nearest independent cycles supplies the
+correction. A one-slot difference is deliberately retained as the prior because
+it is within the forecast grid's resolution. The correction may move only the
+next cycle, must respect its allowed start window and cannot overlap a later
+prior cycle. Gaps never bridge an inactive observation to a later cycle. A fully
+recursive tank-loss rollout was rejected after historical walk-forward
+evaluation produced additional missed cycles.
+
 ## Semantic impact
 
 No interface contract changes. Existing normalized features retain their
@@ -91,6 +102,14 @@ exists within it.
 - extra hot-water occupation defers rather than deletes space-heating energy;
 - component sums and load/PV isolation remain contract-valid;
 - the recorded failure is replayed with no fabricated later hot-water slots.
+
+The inactive-cycle candidate was evaluated against RC18 on all 22 usable
+retained cycles at one-, two- and four-hour lead times. Mean start-time MAE fell
+from 21.36 to 20.23 minutes (5.3%), and mean eight-hour slot-energy MAE fell
+from 0.02825 to 0.02796 kWh (1.0%). Both versions missed zero cycles. These
+figures are release evidence for this retained-history snapshot, not a claim of
+general model accuracy; production forecast-vintage monitoring remains the
+longer-term check.
 
 ## Rollout and rollback
 

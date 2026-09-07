@@ -161,7 +161,7 @@ def build_component_load_forecast(
         components.append(
             LoadForecastComponent(
                 spec.component_key,
-                f"{spec.profile}-v3"
+                f"{spec.profile}-v4"
                 if spec.profile == LOAD_PROFILE_HEAT_PUMP
                 else f"{spec.profile}-v1",
                 residual.training_cutoff_ms,
@@ -181,7 +181,7 @@ def build_component_load_forecast(
         f"component-{request.as_of_ms}",
         request.as_of_ms,
         residual.training_cutoff_ms,
-        "component-load-v3"
+        "component-load-v4"
         if any(spec.profile == LOAD_PROFILE_HEAT_PUMP for spec in specs)
         else "component-load-v1",
         total_slots,

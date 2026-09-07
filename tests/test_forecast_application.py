@@ -44,6 +44,7 @@ class ForecastProductionTests(unittest.TestCase):
         )
         allowed_absolute = {
             "__future__",
+            "bisect",
             "dataclasses",
             "datetime",
             "math",

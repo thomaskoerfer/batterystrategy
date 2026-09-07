@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+from dataclasses import replace
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -19,6 +20,9 @@ from custom_components.battery_strategy.contracts import (
     SlotKey,
 )
 from custom_components.battery_strategy.feature_store import CompressedFeatureStore
+from custom_components.battery_strategy.forecasting.dhw_timing import (
+    estimate_next_cycle_start,
+)
 from custom_components.battery_strategy.forecasting.heat_pump import (
     _couple_space_heating,
     adjust_heat_pump_forecast,
@@ -213,6 +217,381 @@ def _case(
     )
 
 
+def _with_dhw_feature(
+    slot: HistoricalFeatureSlot, key: str, value: float
+) -> HistoricalFeatureSlot:
+    dhw = slot.load_components[0]
+    return replace(
+        slot,
+        load_components=(
+            replace(dhw, features=(*dhw.features, _feature(key, value))),
+            *slot.load_components[1:],
+        ),
+    )
+
+
+def _future_inactive_case(
+    *,
+    current: dt.datetime,
+    temperature_c: float,
+    history: tuple[HistoricalFeatureSlot, ...],
+    dhw_baseline: tuple[float, ...],
+    allowed_windows: str = "03:00-05:00,09:00-17:00",
+    circulation_fraction: float | None = 0.0,
+):
+    slots = tuple(
+        _slot(current + dt.timedelta(minutes=15 * index))
+        for index in range(len(dhw_baseline))
+    )
+    request = ForecastRequest(
+        int(current.astimezone(dt.UTC).timestamp() * 1000),
+        "Europe/Berlin",
+        slots,
+    )
+    targets = tuple(
+        ForecastTargetInput(
+            dt.datetime.fromtimestamp(slot.start_ms / 1000.0, dt.UTC).astimezone(TZ),
+            1.0,
+        )
+        for slot in slots
+    )
+    features = [
+        _feature("dhw_temperature_c", temperature_c),
+        _feature("dhw_target_c", 53.0),
+        _feature("dhw_differential_c", 9.0),
+        _feature("dhw_charging_fraction", 0.0),
+        _feature("outdoor_temperature_c", 10.0),
+    ]
+    if circulation_fraction is not None:
+        features.append(_feature("circulation_fraction", circulation_fraction))
+    context = LoadForecastContext(
+        0.0,
+        (
+            LoadDriverSnapshot(
+                "heat_pump_dhw",
+                0.0,
+                features=tuple(features),
+            ),
+            LoadDriverSnapshot("heat_pump_space_heating", 0.0),
+        ),
+    )
+    return adjust_heat_pump_forecast(
+        request,
+        history,
+        targets,
+        context,
+        allowed_windows,
+        dhw_baseline,
+        tuple(0.0 for _ in dhw_baseline),
+    )
+
+
+def _temperature_timing_history() -> tuple[HistoricalFeatureSlot, ...]:
+    history = []
+    for day in (
+        dt.date(2026, 8, 16),
+        dt.date(2026, 8, 23),
+        dt.date(2026, 8, 30),
+    ):
+        for index in range(11):
+            history.append(
+                _with_dhw_feature(
+                    _history_slot(
+                        dt.datetime.combine(day, dt.time(9, 45), tzinfo=TZ)
+                        + dt.timedelta(minutes=15 * index),
+                        dhw_kwh=0.0,
+                        dhw_temperature_c=46.2 - 0.2 * index,
+                        charging_fraction=0.0,
+                    ),
+                    "circulation_fraction",
+                    0.0,
+                )
+            )
+        cycle_start = dt.datetime.combine(day, dt.time(12, 30), tzinfo=TZ)
+        history.extend(
+            (
+                _history_slot(
+                    cycle_start,
+                    dhw_kwh=0.60,
+                    dhw_temperature_c=44.0,
+                    charging_fraction=1.0,
+                ),
+                _history_slot(
+                    cycle_start + dt.timedelta(minutes=15),
+                    dhw_kwh=0.75,
+                    dhw_temperature_c=49.0,
+                    charging_fraction=1.0,
+                ),
+                _history_slot(
+                    cycle_start + dt.timedelta(minutes=30),
+                    dhw_kwh=0.30,
+                    dhw_temperature_c=54.0,
+                    charging_fraction=0.4,
+                ),
+            )
+        )
+    return tuple(sorted(history, key=lambda item: item.slot.start_ms))
+
+
+def test_inactive_tank_temperature_projects_future_hysteresis_crossing():
+    baseline = tuple(0.3 if 8 <= index <= 10 else 0.0 for index in range(20))
+
+    forecast = _future_inactive_case(
+        current=dt.datetime(2026, 9, 6, 10, 0, tzinfo=TZ),
+        temperature_c=46.2,
+        history=_temperature_timing_history(),
+        dhw_baseline=baseline,
+    )
+
+    assert forecast.dhw_kwh[8] == 0.0
+    assert forecast.dhw_kwh[10] > 0.0
+
+
+def test_one_slot_temperature_timing_difference_keeps_historical_prior():
+    baseline = tuple(0.3 if 9 <= index <= 11 else 0.0 for index in range(20))
+
+    forecast = _future_inactive_case(
+        current=dt.datetime(2026, 9, 6, 10, 0, tzinfo=TZ),
+        temperature_c=46.2,
+        history=_temperature_timing_history(),
+        dhw_baseline=baseline,
+    )
+
+    assert forecast.dhw_kwh == baseline
+
+
+def test_history_gap_does_not_create_temperature_timing_evidence():
+    inactive = _with_dhw_feature(
+        _history_slot(
+            dt.datetime(2026, 8, 30, 10, 0, tzinfo=TZ),
+            dhw_kwh=0.0,
+            dhw_temperature_c=46.2,
+            charging_fraction=0.0,
+        ),
+        "circulation_fraction",
+        0.0,
+    )
+    cycle = _completed_cycle(31)
+    baseline = tuple(0.3 if 6 <= index <= 8 else 0.0 for index in range(20))
+
+    forecast = _future_inactive_case(
+        current=dt.datetime(2026, 9, 6, 10, 0, tzinfo=TZ),
+        temperature_c=46.2,
+        history=(inactive, *cycle),
+        dhw_baseline=baseline,
+    )
+
+    assert forecast.dhw_kwh == baseline
+
+
+def test_single_historical_cycle_cannot_move_timing_prior():
+    baseline = tuple(0.3 if 6 <= index <= 8 else 0.0 for index in range(20))
+
+    forecast = _future_inactive_case(
+        current=dt.datetime(2026, 9, 6, 10, 0, tzinfo=TZ),
+        temperature_c=46.2,
+        history=_temperature_timing_history()[:14],
+        dhw_baseline=baseline,
+    )
+
+    assert forecast.dhw_kwh == baseline
+
+
+def test_temperature_timing_cannot_start_outside_allowed_window():
+    baseline = tuple(0.3 if 2 <= index <= 4 else 0.0 for index in range(20))
+
+    forecast = _future_inactive_case(
+        current=dt.datetime(2026, 9, 6, 10, 0, tzinfo=TZ),
+        temperature_c=46.2,
+        history=_temperature_timing_history(),
+        dhw_baseline=baseline,
+        allowed_windows="09:00-11:00",
+    )
+
+    assert forecast.dhw_kwh == baseline
+
+
+def test_temperature_timing_does_not_overwrite_following_cycle():
+    baseline = tuple(
+        0.3 if 6 <= index <= 8 or 10 <= index <= 12 else 0.0 for index in range(20)
+    )
+
+    forecast = _future_inactive_case(
+        current=dt.datetime(2026, 9, 6, 10, 0, tzinfo=TZ),
+        temperature_c=46.2,
+        history=_temperature_timing_history(),
+        dhw_baseline=baseline,
+    )
+
+    assert forecast.dhw_kwh == baseline
+
+
+def test_temperature_timing_beyond_horizon_is_not_clamped_to_last_slot():
+    current = dt.datetime(2026, 9, 6, 10, 0, tzinfo=TZ)
+    slots = tuple(
+        _slot(current + dt.timedelta(minutes=15 * index)) for index in range(4)
+    )
+    request = ForecastRequest(
+        int(current.astimezone(dt.UTC).timestamp() * 1000),
+        "Europe/Berlin",
+        slots,
+    )
+
+    assert (
+        estimate_next_cycle_start(
+            request,
+            _temperature_timing_history(),
+            46.2,
+            0.0,
+        )
+        is None
+    )
+
+
+def test_missing_current_circulation_does_not_mean_circulation_off():
+    history = _temperature_timing_history()
+    baseline = tuple(0.3 if 6 <= index <= 8 else 0.0 for index in range(20))
+
+    without_circulation = _future_inactive_case(
+        current=dt.datetime(2026, 9, 6, 10, 0, tzinfo=TZ),
+        temperature_c=46.2,
+        history=history,
+        dhw_baseline=baseline,
+        circulation_fraction=None,
+    )
+    with_circulation_off = _future_inactive_case(
+        current=dt.datetime(2026, 9, 6, 10, 0, tzinfo=TZ),
+        temperature_c=46.2,
+        history=history,
+        dhw_baseline=baseline,
+        circulation_fraction=0.0,
+    )
+
+    assert without_circulation == with_circulation_off
+
+
+def test_circulation_state_selects_matching_time_to_next_cycle():
+    history = []
+    first_sunday = dt.date(2026, 6, 14)
+    for index in range(12):
+        day = first_sunday + dt.timedelta(days=7 * index)
+        circulation = 1.0 if index % 2 == 0 else 0.0
+        cycle_hour = 12 if circulation else 13
+        inactive_slots = (cycle_hour * 60 - (9 * 60 + 45)) // 15
+        for slot_index in range(inactive_slots):
+            history.append(
+                _with_dhw_feature(
+                    _history_slot(
+                        dt.datetime.combine(day, dt.time(9, 45), tzinfo=TZ)
+                        + dt.timedelta(minutes=15 * slot_index),
+                        dhw_kwh=0.0,
+                        dhw_temperature_c=46.0,
+                        charging_fraction=0.0,
+                    ),
+                    "circulation_fraction",
+                    circulation,
+                )
+            )
+        cycle_start = dt.datetime.combine(
+            day,
+            dt.time(cycle_hour, 0),
+            tzinfo=TZ,
+        )
+        history.extend(
+            (
+                _history_slot(
+                    cycle_start,
+                    dhw_kwh=0.65,
+                    dhw_temperature_c=44.0,
+                    charging_fraction=1.0,
+                ),
+                _history_slot(
+                    cycle_start + dt.timedelta(minutes=15),
+                    dhw_kwh=0.65,
+                    dhw_temperature_c=49.0,
+                    charging_fraction=1.0,
+                ),
+                _history_slot(
+                    cycle_start + dt.timedelta(minutes=30),
+                    dhw_kwh=0.30,
+                    dhw_temperature_c=54.0,
+                    charging_fraction=0.4,
+                ),
+            )
+        )
+    ordered = tuple(sorted(history, key=lambda item: item.slot.start_ms))
+    baseline = tuple(0.3 if 8 <= index <= 12 else 0.0 for index in range(20))
+
+    circulation_on = _future_inactive_case(
+        current=dt.datetime(2026, 9, 6, 10, 0, tzinfo=TZ),
+        temperature_c=46.0,
+        history=ordered,
+        dhw_baseline=baseline,
+        circulation_fraction=1.0,
+    )
+    circulation_off = _future_inactive_case(
+        current=dt.datetime(2026, 9, 6, 10, 0, tzinfo=TZ),
+        temperature_c=46.0,
+        history=ordered,
+        dhw_baseline=baseline,
+        circulation_fraction=0.0,
+    )
+
+    assert next(i for i, value in enumerate(circulation_on.dhw_kwh) if value) < next(
+        i for i, value in enumerate(circulation_off.dhw_kwh) if value
+    )
+
+
+def test_hysteresis_crossing_in_blocked_period_waits_for_allowed_window():
+    history = tuple(item for day in range(23, 27) for item in _completed_cycle(day))
+    forecast = _future_inactive_case(
+        current=dt.datetime(2026, 9, 6, 17, 0, tzinfo=TZ),
+        temperature_c=43.5,
+        history=history,
+        dhw_baseline=tuple(0.3 if 40 <= index <= 42 else 0.0 for index in range(44)),
+    )
+
+    assert all(value == 0.0 for value in forecast.dhw_kwh[:40])
+    assert forecast.dhw_kwh[40] > 0.0
+
+
+def test_hysteresis_crossing_replaces_later_historical_cycle():
+    history = tuple(item for day in range(23, 27) for item in _completed_cycle(day))
+    forecast = _future_inactive_case(
+        current=dt.datetime(2026, 9, 6, 17, 0, tzinfo=TZ),
+        temperature_c=43.5,
+        history=history,
+        dhw_baseline=tuple(0.3 if 42 <= index <= 44 else 0.0 for index in range(48)),
+    )
+
+    assert forecast.dhw_kwh[40] > 0.0
+    assert forecast.dhw_kwh[44] == 0.0
+
+
+def test_hysteresis_crossing_does_not_partially_overwrite_following_cycle():
+    history = tuple(
+        replace(
+            item,
+            slot=SlotKey(
+                item.slot.start_ms + 6 * 3_600_000,
+                item.slot.end_ms + 6 * 3_600_000,
+            ),
+        )
+        for day in range(23, 27)
+        for item in _completed_cycle(day)
+    )
+    baseline = tuple(0.3 if index in {40, 42} else 0.0 for index in range(48))
+
+    forecast = _future_inactive_case(
+        current=dt.datetime(2026, 9, 6, 17, 0, tzinfo=TZ),
+        temperature_c=43.5,
+        history=history,
+        dhw_baseline=baseline,
+    )
+
+    assert forecast.dhw_kwh == baseline
+
+
 def test_active_cycle_uses_remaining_delta_t_instead_of_rolling_45_minutes():
     observed = (
         _history_slot(
@@ -236,6 +615,18 @@ def test_active_cycle_uses_remaining_delta_t_instead_of_rolling_45_minutes():
 
     assert 0.25 < forecast.dhw_kwh[0] < 0.60
     assert forecast.dhw_kwh[1:] == (0.0, 0.0)
+
+
+def test_active_cycle_removes_every_baseline_cycle_it_touches():
+    forecast = _case(
+        43.0,
+        current_power_w=3000.0,
+        dhw_baseline=(0.3, 0.0, 0.3, 0.3, 0.3, 0.0),
+        heating_baseline=(0.0,) * 6,
+    )
+
+    assert forecast.dhw_kwh[2] > 0.0
+    assert forecast.dhw_kwh[3:5] == (0.0, 0.0)
 
 
 def test_unchanged_active_snapshot_does_not_move_cycle_end_during_slot():

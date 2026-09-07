@@ -2,6 +2,24 @@
 
 All notable changes to Battery Strategy are documented here.
 
+## [0.2.0-rc.19] - 2026-09-07
+
+### Changed
+
+- Refine the next inactive domestic-hot-water cycle from comparable historical
+  tank-temperature, circulation, time-of-day and day-type states while keeping
+  the historical cycle profile as the long-range prior.
+- Ignore one-slot timing differences to avoid forecast churn at quarter-hour
+  resolution, and retain the historical prior when thermal evidence is
+  incomplete, outside the forecast horizon or conflicts with a following cycle.
+
+### Fixed
+
+- Preserve the existing next-allowed-window behavior when the tank is already
+  below cut-in, including replacement of a conflicting historical cycle.
+- Prevent gaps in retained history and repeated states from one cycle from
+  becoming fabricated or overstated time-to-cycle training evidence.
+
 ## [0.2.0-rc.18] - 2026-09-07
 
 ### Fixed

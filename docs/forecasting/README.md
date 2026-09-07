@@ -76,6 +76,19 @@ is unavailable, the model conservatively deducts nothing until finalized
 evidence exists. A transient compressor ramp uses learned cycle power for
 duration while measured power still contributes the current-slot evidence.
 
+While the compressor is inactive, the historical cycle profile remains the
+long-range prior. The next cycle may be refined from comparable historical
+inactive states using tank temperature, circulation state, local time and day
+type. The three nearest independent cycles vote on the next start. This
+empirical time-to-event correction may move only the prior's next cycle, must
+start inside a configured allowed window, cannot overlap a following prior
+cycle and ignores a one-slot difference. These constraints prevent sparse draw
+events or sensor noise from causing speculative recursive temperature rollout
+and quarter-hour forecast churn. A tank already at or below cut-in is a direct
+thermostat trigger and moves the cycle only to the next configured allowed
+window. Missing, discontinuous or fewer than three independent cycles leave the
+historical prior intact.
+
 Outdoor temperature is a performance feature for hot-water recovery because it
 can affect COP, electrical energy per kelvin and duration. It is not treated as
 the direct cause of a hot-water draw. Humidity is deliberately excluded until a
@@ -108,6 +121,21 @@ Load and PV are evaluated separately by lead time, time of day, MAE, bias, daily
 energy and quality coverage. Tests prohibit prices, SoC and optimizer imports;
 check component summation and missing-data behavior; and prove that load and PV
 changes cannot affect each other unintentionally.
+
+Hot-water changes additionally require walk-forward comparison against the
+released model over every usable retained cycle. Start-time and slot-energy
+error must improve without increasing missed cycles; otherwise the candidate is
+rejected even if its physical model appears plausible.
+
+Run the same repository script with each code checkout on one copied feature
+store and compare the JSON summaries:
+
+```bash
+PYTHONPATH="$CHECKOUT" python scripts/battery_strategy_dhw_walkforward.py \
+  /path/to/battery_strategy_features.json.gz \
+  --timezone Europe/Berlin --target-c 53 --hysteresis-k 9 \
+  --allowed-windows '03:00-05:00,09:00-17:00'
+```
 
 ## Production status
 
