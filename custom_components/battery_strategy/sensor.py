@@ -28,12 +28,14 @@ def _sensor(
     unit: str | None = None,
     *,
     state_class: SensorStateClass | None = None,
+    suggested_display_precision: int | None = None,
 ) -> BatteryStrategySensorDescription:
     return BatteryStrategySensorDescription(
         key=key,
         name=name,
         native_unit_of_measurement=unit,
         state_class=state_class,
+        suggested_display_precision=suggested_display_precision,
     )
 
 
@@ -61,10 +63,25 @@ SENSORS: tuple[BatteryStrategySensorDescription, ...] = (
     _sensor("plan_live_slot_end", "Slot End"),
     _sensor("plan_live_pv_charge_allowed", "PV Charge Allowed"),
     _sensor("plan_live_must_charge", "Must Charge", UnitOfPower.WATT),
-    _sensor("plan_live_must_charge_remaining", "Must Charge Remaining", "kWh"),
+    _sensor(
+        "plan_live_must_charge_remaining",
+        "Must Charge Remaining",
+        "kWh",
+        suggested_display_precision=3,
+    ),
     _sensor("plan_live_grid_charge_allowed", "Grid Charge Allowed"),
-    _sensor("plan_live_discharge_budget", "Live Remaining Discharge Budget", "kWh"),
-    _sensor("optimizer_discharge_budget", "Optimizer Discharge Budget", "kWh"),
+    _sensor(
+        "plan_live_discharge_budget",
+        "Live Remaining Discharge Budget",
+        "kWh",
+        suggested_display_precision=3,
+    ),
+    _sensor(
+        "optimizer_discharge_budget",
+        "Optimizer Discharge Budget",
+        "kWh",
+        suggested_display_precision=3,
+    ),
     _sensor("load_forecast_next_1h", "Load Forecast Next 1h", "kWh"),
     _sensor("pv_forecast_corrected_next_1h", "PV Forecast Corrected Next 1h", "kWh"),
     _sensor("net_load_forecast_next_1h", "Net Load Forecast Next 1h", "kWh"),

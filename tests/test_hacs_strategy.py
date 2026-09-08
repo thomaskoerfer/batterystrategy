@@ -2874,6 +2874,18 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertIn("Entladebudget (kWh)", plan_table["cards"][0]["content"])
         self.assertNotIn("Entladung (W)", plan_table["cards"][0]["content"])
 
+    def test_plan_energy_sensors_have_bounded_display_precision(self):
+        descriptions = {
+            description.key: description for description in battery_sensor.SENSORS
+        }
+
+        for key in (
+            "plan_live_must_charge_remaining",
+            "plan_live_discharge_budget",
+            "optimizer_discharge_budget",
+        ):
+            self.assertEqual(descriptions[key].suggested_display_precision, 3)
+
     def test_numeric_controls_share_canonical_defaults_and_ranges(self):
         exposed = {
             key: definition

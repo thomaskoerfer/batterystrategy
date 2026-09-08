@@ -2,6 +2,14 @@
 
 All notable changes to Battery Strategy are documented here.
 
+## [0.2.0-rc.21] - 2026-09-08
+
+### Fixed
+
+- Limit the suggested Home Assistant display precision of current-slot charge
+  commitments and discharge budgets to three decimal places without reducing
+  the precision used internally by planning or live control.
+
 ## [0.2.0-rc.19] - 2026-09-07
 
 ### Changed
