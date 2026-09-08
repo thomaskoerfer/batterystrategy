@@ -15,6 +15,8 @@ wall clock. It receives only:
 
 - the immutable `BatteryPlan`;
 - measured progress in the active slot;
+- the optional measured-progress checkpoint taken with that plan's optimizer
+  snapshot;
 - explicit compilation state from the previous invocation;
 - the caller-supplied issue timestamp.
 
@@ -49,6 +51,27 @@ For the active slot:
 - physical SoC and power limits may always reduce executable permission;
 - increases and new economic choices apply from the next slot.
 
+Plans generated before the slot starts describe a total commitment for that
+future slot. A plan generated after the boundary starts optimization from the
+currently measured SoC, so its current-slot charge and discharge amounts are
+prospective from that planning instant. Compiler state remains cumulative from
+the slot boundary. The compiler therefore adds measured progress captured at
+the optimizer snapshot to a post-boundary plan amount before comparing it with
+the cumulative commitment. It does not use the later progress at publication
+time for this conversion; energy flowing while the asynchronous optimizer runs
+is consequently deducted exactly once from the resulting directive.
+The remaining permission is equivalently `min(previous remaining, new
+prospective amount)` after final reconciliation. This normalization is not new
+economic permission; it only prevents measured energy from being deducted
+twice.
+
+The runtime records the checkpoint only when a planner run is accepted and
+keeps it in memory for the active slot. A restored or externally supplied plan
+may not have that checkpoint. Such a plan is treated as a cumulative amount,
+which can conservatively lower an existing ceiling but cannot reopen it. A
+mid-slot process start without restorable progress continues to use the
+separate unelapsed-slot proration described below.
+
 At the next slot boundary, the latest valid plan is latched without carrying the
 previous slot's economic ceiling forward.
 
@@ -57,11 +80,13 @@ previous slot's economic ceiling forward.
 At 19:59, the plan gives the future 20:00 slot `0.20 kWh` discharge permission.
 The compiler takes that value provisionally at 20:00. By the time the first
 post-boundary plan completes, `0.05 kWh` has already been discharged and the
-new plan gives the slot a total budget of `0.40 kWh`.
+new optimizer run, starting from the current SoC, gives `0.40 kWh` prospective
+permission.
 
-- the one-time reconciliation leaves `0.35 kWh` remaining;
-- a later rolling replan proposes `0.60 kWh`: remaining stays `0.35 kWh`;
-- a later rolling replan proposes `0.20 kWh`: remaining becomes `0.15 kWh`;
+- the one-time reconciliation leaves `0.40 kWh` remaining and stores a
+  cumulative `0.45 kWh` commitment;
+- a later rolling replan proposes `0.60 kWh`: remaining stays `0.40 kWh`;
+- a later rolling replan proposes `0.20 kWh`: remaining becomes `0.20 kWh`;
 - at 20:15, the latest plan for the new slot is accepted in full.
 
 The optimizer still starts every new calculation from the measured current SoC.
@@ -145,8 +170,9 @@ latched ceiling and measured progress. This prevents an asynchronous optimizer
 refresh from reopening permission after a restart or replan.
 
 Persistence is an application adapter and is not part of the pure compiler. The
-compiler continues to receive only `BatteryPlan`, `SlotProgress`, explicit
-`PlanCompilationState` and an issue timestamp.
+compiler continues to receive only `BatteryPlan`, current `SlotProgress`, an
+optional `PlanProgressBasis`, explicit `PlanCompilationState` and an issue
+timestamp.
 
 `compiler_runtime.py` is the internal execution module around that pure
 compiler. It owns active-slot identity, measured throughput, commitment state,
@@ -168,6 +194,7 @@ Required regression scenarios include:
 
 - current-slot budget cannot rise after reoptimization;
 - current-slot budget may fall;
+- post-boundary prospective amounts include measured progress exactly once;
 - the next slot accepts a higher latest budget;
 - charged and discharged actuals decrement only their own permissions;
 - PV-only charge never opens grid charge;

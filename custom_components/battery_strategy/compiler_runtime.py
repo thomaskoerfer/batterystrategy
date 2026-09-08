@@ -13,6 +13,7 @@ from .contracts import (
     LiveMeasurements,
     PlanCompilationState,
     PlanLiveDirective,
+    PlanProgressBasis,
     SlotKey,
     SlotProgress,
 )
@@ -48,6 +49,7 @@ class PlanCompilerRuntime:
         self._error: str | None = None
         self._last_accounting_at: dt.datetime | None = None
         self._last_battery_power_w: float | None = None
+        self._plan_progress_bases: dict[tuple[int, int], PlanProgressBasis] = {}
 
     def account(self, now: dt.datetime, battery_power_w: float) -> None:
         """Accumulate measured battery energy and remember the next sample."""
@@ -88,6 +90,26 @@ class PlanCompilerRuntime:
         self._last_accounting_at = now
         self._last_battery_power_w = None
 
+    def record_plan_snapshot(
+        self,
+        captured_at_ms: int,
+        energy_totals: tuple[float | None, float | None] = (None, None),
+    ) -> bool:
+        """Materialize the slot and retain an accepted optimizer's progress basis."""
+        captured_at_ms = int(captured_at_ms)
+        slot_start_ms = captured_at_ms // SLOT_MS * SLOT_MS
+        slot = SlotKey(slot_start_ms, slot_start_ms + SLOT_MS)
+        self.sync_slot(slot_start_ms, captured_at_ms, energy_totals)
+        if self._active_slot_id != str(slot_start_ms):
+            return False
+        self._plan_progress_bases[(slot_start_ms, captured_at_ms)] = PlanProgressBasis(
+            slot=slot,
+            captured_at_ms=captured_at_ms,
+            charged_kwh=max(0.0, self._charged_kwh),
+            discharged_kwh=max(0.0, self._discharged_kwh),
+        )
+        return True
+
     def sync_slot(
         self,
         slot_start_ms: int,
@@ -114,6 +136,11 @@ class PlanCompilerRuntime:
         self._state = PlanCompilationState()
         self._progress_reconstructable = True
         self._prorate_unrestored_discharge = False
+        self._plan_progress_bases = {
+            key: value
+            for key, value in self._plan_progress_bases.items()
+            if key[0] >= int(slot_start_ms)
+        }
 
         restored = self._restored_snapshot
         self._restored_snapshot = None
@@ -217,6 +244,9 @@ class PlanCompilerRuntime:
             self._prorate_unrestored_discharge = False
             self._snapshot_dirty = True
         try:
+            plan_progress_basis = self._plan_progress_bases.get(
+                (current_slot.start_ms, plan.generated_at_ms)
+            )
             compiled, next_state = self._compiler.compile(
                 plan,
                 SlotProgress(
@@ -227,6 +257,7 @@ class PlanCompilerRuntime:
                 ),
                 self._state,
                 issued_at_ms=now_ms,
+                plan_progress_basis=plan_progress_basis,
                 discharge_reconciliation=discharge_reconciliation,
             )
             if next_state != self._state:

@@ -8,10 +8,54 @@ from .contracts import (
     DischargeReconciliation,
     PlanCompilationState,
     PlanLiveDirective,
+    PlanProgressBasis,
     SlotProgress,
 )
 
 ENERGY_EPSILON_KWH = 1e-9
+
+
+def _cumulative_commitment(
+    planned_kwh: float,
+    measured_at_plan_kwh: float,
+    *,
+    plan_generated_at_ms: int,
+    slot_start_ms: int,
+) -> float:
+    """Normalize a plan amount to the active slot's cumulative basis.
+
+    A plan generated in the active slot starts optimization from the current
+    battery state, so its energy is prospective. Compiler state is cumulative
+    from the slot boundary and therefore also includes measured progress.
+    """
+    if plan_generated_at_ms >= slot_start_ms:
+        return measured_at_plan_kwh + planned_kwh
+    return planned_kwh
+
+
+def _basis_energy(
+    plan: BatteryPlan,
+    progress: SlotProgress,
+    basis: PlanProgressBasis | None,
+) -> tuple[float, float]:
+    """Return exact charged/discharged progress at the plan snapshot."""
+    if plan.generated_at_ms < progress.slot.start_ms:
+        return 0.0, 0.0
+    if basis is None:
+        # Persisted or externally supplied plans may predate the in-memory
+        # checkpoint. Treating their amount as cumulative is conservative: it
+        # can only lower an established ceiling and never opens extra energy.
+        return 0.0, 0.0
+    if basis.slot != progress.slot:
+        raise ValueError("plan progress basis belongs to another slot")
+    if basis.captured_at_ms != plan.generated_at_ms:
+        raise ValueError("plan progress basis timestamp does not match the plan")
+    if (
+        basis.charged_kwh > progress.charged_kwh + ENERGY_EPSILON_KWH
+        or basis.discharged_kwh > progress.discharged_kwh + ENERGY_EPSILON_KWH
+    ):
+        raise ValueError("plan progress basis cannot exceed current progress")
+    return basis.charged_kwh, basis.discharged_kwh
 
 
 class DeterministicPlanCompiler:
@@ -24,6 +68,7 @@ class DeterministicPlanCompiler:
         state: PlanCompilationState,
         issued_at_ms: int,
         *,
+        plan_progress_basis: PlanProgressBasis | None = None,
         discharge_reconciliation: DischargeReconciliation = (
             DischargeReconciliation.FINALIZE_CONSERVATIVELY
         ),
@@ -46,14 +91,31 @@ class DeterministicPlanCompiler:
             and plan_slot.planned_grid_charge_kwh > ENERGY_EPSILON_KWH
             and plan_slot.required_charge_kwh > ENERGY_EPSILON_KWH
         )
+        basis_charged_kwh, basis_discharged_kwh = _basis_energy(
+            plan,
+            progress,
+            plan_progress_basis,
+        )
+        required_candidate_kwh = _cumulative_commitment(
+            plan_slot.required_charge_kwh if has_grid_commitment else 0.0,
+            basis_charged_kwh,
+            plan_generated_at_ms=plan.generated_at_ms,
+            slot_start_ms=progress.slot.start_ms,
+        )
+        discharge_candidate_kwh = _cumulative_commitment(
+            plan_slot.discharge_budget_kwh,
+            basis_discharged_kwh,
+            plan_generated_at_ms=plan.generated_at_ms,
+            slot_start_ms=progress.slot.start_ms,
+        )
         if state.slot != progress.slot:
             next_state = PlanCompilationState(
                 slot=progress.slot,
                 committed_plan_id=plan.plan_id,
                 required_charge_commitment_kwh=(
-                    plan_slot.required_charge_kwh if has_grid_commitment else 0.0
+                    required_candidate_kwh if has_grid_commitment else 0.0
                 ),
-                discharge_budget_commitment_kwh=plan_slot.discharge_budget_kwh,
+                discharge_budget_commitment_kwh=discharge_candidate_kwh,
                 discharge_commitment_phase=(
                     DischargeCommitmentPhase.PROVISIONAL
                     if plan.generated_at_ms < progress.slot.start_ms
@@ -76,7 +138,7 @@ class DeterministicPlanCompiler:
             )
             next_required = min(
                 state.required_charge_commitment_kwh,
-                plan_slot.required_charge_kwh if has_grid_commitment else 0.0,
+                required_candidate_kwh if has_grid_commitment else 0.0,
             )
             next_state = PlanCompilationState(
                 slot=state.slot,
@@ -85,14 +147,14 @@ class DeterministicPlanCompiler:
                 ),
                 required_charge_commitment_kwh=next_required,
                 discharge_budget_commitment_kwh=(
-                    plan_slot.discharge_budget_kwh
+                    discharge_candidate_kwh
                     if reconcile_discharge
                     else state.discharge_budget_commitment_kwh
                     if first_post_boundary_plan
                     and discharge_reconciliation is DischargeReconciliation.WAIT
                     else min(
                         state.discharge_budget_commitment_kwh,
-                        plan_slot.discharge_budget_kwh,
+                        discharge_candidate_kwh,
                     )
                 ),
                 discharge_commitment_phase=(

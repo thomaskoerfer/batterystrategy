@@ -16,6 +16,7 @@ from custom_components.battery_strategy.contracts import (
     DischargeReconciliation,
     PlanCompilationState,
     PlanMode,
+    PlanProgressBasis,
     SlotKey,
     SlotProgress,
 )
@@ -91,6 +92,17 @@ def compile_slot(
         issued_at_ms=60_000,
     )
     return directive
+
+
+def progress_basis(
+    plan: BatteryPlan, *, charged_kwh: float = 0.0, discharged_kwh: float = 0.0
+) -> PlanProgressBasis:
+    return PlanProgressBasis(
+        plan.slots[0].slot,
+        plan.generated_at_ms,
+        charged_kwh,
+        discharged_kwh,
+    )
 
 
 def test_plan_compiler_module_has_no_runtime_or_io_dependencies():
@@ -223,7 +235,15 @@ def test_reoptimization_may_lower_but_not_raise_active_slot_commitments():
         plan_id="plan-raised",
         problem_id="problem-raised",
     )
-    raised, raised_state = compiler.compile(raised_plan, progress, state, 120_000)
+    raised, raised_state = compiler.compile(
+        raised_plan,
+        progress,
+        state,
+        120_000,
+        plan_progress_basis=progress_basis(
+            raised_plan, charged_kwh=0.1, discharged_kwh=0.1
+        ),
+    )
 
     assert raised.required_charge_remaining_kwh == pytest.approx(0.3)
     assert raised.discharge_budget_remaining_kwh == pytest.approx(0.3)
@@ -247,12 +267,49 @@ def test_reoptimization_may_lower_but_not_raise_active_slot_commitments():
         progress,
         raised_state,
         180_000,
+        plan_progress_basis=progress_basis(
+            lowered_plan, charged_kwh=0.1, discharged_kwh=0.1
+        ),
     )
 
-    assert lowered.required_charge_remaining_kwh == pytest.approx(0.1)
-    assert lowered.discharge_budget_remaining_kwh == pytest.approx(0.1)
-    assert lowered_state.required_charge_commitment_kwh == pytest.approx(0.2)
-    assert lowered_state.discharge_budget_commitment_kwh == pytest.approx(0.2)
+    assert lowered.required_charge_remaining_kwh == pytest.approx(0.2)
+    assert lowered.discharge_budget_remaining_kwh == pytest.approx(0.2)
+    assert lowered_state.required_charge_commitment_kwh == pytest.approx(0.3)
+    assert lowered_state.discharge_budget_commitment_kwh == pytest.approx(0.3)
+
+
+def test_mid_slot_replan_does_not_subtract_measured_discharge_twice():
+    compiler = DeterministicPlanCompiler()
+    initial_slot = plan_slot(discharge_kwh=0.6, discharge_budget_kwh=0.6)
+    _directive, state = compiler.compile(
+        battery_plan(initial_slot),
+        SlotProgress(initial_slot.slot, 0.0, 0.0, 49.0),
+        PlanCompilationState(),
+        60_000,
+    )
+
+    progress = SlotProgress(initial_slot.slot, 0.0, 0.373, 42.0)
+    replanned_slot = replace(
+        initial_slot,
+        planned_discharge_kwh=0.409,
+        discharge_budget_kwh=0.409,
+    )
+    replanned_plan = replace(
+        battery_plan(replanned_slot),
+        plan_id="mid-slot-replan",
+        problem_id="mid-slot-problem",
+        generated_at_ms=90_000,
+    )
+    replanned, next_state = compiler.compile(
+        replanned_plan,
+        progress,
+        state,
+        120_000,
+        plan_progress_basis=progress_basis(replanned_plan, discharged_kwh=0.373),
+    )
+
+    assert replanned.discharge_budget_remaining_kwh == pytest.approx(0.227)
+    assert next_state.discharge_budget_commitment_kwh == pytest.approx(0.6)
 
 
 def test_new_slot_accepts_the_latest_plan_commitment():
@@ -329,9 +386,11 @@ def test_first_post_boundary_plan_reconciles_provisional_discharge_once():
         progress,
         state,
         SLOT_MS + 20_000,
+        plan_progress_basis=progress_basis(reconciled_plan, discharged_kwh=0.05),
         discharge_reconciliation=DischargeReconciliation.RECONCILE,
     )
-    assert reconciled.discharge_budget_remaining_kwh == pytest.approx(0.35)
+    assert reconciled.discharge_budget_remaining_kwh == pytest.approx(0.4)
+    assert state.discharge_budget_commitment_kwh == pytest.approx(0.45)
     assert state.discharge_commitment_phase is DischargeCommitmentPhase.FINAL
     assert state.committed_plan_id == "post-boundary"
 
@@ -350,9 +409,10 @@ def test_first_post_boundary_plan_reconciles_provisional_discharge_once():
         progress,
         state,
         SLOT_MS + 60_000,
+        plan_progress_basis=progress_basis(later_higher_plan, discharged_kwh=0.05),
     )
-    assert stable.discharge_budget_remaining_kwh == pytest.approx(0.35)
-    assert state.discharge_budget_commitment_kwh == pytest.approx(0.4)
+    assert stable.discharge_budget_remaining_kwh == pytest.approx(0.4)
+    assert state.discharge_budget_commitment_kwh == pytest.approx(0.45)
 
 
 def test_provisional_discharge_does_not_increase_on_bridged_soc():
@@ -455,9 +515,10 @@ def test_first_post_boundary_plan_can_finalize_provisional_budget_downward():
         progress,
         state,
         SLOT_MS + 10_000,
+        plan_progress_basis=progress_basis(lower_plan, discharged_kwh=0.05),
         discharge_reconciliation=DischargeReconciliation.RECONCILE,
     )
 
-    assert directive.discharge_budget_remaining_kwh == pytest.approx(0.15)
-    assert state.discharge_budget_commitment_kwh == pytest.approx(0.2)
+    assert directive.discharge_budget_remaining_kwh == pytest.approx(0.2)
+    assert state.discharge_budget_commitment_kwh == pytest.approx(0.25)
     assert state.discharge_commitment_phase is DischargeCommitmentPhase.FINAL

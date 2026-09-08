@@ -359,6 +359,17 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
                 optimizer_scheduled = self._planner.maybe_schedule(
                     inputs, options, runtime_context, force=force_optimizer
                 )
+                if (
+                    optimizer_scheduled
+                    and not self._compiler_runtime.record_plan_snapshot(
+                        inputs.captured_at_ms,
+                        self._battery_energy_totals(),
+                    )
+                ):
+                    LOGGER.warning(
+                        "Could not capture optimizer slot-progress basis at %s",
+                        inputs.captured_at_ms,
+                    )
                 if boundary_force_key is not None and (
                     optimizer_scheduled
                     or getattr(self._planner, "force_pending", False)

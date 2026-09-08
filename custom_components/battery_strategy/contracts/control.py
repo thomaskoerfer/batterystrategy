@@ -71,6 +71,22 @@ class SlotProgress:
 
 
 @dataclass(frozen=True, slots=True)
+class PlanProgressBasis:
+    """Measured slot throughput at the optimizer snapshot timestamp."""
+
+    slot: SlotKey
+    captured_at_ms: int
+    charged_kwh: float
+    discharged_kwh: float
+
+    def __post_init__(self) -> None:
+        if self.captured_at_ms < 0:
+            raise ValueError("captured_at_ms must be non-negative")
+        require_nonnegative("charged_kwh", self.charged_kwh)
+        require_nonnegative("discharged_kwh", self.discharged_kwh)
+
+
+@dataclass(frozen=True, slots=True)
 class PlanCompilationState:
     """Explicit economic commitment latched for one active slot."""
 
@@ -318,6 +334,7 @@ class PlanCompiler(Protocol):
         state: PlanCompilationState,
         issued_at_ms: int,
         *,
+        plan_progress_basis: PlanProgressBasis | None = None,
         discharge_reconciliation: DischargeReconciliation = (
             DischargeReconciliation.FINALIZE_CONSERVATIVELY
         ),

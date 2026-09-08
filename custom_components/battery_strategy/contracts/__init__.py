@@ -19,6 +19,7 @@ from .control import (
     PlanCompilationState,
     PlanCompiler,
     PlanLiveDirective,
+    PlanProgressBasis,
     SlotProgress,
 )
 from .forecasting import (
@@ -93,6 +94,7 @@ __all__ = [
     "PlanCompiler",
     "PlanLiveDirective",
     "PlanMode",
+    "PlanProgressBasis",
     "PvForecast",
     "PvForecaster",
     "PvPlant",

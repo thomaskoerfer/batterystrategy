@@ -233,7 +233,18 @@ that predates the restored live source is ignored while the forced fresh run is
 pending. With an unavailable/bridged source, the first post-boundary plan may
 only lower the provisional value and makes it `final`. Subsequent rolling
 replans may lower or withdraw it, but may not increase or newly open it. Actual
-discharged energy is always subtracted from the accepted total commitment.
+discharged energy is always subtracted exactly once. A plan generated before
+the slot boundary expresses a total slot amount. A plan generated in the active
+slot starts from the current battery state and therefore expresses prospective
+energy from that planning instant. Before applying the lower-only rule, the
+compiler normalizes that prospective amount to its cumulative slot basis by
+adding measured progress captured at the optimizer snapshot timestamp. Current
+progress is then deducted exactly once when the directive is issued. The
+runtime retains this bounded, in-memory checkpoint when it accepts an optimizer
+run; it is execution accounting, not optimizer input. A persisted plan without
+its ephemeral checkpoint is interpreted conservatively and may lower but never
+increase an established commitment. This prevents double subtraction without
+granting energy that flowed while an asynchronous optimization was running.
 
 Required grid charge retains the stricter rule: rolling replans may lower or
 withdraw it in the active slot, but may not increase or newly open it. At the
@@ -243,7 +254,9 @@ hidden in coordinator state or inferred from elapsed seconds. Detailed
 semantics and examples are normative in `docs/plan-compiler/README.md`. The base
 contract was approved on 2026-08-31 and the one-time discharge reconciliation
 extension was approved by the owner on 2026-09-05; see
-`docs/impact-analyses/2026-09-05-slot-boundary-reconciliation.md`.
+`docs/impact-analyses/2026-09-05-slot-boundary-reconciliation.md`. Prospective
+mid-slot normalization was approved as a defect correction on 2026-09-08; see
+`docs/impact-analyses/2026-09-08-mid-slot-budget-accounting.md`.
 
 If the battery SoC source becomes unavailable, the last measured SoC remains
 the displayed estimate. After the bounded availability bridge expires,

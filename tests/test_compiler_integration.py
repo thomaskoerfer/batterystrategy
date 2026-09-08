@@ -168,17 +168,19 @@ def test_compiler_owns_progress_and_replan_latch():
 
     options = _options()
     first_contract = canonical_plan(first_plan, options, start_ms)
-    reduced_contract = canonical_plan(reduced_plan, options, start_ms + 60_000)
+    reduced_contract = canonical_plan(reduced_plan, options, start_ms + 360_000)
+    runtime.record_plan_snapshot(start_ms)
     first = runtime.compile(first_contract, options, _inputs(), start_ms)
     started = dt.datetime.fromtimestamp(start_ms / 1000, dt.UTC)
     runtime.account(started, 1000.0)
     runtime.account(started + dt.timedelta(minutes=6), 1000.0)
-    reduced = runtime.compile(reduced_contract, options, _inputs(), start_ms + 60_000)
+    runtime.record_plan_snapshot(start_ms + 360_000)
+    reduced = runtime.compile(reduced_contract, options, _inputs(), start_ms + 360_000)
     reopened = runtime.compile(first_contract, options, _inputs(), start_ms + 120_000)
 
     assert first.discharge_budget_remaining_kwh == 0.6
-    assert reduced.discharge_budget_remaining_kwh == 0.1
-    assert reopened.discharge_budget_remaining_kwh == 0.1
+    assert reduced.discharge_budget_remaining_kwh == pytest.approx(0.2)
+    assert reopened.discharge_budget_remaining_kwh == pytest.approx(0.2)
 
 
 def test_compiler_fails_closed_without_plan():

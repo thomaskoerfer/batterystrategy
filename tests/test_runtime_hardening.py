@@ -233,6 +233,32 @@ def test_clean_reload_reconciles_provisional_budget_once_and_persists_final():
     )
 
 
+def test_restored_progress_is_materialized_before_new_plan_snapshot():
+    runtime = PlanCompilerRuntime(
+        _snapshot(
+            clean=True,
+            discharged_kwh=0.2,
+            discharge_phase=DischargeCommitmentPhase.PROVISIONAL,
+        )
+    )
+    now_ms = SLOT_START_MS + 120_000
+    assert runtime.record_plan_snapshot(now_ms, (None, None))
+
+    plan = replace(_plan(discharge_budget_kwh=0.4), generated_at_ms=now_ms)
+    directive = runtime.compile(
+        plan,
+        _options(),
+        _measurements(captured_at_ms=now_ms),
+        now_ms,
+        discharge_reconciliation=DischargeReconciliation.RECONCILE,
+    )
+
+    assert directive.discharge_budget_remaining_kwh == pytest.approx(0.4)
+    assert runtime.compilation_state.discharge_budget_commitment_kwh == pytest.approx(
+        0.6
+    )
+
+
 def test_unclean_restart_reconstructs_progress_from_monotonic_counters():
     runtime = PlanCompilerRuntime(
         _snapshot(
@@ -383,6 +409,62 @@ def test_running_process_resets_progress_only_at_next_slot():
     assert runtime.charged_kwh == 0.0
     assert runtime.discharged_kwh == pytest.approx(0.15)
     assert runtime.compilation_state == PlanCompilationState()
+
+
+def test_first_mid_slot_plan_uses_progress_at_optimizer_snapshot():
+    runtime = PlanCompilerRuntime()
+    start = dt.datetime.fromtimestamp(SLOT_START_MS / 1000, dt.UTC)
+    runtime.sync_slot(SLOT_START_MS, SLOT_START_MS, (None, None))
+    runtime.account(start, 1000.0)
+    runtime.account(start + dt.timedelta(minutes=3), 1000.0)
+    assert runtime.record_plan_snapshot(SLOT_START_MS + 180_000)
+
+    plan = replace(
+        _plan(discharge_budget_kwh=0.4), generated_at_ms=SLOT_START_MS + 180_000
+    )
+    directive = runtime.compile(
+        plan,
+        _options(),
+        _measurements(captured_at_ms=SLOT_START_MS + 180_000),
+        SLOT_START_MS + 180_000,
+    )
+
+    assert runtime.discharged_kwh == pytest.approx(0.05)
+    assert directive.discharge_budget_remaining_kwh == pytest.approx(0.4)
+    assert runtime.compilation_state.discharge_budget_commitment_kwh == pytest.approx(
+        0.45
+    )
+
+
+def test_delayed_plan_publication_uses_snapshot_progress_not_compile_progress():
+    runtime = PlanCompilerRuntime()
+    start = dt.datetime.fromtimestamp(SLOT_START_MS / 1000, dt.UTC)
+    runtime.sync_slot(SLOT_START_MS, SLOT_START_MS, (None, None))
+    runtime.record_plan_snapshot(SLOT_START_MS)
+    initial = _plan(discharge_budget_kwh=0.6)
+    runtime.compile(initial, _options(), _measurements(), SLOT_START_MS)
+
+    runtime.account(start, 1000.0)
+    runtime.account(start + dt.timedelta(minutes=3), 1000.0)
+    assert runtime.record_plan_snapshot(SLOT_START_MS + 180_000)
+    runtime.account(start + dt.timedelta(minutes=6), 1000.0)
+
+    replanned = replace(
+        _plan(discharge_budget_kwh=0.409),
+        generated_at_ms=SLOT_START_MS + 180_000,
+    )
+    directive = runtime.compile(
+        replanned,
+        _options(),
+        _measurements(captured_at_ms=SLOT_START_MS + 360_000),
+        SLOT_START_MS + 360_000,
+    )
+
+    assert runtime.discharged_kwh == pytest.approx(0.1)
+    assert directive.discharge_budget_remaining_kwh == pytest.approx(0.359)
+    assert runtime.compilation_state.discharge_budget_commitment_kwh == pytest.approx(
+        0.459
+    )
 
 
 def test_unavailable_battery_feedback_breaks_energy_accounting_continuity():
@@ -562,6 +644,13 @@ def test_coordinator_cycle_preserves_runtime_order_and_compiled_permission():
             calls.append("sync")
 
         @staticmethod
+        def record_plan_snapshot(captured_at_ms, energy_totals):
+            assert captured_at_ms == slot_start_ms
+            CompilerRuntime.sync_slot(slot_start_ms, captured_at_ms, energy_totals)
+            calls.append("snapshot")
+            return True
+
+        @staticmethod
         def compile(
             compiled_plan,
             compiled_options,
@@ -573,7 +662,6 @@ def test_coordinator_cycle_preserves_runtime_order_and_compiled_permission():
             assert compiled_plan is canonical
             assert compiled_options is options
             assert compiled_inputs is inputs
-            CompilerRuntime.sync_slot(slot_start_ms, _now_ms, energy_totals)
             calls.append("compile")
             return directive
 
@@ -666,7 +754,14 @@ def test_coordinator_cycle_preserves_runtime_order_and_compiled_permission():
     ):
         data = asyncio.run(coordinator._async_update_data())
 
-    assert calls == ["account", "schedule", "sync", "compile", "persist"]
+    assert calls == [
+        "account",
+        "schedule",
+        "sync",
+        "snapshot",
+        "compile",
+        "persist",
+    ]
     assert data["plan_to_live"] is directive
     assert data["calculated_command"].mode == COMMAND_OUTPUT
     assert data["calculated_command"].power_w == 500

@@ -18,6 +18,11 @@ replaced only by the first eligible post-boundary plan. Never raise it after
 that explicit reconciliation has made it final. Required grid charge remains
 lower-only throughout the active slot.
 
+Normalize a post-boundary plan only with the `PlanProgressBasis` captured at
+that plan's `generated_at_ms`; publication-time progress is not its basis. A
+missing ephemeral basis must remain conservative and must never reopen an
+established commitment.
+
 Home Assistant persistence belongs to the adjacent runtime adapter. It may
 serialize the explicit state and measured progress but must not add compiler
 rules or silently reopen permission.
@@ -25,9 +30,10 @@ rules or silently reopen permission.
 ## Required checks
 
 Test progress accounting, one-time boundary reconciliation, subsequent
-within-slot lower-only replans, next-slot refresh, required-charge source rules,
-mode switches, clean reload continuation, counter-based crash recovery and
-restart fail-closed behavior.
+within-slot lower-only replans, prospective-to-cumulative normalization without
+double-counting progress, next-slot refresh, required-charge source rules, mode
+switches, clean reload continuation, counter-based crash recovery and restart
+fail-closed behavior.
 
 ## Setup independence
 
