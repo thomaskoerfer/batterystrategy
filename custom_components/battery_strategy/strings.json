@@ -149,7 +149,8 @@
         "invalid_power_unit": "The power entity must report W, kW or MW.",
         "invalid_temperature_unit": "Temperature entities must report °C, °F or K.",
         "invalid_time_windows": "Use comma-separated daily windows such as 00:00-05:00,09:00-17:00.",
-        "invalid_component_key": "Use a non-empty lowercase key containing only letters, digits and underscores."
+        "invalid_component_key": "Use a non-empty lowercase key containing only letters, digits and underscores.",
+        "duplicate_component_key": "This component key is already produced by another load component."
       },
       "step": {
         "user": {
@@ -176,7 +177,10 @@
             "heating_active_entity": "Space heating active",
             "target_flow_temperature_entity": "Target flow temperature",
             "dhw_allowed_windows": "DHW allowed windows",
-            "climate_entities": "Indoor climate units"
+            "climate_entities": "Indoor climate units",
+            "appliance_activity_entity": "Cycle activity (optional)",
+            "appliance_progress_entity": "Cycle progress (optional)",
+            "appliance_end_time_entity": "Expected cycle end (optional)"
           }
         },
         "reconfigure": {
@@ -196,7 +200,10 @@
             "heating_active_entity": "Space heating active",
             "target_flow_temperature_entity": "Target flow temperature",
             "dhw_allowed_windows": "DHW allowed windows",
-            "climate_entities": "Indoor climate units"
+            "climate_entities": "Indoor climate units",
+            "appliance_activity_entity": "Cycle activity (optional)",
+            "appliance_progress_entity": "Cycle progress (optional)",
+            "appliance_end_time_entity": "Expected cycle end (optional)"
           }
         }
       },
@@ -211,7 +218,8 @@
       "options": {
         "ems_esp_heat_pump": "EMS-ESP heat pump",
         "air_conditioning": "Air conditioning with shared meter",
-        "generic_metered": "Generic metered consumer"
+        "generic_metered": "Generic metered consumer",
+        "cyclic_appliance": "Cyclic appliance"
       }
     }
   }

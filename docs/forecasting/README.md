@@ -173,6 +173,16 @@ forecast vintages are not retained, it uses the outdoor temperature known at
 the replay cutoff as the future-weather input; this limitation applies equally
 to compared versions and must be stated with reported results.
 
+Cyclic-appliance changes require a separate walk-forward replay over completed
+cycles. The evaluator predicts after the first finalized active slot and reports
+remaining-energy MAE, slot MAE and end-slot MAE:
+
+```bash
+PYTHONPATH="$CHECKOUT" python scripts/battery_strategy_appliance_walkforward.py \
+  /path/to/battery_strategy_features.json.gz \
+  --component-key appliance_key
+```
+
 ## Production status
 
 Feature-store forecasting is authoritative. The slot-profile helpers are its

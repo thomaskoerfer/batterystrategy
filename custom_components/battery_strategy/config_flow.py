@@ -15,6 +15,9 @@ from .config_validation import (
     default_entry_data as _default_entry_data,
 )
 from .config_validation import (
+    duplicate_load_component_key as _duplicate_load_component_key,
+)
+from .config_validation import (
     load_component_unique_id as _load_component_unique_id,
 )
 from .config_validation import (
@@ -26,6 +29,9 @@ from .config_validation import (
 from .const import (
     BATTERY_PROFILE_GENERIC,
     BATTERY_PROFILE_ZENDURE,
+    CONF_APPLIANCE_ACTIVITY_ENTITY,
+    CONF_APPLIANCE_END_TIME_ENTITY,
+    CONF_APPLIANCE_PROGRESS_ENTITY,
     CONF_BATTERY_CAPACITY_KWH,
     CONF_BATTERY_INPUT_ENERGY_ENTITY,
     CONF_BATTERY_OUTPUT_ENERGY_ENTITY,
@@ -77,6 +83,7 @@ from .const import (
     GRID_MODE_SIGNED,
     GRID_MODE_THREE_PHASE,
     LOAD_PROFILE_AIR_CONDITIONING,
+    LOAD_PROFILE_CYCLIC_APPLIANCE,
     LOAD_PROFILE_GENERIC,
     LOAD_PROFILE_HEAT_PUMP,
     MANUAL_CHARGE,
@@ -257,6 +264,7 @@ class LoadComponentSubentryFlowHandler(config_entries.ConfigSubentryFlow):
                         [
                             LOAD_PROFILE_HEAT_PUMP,
                             LOAD_PROFILE_AIR_CONDITIONING,
+                            LOAD_PROFILE_CYCLIC_APPLIANCE,
                             LOAD_PROFILE_GENERIC,
                         ],
                         "load_component_profile",
@@ -269,6 +277,10 @@ class LoadComponentSubentryFlowHandler(config_entries.ConfigSubentryFlow):
         """Configure the selected profile."""
         if user_input is not None:
             errors = _validate_load_component(self.hass, self._profile, user_input)
+            if _duplicate_load_component_key(
+                self._get_entry(), self._profile, user_input
+            ):
+                errors["base"] = "duplicate_component_key"
             if not errors:
                 data = dict(user_input)
                 data[CONF_LOAD_COMPONENT_PROFILE] = self._profile
@@ -296,6 +308,13 @@ class LoadComponentSubentryFlowHandler(config_entries.ConfigSubentryFlow):
         )
         if user_input is not None:
             errors = _validate_load_component(self.hass, self._profile, user_input)
+            if _duplicate_load_component_key(
+                self._get_entry(),
+                self._profile,
+                user_input,
+                exclude_subentry_id=subentry.subentry_id,
+            ):
+                errors["base"] = "duplicate_component_key"
             if not errors:
                 data = dict(user_input)
                 data[CONF_LOAD_COMPONENT_PROFILE] = self._profile
@@ -551,6 +570,7 @@ def _load_component_schema(hass, profile: str, data: dict) -> vol.Schema:
                 {
                     LOAD_PROFILE_HEAT_PUMP: "Heat pump",
                     LOAD_PROFILE_AIR_CONDITIONING: "Air conditioning",
+                    LOAD_PROFILE_CYCLIC_APPLIANCE: "Cyclic appliance",
                     LOAD_PROFILE_GENERIC: "Metered load",
                 }.get(profile, "Load component"),
             ),
@@ -618,6 +638,27 @@ def _load_component_schema(hass, profile: str, data: dict) -> vol.Schema:
                     CONF_CLIMATE_ENTITIES,
                     default=current(CONF_CLIMATE_ENTITIES, []),
                 ): _multiple_entity_selector(["climate"]),
+            }
+        )
+    elif profile == LOAD_PROFILE_CYCLIC_APPLIANCE:
+        common.update(
+            {
+                vol.Required(
+                    CONF_COMPONENT_KEY,
+                    default=current(CONF_COMPONENT_KEY, "cyclic_appliance"),
+                ): str,
+                _optional_entity_key(
+                    CONF_APPLIANCE_ACTIVITY_ENTITY,
+                    current(CONF_APPLIANCE_ACTIVITY_ENTITY),
+                ): _entity_selector(["sensor", "binary_sensor"]),
+                _optional_entity_key(
+                    CONF_APPLIANCE_PROGRESS_ENTITY,
+                    current(CONF_APPLIANCE_PROGRESS_ENTITY),
+                ): _entity_selector(["sensor"]),
+                _optional_entity_key(
+                    CONF_APPLIANCE_END_TIME_ENTITY,
+                    current(CONF_APPLIANCE_END_TIME_ENTITY),
+                ): _entity_selector(["sensor"]),
             }
         )
     else:

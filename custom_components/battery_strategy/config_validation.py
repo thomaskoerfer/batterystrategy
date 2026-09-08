@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
-from .component_config import validate_allowed_windows
+from .component_config import (
+    reserved_component_key_conflicts,
+    runtime_component_keys,
+    validate_allowed_windows,
+)
 from .const import (
     BATTERY_PROFILE_ZENDURE,
+    CONF_APPLIANCE_ACTIVITY_ENTITY,
+    CONF_APPLIANCE_END_TIME_ENTITY,
+    CONF_APPLIANCE_PROGRESS_ENTITY,
     CONF_BATTERY_INPUT_ENERGY_ENTITY,
     CONF_BATTERY_OUTPUT_ENERGY_ENTITY,
     CONF_BATTERY_POWER_ENTITY,
@@ -26,6 +33,7 @@ from .const import (
     CONF_HP_DHW_TARGET_ENTITY,
     CONF_HP_DHW_TEMP_ENTITY,
     CONF_HP_OUTDOOR_TEMP_ENTITY,
+    CONF_LOAD_COMPONENT_PROFILE,
     CONF_PRICE_ENTITY,
     CONF_PV_POWER_ENTITY,
     CONF_SIGNED_GRID_POWER_ENTITY,
@@ -40,6 +48,7 @@ from .const import (
     GRID_MODE_SIGNED,
     GRID_MODE_THREE_PHASE,
     LOAD_PROFILE_AIR_CONDITIONING,
+    LOAD_PROFILE_CYCLIC_APPLIANCE,
     LOAD_PROFILE_HEAT_PUMP,
 )
 
@@ -218,6 +227,15 @@ def validate_load_component(hass, profile: str, data: dict) -> dict[str, str]:
             errors[CONF_CLIMATE_ENTITIES] = "required"
         elif any(hass.states.get(entity_id) is None for entity_id in climates):
             errors[CONF_CLIMATE_ENTITIES] = "entity_not_found"
+    if profile == LOAD_PROFILE_CYCLIC_APPLIANCE:
+        for optional_key in (
+            CONF_APPLIANCE_ACTIVITY_ENTITY,
+            CONF_APPLIANCE_PROGRESS_ENTITY,
+            CONF_APPLIANCE_END_TIME_ENTITY,
+        ):
+            entity_id = data.get(optional_key)
+            if entity_id and hass.states.get(entity_id) is None:
+                errors[optional_key] = "entity_not_found"
     key = str(data.get(CONF_COMPONENT_KEY, ""))
     if profile != LOAD_PROFILE_HEAT_PUMP and (
         not key
@@ -228,6 +246,23 @@ def validate_load_component(hass, profile: str, data: dict) -> dict[str, str]:
     ):
         errors[CONF_COMPONENT_KEY] = "invalid_component_key"
     return errors
+
+
+def duplicate_load_component_key(
+    entry, profile: str, data: dict, *, exclude_subentry_id: str | None = None
+) -> bool:
+    """Return whether a subentry would duplicate a runtime component key."""
+    requested = set(runtime_component_keys(profile, data))
+    if reserved_component_key_conflicts(profile, requested):
+        return True
+    for subentry_id, subentry in getattr(entry, "subentries", {}).items():
+        if subentry_id == exclude_subentry_id:
+            continue
+        existing_data = dict(subentry.data)
+        existing_profile = str(existing_data.get(CONF_LOAD_COMPONENT_PROFILE, ""))
+        if requested & set(runtime_component_keys(existing_profile, existing_data)):
+            return True
+    return False
 
 
 def load_component_unique_id(profile: str, data: dict) -> str:

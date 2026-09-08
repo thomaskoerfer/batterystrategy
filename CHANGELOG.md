@@ -2,6 +2,24 @@
 
 All notable changes to Battery Strategy are documented here.
 
+## [0.2.0-rc.24] - 2026-09-12
+
+### Added
+
+- Add a finite cyclic-appliance load-component profile for dishwashers, washing
+  machines, dryers and equivalent operator-started programs. Active events use
+  completed historical cycle shapes plus optional activity, progress and
+  expected-end context; inactive events do not create speculative P50 demand.
+- Add a bounded, idempotent 21-day Recorder bootstrap for newly configured
+  cyclic component power history without overwriting existing feature facts.
+- Add an offline walk-forward evaluator for remaining cycle energy, slot shape
+  and end-slot timing.
+
+### Safety
+
+- Keep the change inside data adaptation, load forecasting and observational
+  evaluation. Optimizer, plan compiler, live policy and actuation are unchanged.
+
 ## [0.2.0-rc.23] - 2026-09-12
 
 ### Fixed

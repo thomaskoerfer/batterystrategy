@@ -7,7 +7,11 @@ import unittest
 from types import SimpleNamespace
 
 from custom_components.battery_strategy.const import (
+    CONF_APPLIANCE_ACTIVITY_ENTITY,
+    CONF_APPLIANCE_END_TIME_ENTITY,
+    CONF_APPLIANCE_PROGRESS_ENTITY,
     CONF_CLIMATE_ENTITIES,
+    CONF_COMPONENT_KEY,
     CONF_COMPONENT_POWER_ENTITY,
     CONF_DHW_ALLOWED_WINDOWS,
     CONF_HP_ACTIVITY_ENTITY,
@@ -18,6 +22,8 @@ from custom_components.battery_strategy.const import (
     CONF_HP_OUTDOOR_TEMP_ENTITY,
     CONF_LOAD_COMPONENT_PROFILE,
     LOAD_PROFILE_AIR_CONDITIONING,
+    LOAD_PROFILE_CYCLIC_APPLIANCE,
+    LOAD_PROFILE_GENERIC,
     LOAD_PROFILE_HEAT_PUMP,
     SUBENTRY_TYPE_LOAD_COMPONENT,
 )
@@ -45,6 +51,81 @@ def _state(value, unit=None, last_changed=None, **attributes):
 
 
 class LoadComponentAdapterTests(unittest.TestCase):
+    def test_runtime_ignores_legacy_duplicate_component_keys(self):
+        entry = SimpleNamespace(
+            subentries={
+                "first": SimpleNamespace(
+                    subentry_type=SUBENTRY_TYPE_LOAD_COMPONENT,
+                    data={
+                        CONF_LOAD_COMPONENT_PROFILE: LOAD_PROFILE_CYCLIC_APPLIANCE,
+                        CONF_COMPONENT_KEY: "appliance",
+                        CONF_COMPONENT_POWER_ENTITY: "sensor.first",
+                    },
+                ),
+                "second": SimpleNamespace(
+                    subentry_type=SUBENTRY_TYPE_LOAD_COMPONENT,
+                    data={
+                        CONF_LOAD_COMPONENT_PROFILE: LOAD_PROFILE_GENERIC,
+                        CONF_COMPONENT_KEY: "appliance",
+                        CONF_COMPONENT_POWER_ENTITY: "sensor.second",
+                    },
+                ),
+            }
+        )
+        hass = SimpleNamespace(
+            states=_States(
+                {
+                    "sensor.first": _state(100, "W"),
+                    "sensor.second": _state(200, "W"),
+                }
+            )
+        )
+
+        result = collect_load_components(hass, entry, dt.datetime.now(dt.UTC))
+
+        self.assertEqual(result.powers_w, (("appliance", 100.0),))
+        self.assertEqual(result.ignored_duplicate_keys, ("appliance",))
+
+    def test_cyclic_appliance_exposes_optional_cycle_context(self):
+        now = dt.datetime(2026, 9, 8, 12, 30, tzinfo=dt.UTC)
+        data = {
+            CONF_LOAD_COMPONENT_PROFILE: LOAD_PROFILE_CYCLIC_APPLIANCE,
+            CONF_COMPONENT_POWER_ENTITY: "sensor.appliance_power",
+            "component_key": "washing_machine",
+            CONF_APPLIANCE_ACTIVITY_ENTITY: "sensor.appliance_state",
+            CONF_APPLIANCE_PROGRESS_ENTITY: "sensor.appliance_progress",
+            CONF_APPLIANCE_END_TIME_ENTITY: "sensor.appliance_end",
+        }
+        entry = SimpleNamespace(
+            subentries={
+                "appliance": SimpleNamespace(
+                    subentry_type=SUBENTRY_TYPE_LOAD_COMPONENT, data=data
+                )
+            }
+        )
+        hass = SimpleNamespace(
+            states=_States(
+                {
+                    "sensor.appliance_power": _state(0.65, "kW"),
+                    "sensor.appliance_state": _state(
+                        "run", last_changed=now - dt.timedelta(minutes=20)
+                    ),
+                    "sensor.appliance_progress": _state(25, "%"),
+                    "sensor.appliance_end": _state("2026-09-08T13:40:00+00:00"),
+                }
+            )
+        )
+
+        result = collect_load_components(hass, entry, now)
+        driver = result.drivers[0]
+        features = {item.feature_key: item.value for item in driver.features}
+
+        self.assertEqual(dict(result.powers_w)["washing_machine"], 650.0)
+        self.assertEqual(features["cycle_active_fraction"], 1.0)
+        self.assertEqual(features["cycle_active_age_s"], 1200.0)
+        self.assertEqual(features["cycle_progress_fraction"], 0.25)
+        self.assertEqual(features["cycle_remaining_s"], 4200.0)
+
     def test_heat_pump_exposes_active_dhw_state_age(self):
         now = dt.datetime(2026, 9, 7, 3, 0, tzinfo=dt.UTC)
         data = {

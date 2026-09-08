@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import gzip
 import json
 import os
@@ -300,6 +301,25 @@ class CompressedFeatureStore:
         os.replace(tmp, self.path)
         self.last_error = None
 
+    def add_missing_load_components(
+        self, slots: tuple[HistoricalFeatureSlot, ...]
+    ) -> tuple[HistoricalFeatureSlot, ...]:
+        """Atomically enrich the latest slots without replacing existing facts."""
+        from .component_history import merge_feature_history
+
+        current = self.load(0, 2**63 - 1)
+        current_starts = {item.slot.start_ms for item in current}
+        merged = merge_feature_history(
+            current,
+            tuple(item for item in slots if item.slot.start_ms in current_starts),
+        )
+        current_by_start = {item.slot.start_ms: item for item in current}
+        changed = tuple(
+            item for item in merged if current_by_start.get(item.slot.start_ms) != item
+        )
+        self.upsert(changed)
+        return self.load(0, 2**63 - 1)
+
     def diagnostics(self, active_coverage: float = 0.0) -> dict[str, object]:
         """Return bounded operational diagnostics without feature payloads."""
         ordered = [self._slots[key] for key in sorted(self._slots)]
@@ -407,24 +427,60 @@ class ExecutorFeatureStore:
     ) -> None:
         self._backend = backend
         self._run_in_executor = run_in_executor
+        self._lock = asyncio.Lock()
+        self._diagnostics = backend.diagnostics()
+        self._last_error = backend.last_error
 
     async def load(
         self, start_ms: int, end_ms: int
     ) -> tuple[HistoricalFeatureSlot, ...]:
-        return await self._run_in_executor(self._backend.load, start_ms, end_ms)
+        async with self._lock:
+            result = await self._await_executor(self._backend.load, start_ms, end_ms)
+            self._diagnostics = self._backend.diagnostics()
+            self._last_error = self._backend.last_error
+            return result
 
     async def upsert(self, slots: tuple[HistoricalFeatureSlot, ...]) -> None:
-        await self._run_in_executor(self._backend.upsert, slots)
+        async with self._lock:
+            await self._await_executor(self._backend.upsert, slots)
+            self._diagnostics = self._backend.diagnostics()
+            self._last_error = self._backend.last_error
+
+    async def add_missing_load_components(
+        self, slots: tuple[HistoricalFeatureSlot, ...]
+    ) -> tuple[HistoricalFeatureSlot, ...]:
+        """Serialize additive history enrichment as one read-modify-write."""
+        async with self._lock:
+            result = await self._await_executor(
+                self._backend.add_missing_load_components, slots
+            )
+            self._diagnostics = self._backend.diagnostics()
+            self._last_error = self._backend.last_error
+            return result
 
     def diagnostics(self, active_coverage: float = 0.0) -> dict[str, object]:
-        return self._backend.diagnostics(active_coverage)
+        result = dict(self._diagnostics)
+        result["active_slot_coverage"] = round(float(active_coverage), 4)
+        result["last_error"] = self._last_error
+        return result
+
+    async def _await_executor(self, target, *args):
+        task = asyncio.ensure_future(self._run_in_executor(target, *args))
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            # Executor work cannot be cancelled. Keep the lock until the atomic
+            # backend operation has completed, then propagate lifecycle cancel.
+            await task
+            raise
 
     @property
     def last_error(self) -> str | None:
-        return self._backend.last_error
+        return self._last_error
 
     @last_error.setter
     def last_error(self, value: str | None) -> None:
+        self._last_error = value
         self._backend.last_error = value
 
 

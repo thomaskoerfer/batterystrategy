@@ -9,6 +9,10 @@ Own provider/entity adapters, units, signs, time alignment, quality flags,
 historical aggregation, persistence, retention, schema migration and recorder
 bootstrap. Emit normalized immutable facts.
 
+Recorder backfill must be bounded and idempotent. Preserve existing normalized
+facts, and never reinterpret or overwrite whole-house energy while adding a
+new component history.
+
 ## Forbidden
 
 Do not forecast, value energy, allocate battery budgets or issue hardware

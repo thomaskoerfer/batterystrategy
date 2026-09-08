@@ -149,7 +149,8 @@
         "invalid_power_unit": "Die Leistungs-Entity muss W, kW oder MW liefern.",
         "invalid_temperature_unit": "Temperatur-Entities müssen °C, °F oder K liefern.",
         "invalid_time_windows": "Nutze kommaseparierte Tagesfenster wie 00:00-05:00,09:00-17:00.",
-        "invalid_component_key": "Nutze einen nicht leeren Kleinbuchstaben-Schluessel aus Buchstaben, Ziffern und Unterstrichen."
+        "invalid_component_key": "Nutze einen nicht leeren Kleinbuchstaben-Schluessel aus Buchstaben, Ziffern und Unterstrichen.",
+        "duplicate_component_key": "Dieser Komponentenschluessel wird bereits von einer anderen Lastkomponente erzeugt."
       },
       "step": {
         "user": {
@@ -176,7 +177,10 @@
             "heating_active_entity": "Raumheizung aktiv",
             "target_flow_temperature_entity": "Soll-Vorlauftemperatur",
             "dhw_allowed_windows": "Erlaubte Warmwasser-Zeitfenster",
-            "climate_entities": "Klima-Innengeraete"
+            "climate_entities": "Klima-Innengeraete",
+            "appliance_activity_entity": "Programm aktiv (optional)",
+            "appliance_progress_entity": "Programmfortschritt (optional)",
+            "appliance_end_time_entity": "Voraussichtliches Programmende (optional)"
           }
         },
         "reconfigure": {
@@ -196,7 +200,10 @@
             "heating_active_entity": "Raumheizung aktiv",
             "target_flow_temperature_entity": "Soll-Vorlauftemperatur",
             "dhw_allowed_windows": "Erlaubte Warmwasser-Zeitfenster",
-            "climate_entities": "Klima-Innengeraete"
+            "climate_entities": "Klima-Innengeraete",
+            "appliance_activity_entity": "Programm aktiv (optional)",
+            "appliance_progress_entity": "Programmfortschritt (optional)",
+            "appliance_end_time_entity": "Voraussichtliches Programmende (optional)"
           }
         }
       },
@@ -211,7 +218,8 @@
       "options": {
         "ems_esp_heat_pump": "EMS-ESP-Waermepumpe",
         "air_conditioning": "Klimaanlage mit gemeinsamem Zaehler",
-        "generic_metered": "Generischer gemessener Verbraucher"
+        "generic_metered": "Generischer gemessener Verbraucher",
+        "cyclic_appliance": "Zyklischer Verbraucher"
       }
     }
   }

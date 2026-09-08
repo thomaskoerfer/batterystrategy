@@ -2,16 +2,23 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import gzip
 import inspect
 import json
 import tempfile
+import threading
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
-from custom_components.battery_strategy.contracts import QualityFlag
+from custom_components.battery_strategy.contracts import (
+    DataQuality,
+    LoadComponentEnergy,
+    QualityFlag,
+)
 from custom_components.battery_strategy.coordinator import BatteryStrategyCoordinator
 from custom_components.battery_strategy.feature_store import (
     CompressedFeatureStore,
@@ -153,6 +160,39 @@ class CompressedFeatureStoreTests(unittest.TestCase):
         self.assertTrue(inspect.iscoroutinefunction(ExecutorFeatureStore.load))
         self.assertTrue(inspect.iscoroutinefunction(ExecutorFeatureStore.upsert))
 
+    def test_executor_adapter_holds_serialization_until_cancelled_work_finishes(self):
+        started = threading.Event()
+        release = threading.Event()
+
+        class _Backend:
+            last_error = None
+
+            @staticmethod
+            def diagnostics(_coverage=0.0):
+                return {}
+
+            @staticmethod
+            def load(_start_ms, _end_ms):
+                started.set()
+                release.wait(timeout=2)
+                return ()
+
+        async def _run_in_executor(target, *args):
+            return await asyncio.to_thread(target, *args)
+
+        async def _scenario():
+            adapter = ExecutorFeatureStore(_Backend(), _run_in_executor)
+            task = asyncio.create_task(adapter.load(0, 1))
+            await asyncio.to_thread(started.wait, 1)
+            task.cancel()
+            await asyncio.sleep(0)
+            self.assertFalse(task.done())
+            release.set()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+
+        asyncio.run(_scenario())
+
     def test_store_is_atomic_versioned_deduplicated_and_retained(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "features.json.gz"
@@ -195,6 +235,38 @@ class CompressedFeatureStoreTests(unittest.TestCase):
             reloaded.initialize()
             self.assertEqual(reloaded.load(0, 3 * 86_400_000), (second,))
             self.assertTrue(reloaded.diagnostics()["authoritative"])
+
+    def test_add_missing_components_preserves_latest_slot_facts(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "features.json.gz"
+            store = CompressedFeatureStore(path)
+            store.initialize()
+            original = complete_slot(
+                FeatureAggregator(),
+                grid_import_w=3_000.0,
+                pv_generation_w=0.0,
+                battery_power_w=0.0,
+                ev_charge_w=0.0,
+                price_ct_per_kwh=25.0,
+            )
+            store.upsert((original,))
+            stale = replace(
+                complete_slot(
+                    FeatureAggregator(),
+                    grid_import_w=1_000.0,
+                    pv_generation_w=0.0,
+                    battery_power_w=0.0,
+                    ev_charge_w=0.0,
+                    price_ct_per_kwh=40.0,
+                ),
+                load_components=(LoadComponentEnergy("dryer", 0.1, DataQuality()),),
+            )
+
+            result = store.add_missing_load_components((stale,))
+
+            self.assertAlmostEqual(result[0].house_load_no_ev_kwh, 0.75)
+            self.assertEqual(result[0].price_ct_per_kwh, 25.0)
+            self.assertEqual(result[0].load_components, stale.load_components)
 
     def test_version_one_store_is_fully_migrated_and_can_be_downgraded(self):
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -6,7 +6,10 @@ import datetime as dt
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from custom_components.battery_strategy.history_adapter import read_recorder_series
+from custom_components.battery_strategy.history_adapter import (
+    read_recorder_series,
+    read_recorder_series_with_availability,
+)
 
 
 def test_recorder_adapter_maps_roles_and_units_through_public_history_api():
@@ -72,3 +75,29 @@ def test_recorder_adapter_defensively_excludes_states_after_snapshot():
         )
 
     assert result["grid_import"] == ((captured_at.timestamp(), 2.0),)
+
+
+def test_recorder_availability_reader_preserves_invalid_state_transitions():
+    timestamp = dt.datetime(2026, 9, 2, 10, tzinfo=dt.UTC)
+    states = [
+        SimpleNamespace(last_updated=timestamp, state="1.0"),
+        SimpleNamespace(
+            last_updated=timestamp + dt.timedelta(minutes=5), state="unavailable"
+        ),
+    ]
+    with patch(
+        "homeassistant.components.recorder.history.get_significant_states",
+        return_value={"sensor.source": states},
+    ):
+        result = read_recorder_series_with_availability(
+            object(),
+            {"component": "sensor.source"},
+            {"component": 1_000.0},
+            start_time=timestamp,
+            end_time=timestamp + dt.timedelta(minutes=10),
+        )
+
+    assert result["component"] == (
+        (timestamp.timestamp(), 1_000.0),
+        ((timestamp + dt.timedelta(minutes=5)).timestamp(), None),
+    )

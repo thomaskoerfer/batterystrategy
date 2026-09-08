@@ -198,5 +198,8 @@ def _has_usable_components(item: HistoricalFeatureSlot, keys: tuple[str, ...]) -
         component.component_key: component for component in item.load_components
     }
     return item.quality.coverage >= 0.999 and all(
-        key in components and components[key].quality.coverage >= 0.999 for key in keys
+        key in components
+        and components[key].quality.coverage >= 0.999
+        and not components[key].quality.flags
+        for key in keys
     )

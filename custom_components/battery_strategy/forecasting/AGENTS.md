@@ -33,6 +33,11 @@ This package owns pure forecasting from normalized inputs.
 - Do not add provider/source identity to the pure model. Equivalent normalized
   sources share learning; a known semantic correction with unchanged feature
   keys requires an operational feature-history reset and explicit reevaluation.
+- Treat operator-started finite appliances as event forecasts: inactive P50 is
+  zero, and an active cycle may forecast only a bounded remainder learned from
+  completed, quality-valid cycles.
+- Require cyclic-appliance walk-forward evidence for remaining energy, slot
+  shape and end-slot timing before changing its model.
 
 Run deterministic replay, model-isolation, component-composition, uncertainty
 and load/PV quality tests for changes in this package.

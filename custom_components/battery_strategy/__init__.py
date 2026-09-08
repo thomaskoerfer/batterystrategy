@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import math
 from collections.abc import Iterable
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from homeassistant.config_entries import ConfigEntry
@@ -15,6 +15,7 @@ from homeassistant.helpers import entity_registry as er
 
 from .command_trace import COMMAND_TRACE_FILE
 from .compiler_runtime_store import CompilerRuntimeStore
+from .component_history_adapter import async_backfill_cyclic_component_history
 from .const import (
     CONF_HP_DHW_DIFFERENTIAL_ENTITY,
     CONF_HP_DHW_TARGET_ENTITY,
@@ -62,6 +63,9 @@ async def async_setup_entry(
     feature_history = await hass.async_add_executor_job(
         feature_store.load, 0, 2**63 - 1
     )
+    executor_feature_store = ExecutorFeatureStore(
+        feature_store, hass.async_add_executor_job
+    )
     compiler_runtime_store = CompilerRuntimeStore(hass, entry.entry_id)
     restored_compiler_runtime = await compiler_runtime_store.load()
     coordinator = BatteryStrategyCoordinator(
@@ -70,7 +74,7 @@ async def async_setup_entry(
         update_interval=timedelta(seconds=10),
         last_known_soc_pct=last_known_soc_pct,
         last_optimizer_output=last_optimizer_output,
-        feature_store=ExecutorFeatureStore(feature_store, hass.async_add_executor_job),
+        feature_store=executor_feature_store,
         feature_history=feature_history,
         compiler_runtime_store=compiler_runtime_store,
         restored_compiler_runtime=restored_compiler_runtime,
@@ -80,6 +84,15 @@ async def async_setup_entry(
     entry.runtime_data = coordinator
     coordinator.async_start_live_tracking()
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    coordinator.async_start_feature_history_update(
+        async_backfill_cyclic_component_history(
+            hass,
+            entry,
+            executor_feature_store,
+            feature_history,
+            as_of=datetime.now(UTC),
+        )
+    )
     return True
 
 

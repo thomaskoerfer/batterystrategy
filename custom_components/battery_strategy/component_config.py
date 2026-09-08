@@ -5,7 +5,11 @@ from __future__ import annotations
 import datetime as dt
 from dataclasses import dataclass
 
+from .const import CONF_COMPONENT_KEY, LOAD_PROFILE_HEAT_PUMP
+
 DEFAULT_DHW_ALLOWED_WINDOWS = "00:00-05:00,09:00-17:00"
+HEAT_PUMP_COMPONENT_KEYS = frozenset({"heat_pump_dhw", "heat_pump_space_heating"})
+RESERVED_COMPONENT_KEYS = frozenset({"general_house_load", *HEAT_PUMP_COMPONENT_KEYS})
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +51,20 @@ def validate_allowed_windows(value: str) -> bool:
     except ValueError:
         return False
     return True
+
+
+def runtime_component_keys(profile: str, data: dict) -> tuple[str, ...]:
+    """Return the globally unique driver keys emitted by one profile."""
+    if profile == LOAD_PROFILE_HEAT_PUMP:
+        return tuple(sorted(HEAT_PUMP_COMPONENT_KEYS))
+    key = str(data.get(CONF_COMPONENT_KEY, ""))
+    return (key,) if key else ()
+
+
+def reserved_component_key_conflicts(profile: str, keys: set[str]) -> set[str]:
+    """Return internal keys that the selected profile is not allowed to claim."""
+    allowed = HEAT_PUMP_COMPONENT_KEYS if profile == LOAD_PROFILE_HEAT_PUMP else set()
+    return keys & (RESERVED_COMPONENT_KEYS - allowed)
 
 
 def _clock_minutes(value: str) -> int:

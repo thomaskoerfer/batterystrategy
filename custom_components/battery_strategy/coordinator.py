@@ -6,7 +6,7 @@ import asyncio
 import datetime as dt
 import logging
 import time
-from collections.abc import Mapping
+from collections.abc import Awaitable, Mapping
 from dataclasses import asdict, replace
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -22,6 +22,7 @@ from .compiler_runtime_store import (
     CompilerRuntimeSnapshot,
     CompilerRuntimeStore,
 )
+from .component_history import merge_feature_history
 from .config_definitions import option_default
 from .const import (
     BATTERY_PROFILE_ZENDURE,
@@ -69,6 +70,7 @@ from .contracts import (
     DataQuality,
     DischargeReconciliation,
     ForecastRequest,
+    HistoricalFeatureSlot,
     LiveControlResult,
     LiveControlState,
     LiveMeasurements,
@@ -198,6 +200,7 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         self._weather_error: str | None = None
         self._weather_refresh_key: tuple[dt.date, int] | None = None
         self._weather_task: asyncio.Task | None = None
+        self._feature_history_task: asyncio.Task | None = None
         self._weather_provider = OpenMeteoWeatherProvider(
             async_get_clientsession(hass), hass.config.latitude, hass.config.longitude
         )
@@ -250,6 +253,40 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
                     self._async_critical_state_changed,
                 )
             )
+
+    def async_start_feature_history_update(
+        self, update: Awaitable[tuple[HistoricalFeatureSlot, ...]]
+    ) -> None:
+        """Apply a best-effort data bootstrap after live control is available."""
+        if self._feature_history_task is not None:
+            raise RuntimeError("feature history update already started")
+        self._feature_history_task = self.hass.async_create_task(
+            self._async_apply_feature_history_update(update),
+            name="battery_strategy_feature_history_bootstrap",
+        )
+
+    async def _async_apply_feature_history_update(
+        self, update: Awaitable[tuple[HistoricalFeatureSlot, ...]]
+    ) -> None:
+        try:
+            history = await update
+        except asyncio.CancelledError:
+            raise
+        except Exception as err:  # Optional history must not stop live control.
+            LOGGER.warning("Feature history bootstrap failed: %s", err)
+            return
+        if self._unloading:
+            return
+        history = merge_feature_history(self._feature_history, tuple(history))
+        if history == self._feature_history:
+            return
+        self._feature_history = history
+        self._planning_pipeline.set_forecast_environment(
+            self._feature_history,
+            self._weather,
+            self._load_components.drivers,
+            self._load_components.specs,
+        )
 
     def _grid_entity_ids(self) -> list[str]:
         """Return only the authoritative grid entities for the configured mode."""
@@ -492,6 +529,9 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
                 for item in self._load_components.specs
             ],
             "valid_component_meter_count": len(self._load_components.powers_w),
+            "ignored_duplicate_component_keys": list(
+                getattr(self._load_components, "ignored_duplicate_keys", ())
+            ),
             "weather_slot_count": len(self._weather),
             "weather_error": self._weather_error,
         }
@@ -1142,6 +1182,13 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             unsubscribe()
         live_event_unsubs.clear()
         await self._async_persist_compiler_runtime(clean_shutdown=True)
+        feature_history_task = getattr(self, "_feature_history_task", None)
+        if feature_history_task is not None and not feature_history_task.done():
+            feature_history_task.cancel()
+            try:
+                await feature_history_task
+            except asyncio.CancelledError:
+                pass
         weather_task = getattr(self, "_weather_task", None)
         if weather_task is not None and not weather_task.done():
             weather_task.cancel()
@@ -1162,6 +1209,7 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         self._unloading = False
         self._planner.abort_shutdown()
         self._weather_task = None
+        self._feature_history_task = None
         self._weather_refresh_key = None
         self.async_start_live_tracking()
 

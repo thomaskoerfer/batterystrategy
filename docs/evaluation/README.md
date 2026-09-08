@@ -67,6 +67,20 @@ These metrics are evidence for a later reviewed model change, not an online
 reinforcement loop. The existing online calibration remains owned by the
 forecast application and is unchanged by this trace or evaluator.
 
+Finite cyclic appliances also have an event-level walk-forward evaluator. It
+uses only prior completed cycles, starts each replay after the first finalized
+active slot and reports remaining-energy, slot-shape and end-slot errors:
+
+```sh
+python3 scripts/battery_strategy_appliance_walkforward.py \
+  PATH_TO_FEATURE_STORE --component-key appliance_key
+```
+
+The report keeps the power-only forecast separate from a historical-context
+proxy based only on quality-valid features stored in that first active slot.
+This makes optional activity, progress and expected-end context visible without
+claiming that slot-average history is an exact reconstruction of a live state.
+
 ## Setup independence
 
 Metric definitions use contract fields and model identifiers, not household

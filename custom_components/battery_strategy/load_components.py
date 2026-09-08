@@ -9,9 +9,14 @@ from dataclasses import dataclass
 from .component_config import (
     DEFAULT_DHW_ALLOWED_WINDOWS,
     LoadComponentSpec,
+    reserved_component_key_conflicts,
+    runtime_component_keys,
     time_allowed,
 )
 from .const import (
+    CONF_APPLIANCE_ACTIVITY_ENTITY,
+    CONF_APPLIANCE_END_TIME_ENTITY,
+    CONF_APPLIANCE_PROGRESS_ENTITY,
     CONF_CLIMATE_ENTITIES,
     CONF_COMPONENT_KEY,
     CONF_COMPONENT_POWER_ENTITY,
@@ -27,6 +32,7 @@ from .const import (
     CONF_HP_TARGET_FLOW_TEMP_ENTITY,
     CONF_LOAD_COMPONENT_PROFILE,
     LOAD_PROFILE_AIR_CONDITIONING,
+    LOAD_PROFILE_CYCLIC_APPLIANCE,
     LOAD_PROFILE_GENERIC,
     LOAD_PROFILE_HEAT_PUMP,
     SUBENTRY_TYPE_LOAD_COMPONENT,
@@ -48,6 +54,7 @@ class LoadComponentCollection:
     features: tuple[tuple[str, tuple[tuple[str, float], ...]], ...] = ()
     drivers: tuple[LoadDriverSnapshot, ...] = ()
     specs: tuple[LoadComponentSpec, ...] = ()
+    ignored_duplicate_keys: tuple[str, ...] = ()
 
 
 def add_central_weather(
@@ -78,7 +85,11 @@ def add_central_weather(
         for driver in collection.drivers
     )
     return LoadComponentCollection(
-        collection.powers_w, raw_features, drivers, collection.specs
+        collection.powers_w,
+        raw_features,
+        drivers,
+        collection.specs,
+        collection.ignored_duplicate_keys,
     )
 
 
@@ -88,19 +99,35 @@ def collect_load_components(hass, entry, now: dt.datetime) -> LoadComponentColle
     features: list[tuple[str, tuple[tuple[str, float], ...]]] = []
     drivers: list[LoadDriverSnapshot] = []
     specs: list[LoadComponentSpec] = []
+    claimed_keys: set[str] = set()
+    ignored_duplicate_keys: set[str] = set()
     for subentry in getattr(entry, "subentries", {}).values():
         if getattr(subentry, "subentry_type", None) != SUBENTRY_TYPE_LOAD_COMPONENT:
             continue
         data = dict(subentry.data)
         profile = str(data.get(CONF_LOAD_COMPONENT_PROFILE, ""))
+        runtime_keys = set(runtime_component_keys(profile, data))
+        duplicates = (runtime_keys & claimed_keys) | reserved_component_key_conflicts(
+            profile, runtime_keys
+        )
+        if duplicates:
+            ignored_duplicate_keys.update(duplicates)
+            continue
+        claimed_keys.update(runtime_keys)
         if profile == LOAD_PROFILE_HEAT_PUMP:
             _collect_heat_pump(hass, data, now, powers, features, drivers, specs)
         elif profile == LOAD_PROFILE_AIR_CONDITIONING:
             _collect_air_conditioning(hass, data, powers, features, drivers, specs)
         elif profile == LOAD_PROFILE_GENERIC:
             _collect_generic(hass, data, powers, features, drivers, specs)
+        elif profile == LOAD_PROFILE_CYCLIC_APPLIANCE:
+            _collect_cyclic_appliance(hass, data, now, powers, features, drivers, specs)
     return LoadComponentCollection(
-        tuple(powers), tuple(features), tuple(drivers), tuple(specs)
+        tuple(powers),
+        tuple(features),
+        tuple(drivers),
+        tuple(specs),
+        tuple(sorted(ignored_duplicate_keys)),
     )
 
 
@@ -228,6 +255,39 @@ def _collect_generic(hass, data, powers, features, drivers, specs) -> None:
     _append_component(key, power, (), powers, features, drivers)
 
 
+def _collect_cyclic_appliance(
+    hass, data, now, powers, features, drivers, specs
+) -> None:
+    """Collect a separately metered appliance and optional cycle context."""
+    key = str(data.get(CONF_COMPONENT_KEY) or "cyclic_appliance")
+    specs.append(LoadComponentSpec(key, LOAD_PROFILE_CYCLIC_APPLIANCE))
+    power = _power_w(hass, data.get(CONF_COMPONENT_POWER_ENTITY))
+    if power is None:
+        drivers.append(
+            LoadDriverSnapshot(
+                key, 0.0, DataQuality(0.0, (QualityFlag.MISSING_COMPONENT,))
+            )
+        )
+        return
+
+    activity_entity = data.get(CONF_APPLIANCE_ACTIVITY_ENTITY)
+    activity = _appliance_activity(hass, activity_entity)
+    if activity is None:
+        activity = 1.0 if power >= 20.0 else 0.0
+    active_age_s = _active_state_age_s(hass, activity_entity, now, activity)
+    progress = _progress_fraction(hass, data.get(CONF_APPLIANCE_PROGRESS_ENTITY))
+    remaining_s = _remaining_seconds(
+        hass, data.get(CONF_APPLIANCE_END_TIME_ENTITY), now
+    )
+    component_features = _available_features(
+        ("cycle_active_fraction", activity),
+        ("cycle_active_age_s", active_age_s),
+        ("cycle_progress_fraction", progress),
+        ("cycle_remaining_s", remaining_s),
+    )
+    _append_component(key, power, component_features, powers, features, drivers)
+
+
 def _append_component(key, power, component_features, powers, features, drivers):
     powers.append((key, power))
     raw_features = tuple((item.feature_key, item.value) for item in component_features)
@@ -270,6 +330,58 @@ def _binary(hass, entity_id) -> float | None:
     if state is None:
         return None
     return 1.0 if state.lower() in ("on", "true", "yes", "active", "heating") else 0.0
+
+
+def _appliance_activity(hass, entity_id) -> float | None:
+    state = _state_text(hass, entity_id)
+    if state is None:
+        return None
+    normalized = state.strip().lower().replace(" ", "_")
+    if normalized in {
+        "on",
+        "true",
+        "active",
+        "run",
+        "running",
+        "washing",
+        "drying",
+    }:
+        return 1.0
+    if normalized in {
+        "off",
+        "false",
+        "idle",
+        "inactive",
+        "ready",
+        "finished",
+        "standby",
+    }:
+        return 0.0
+    return None
+
+
+def _progress_fraction(hass, entity_id) -> float | None:
+    state = hass.states.get(entity_id) if entity_id else None
+    value = _finite(state.state) if state is not None else None
+    if value is None:
+        return None
+    unit = str(state.attributes.get("unit_of_measurement") or "").strip()
+    if unit == "%" or value > 1.0:
+        value /= 100.0
+    return max(0.0, min(1.0, value))
+
+
+def _remaining_seconds(hass, entity_id, now) -> float | None:
+    state = _state_text(hass, entity_id)
+    if state is None:
+        return None
+    try:
+        end = dt.datetime.fromisoformat(state.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if end.tzinfo is None:
+        end = end.replace(tzinfo=now.tzinfo)
+    return max(0.0, (end - now).total_seconds())
 
 
 def _active_state_age_s(hass, entity_id, now, active) -> float | None:

@@ -7,7 +7,11 @@ import math
 import statistics
 
 from ..component_config import LoadComponentSpec, time_allowed
-from ..const import LOAD_PROFILE_AIR_CONDITIONING, LOAD_PROFILE_HEAT_PUMP
+from ..const import (
+    LOAD_PROFILE_AIR_CONDITIONING,
+    LOAD_PROFILE_CYCLIC_APPLIANCE,
+    LOAD_PROFILE_HEAT_PUMP,
+)
 from ..contracts import (
     DataQuality,
     ForecastRequest,
@@ -20,6 +24,7 @@ from ..contracts import (
     QuantileEnergy,
     WeatherSlot,
 )
+from .cyclic_appliance import forecast_cyclic_appliance
 from .heat_pump import adjust_heat_pump_forecast
 from .history import ForecastHistorySample, ForecastTargetInput
 from .load import LoadForecastModelConfig, build_load_forecast
@@ -107,7 +112,14 @@ def build_component_load_forecast(
         )
     ]
     component_energy: dict[str, tuple[float, ...]] = {}
+    component_quality: dict[str, DataQuality] = {}
+    component_versions: dict[str, str] = {}
     for spec in specs:
+        component_versions[spec.component_key] = (
+            f"{spec.profile}-v5"
+            if spec.profile == LOAD_PROFILE_HEAT_PUMP
+            else f"{spec.profile}-v1"
+        )
         component_energy[spec.component_key] = tuple(
             _component_power_w(
                 spec,
@@ -121,6 +133,27 @@ def build_component_load_forecast(
             / 1000.0
             for slot, target in zip(request.slots, targets, strict=True)
         )
+        if spec.profile == LOAD_PROFILE_CYCLIC_APPLIANCE:
+            driver = next(
+                (
+                    item
+                    for item in context.drivers
+                    if item.driver_key == spec.component_key
+                ),
+                None,
+            )
+            cyclic = forecast_cyclic_appliance(
+                eligible,
+                driver,
+                spec.component_key,
+                len(request.slots),
+            )
+            component_energy[spec.component_key] = cyclic.energy_kwh
+            if cyclic.estimated:
+                component_quality[spec.component_key] = DataQuality(
+                    0.0, (QualityFlag.ESTIMATED,)
+                )
+                component_versions[spec.component_key] = f"{spec.profile}-fallback-v1"
     dhw_spec = next(
         (
             spec
@@ -156,15 +189,14 @@ def build_component_load_forecast(
             ForecastSlot(
                 slot,
                 QuantileEnergy(component_energy[spec.component_key][index]),
+                component_quality.get(spec.component_key, DataQuality()),
             )
             for index, slot in enumerate(request.slots)
         )
         components.append(
             LoadForecastComponent(
                 spec.component_key,
-                f"{spec.profile}-v5"
-                if spec.profile == LOAD_PROFILE_HEAT_PUMP
-                else f"{spec.profile}-v1",
+                component_versions[spec.component_key],
                 residual.training_cutoff_ms,
                 component_slots,
             )
@@ -175,6 +207,9 @@ def build_component_load_forecast(
             QuantileEnergy(
                 sum(component.slots[index].energy.p50_kwh for component in components)
             ),
+            DataQuality(0.0, (QualityFlag.ESTIMATED,))
+            if any(quality.flags for quality in component_quality.values())
+            else DataQuality(),
         )
         for index, slot in enumerate(request.slots)
     )
@@ -182,12 +217,26 @@ def build_component_load_forecast(
         f"component-{request.as_of_ms}",
         request.as_of_ms,
         residual.training_cutoff_ms,
-        "component-load-v5"
-        if any(spec.profile == LOAD_PROFILE_HEAT_PUMP for spec in specs)
-        else "component-load-v1",
+        _composite_model_version(specs, component_versions),
         total_slots,
         tuple(components),
     )
+
+
+def _composite_model_version(specs, component_versions) -> str:
+    base = (
+        "component-load-v5"
+        if any(spec.profile == LOAD_PROFILE_HEAT_PUMP for spec in specs)
+        else "component-load-v1"
+    )
+    cyclic_versions = sorted(
+        {
+            component_versions[spec.component_key]
+            for spec in specs
+            if spec.profile == LOAD_PROFILE_CYCLIC_APPLIANCE
+        }
+    )
+    return "+".join((base, *cyclic_versions))
 
 
 def _component_power_w(spec, target, history, context, weather, request) -> float:
