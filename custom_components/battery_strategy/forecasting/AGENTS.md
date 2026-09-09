@@ -12,9 +12,13 @@ This package owns pure forecasting from normalized inputs.
 - Emit aligned immutable forecasts with model version, cutoff and quality.
 - Treat missing data as missing, not zero.
 - Use semantic feature keys and setup-neutral fixtures.
-- Keep historical DHW timing as the long-range prior. Refine only the next
-  event from continuous, comparable thermal evidence; do not add an unvalidated
-  recursive tank-temperature simulation.
+- Keep historical DHW timing and slot shape as the long-range prior. Recompute
+  the next event's energy from complete, physically compatible cycles even when
+  its prior timing remains unchanged; do not add an unvalidated recursive
+  tank-temperature simulation.
+- Treat an activity gap or unusable energy interval as invalidating the whole
+  DHW training cycle. A target change is a new thermostat regime unless the
+  observed cycle peak proves that the same cut-out was physically reached.
 - Accept a DHW timing change only after walk-forward history improves both
   start-time and slot-energy error without adding missed cycles.
 

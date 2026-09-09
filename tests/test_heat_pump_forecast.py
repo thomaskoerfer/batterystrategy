@@ -328,6 +328,12 @@ def _temperature_timing_history() -> tuple[HistoricalFeatureSlot, ...]:
                     dhw_temperature_c=54.0,
                     charging_fraction=0.4,
                 ),
+                _history_slot(
+                    cycle_start + dt.timedelta(minutes=45),
+                    dhw_kwh=0.0,
+                    dhw_temperature_c=54.0,
+                    charging_fraction=0.0,
+                ),
             )
         )
     return tuple(sorted(history, key=lambda item: item.slot.start_ms))
@@ -347,7 +353,7 @@ def test_inactive_tank_temperature_projects_future_hysteresis_crossing():
     assert forecast.dhw_kwh[10] > 0.0
 
 
-def test_one_slot_temperature_timing_difference_keeps_historical_prior():
+def test_matching_temperature_timing_reestimates_cycle_energy():
     baseline = tuple(0.3 if 9 <= index <= 11 else 0.0 for index in range(20))
 
     forecast = _future_inactive_case(
@@ -357,7 +363,9 @@ def test_one_slot_temperature_timing_difference_keeps_historical_prior():
         dhw_baseline=baseline,
     )
 
-    assert forecast.dhw_kwh == baseline
+    assert next(index for index, value in enumerate(forecast.dhw_kwh) if value) == 9
+    assert sum(forecast.dhw_kwh) == pytest.approx(1.65)
+    assert sum(forecast.dhw_kwh) > sum(baseline)
 
 
 def test_history_gap_does_not_create_temperature_timing_evidence():
@@ -516,6 +524,12 @@ def test_circulation_state_selects_matching_time_to_next_cycle():
                     dhw_kwh=0.30,
                     dhw_temperature_c=54.0,
                     charging_fraction=0.4,
+                ),
+                _history_slot(
+                    cycle_start + dt.timedelta(minutes=45),
+                    dhw_kwh=0.0,
+                    dhw_temperature_c=54.0,
+                    charging_fraction=0.0,
                 ),
             )
         )
@@ -723,10 +737,10 @@ def test_active_cycle_tail_does_not_roll_at_slot_boundary_before_store_upsert():
     assert sum(at_boundary.dhw_kwh) < sum(before_boundary.dhw_kwh)
 
 
-def test_legacy_lower_threshold_history_does_not_extend_active_cycle_past_target(
+def test_different_setpoint_regime_does_not_extend_active_cycle_past_target(
     tmp_path,
 ):
-    legacy_cycles = tuple(
+    other_regime_cycles = tuple(
         item
         for day in range(23, 27)
         for item in _completed_cycle(day, target_temperature_c=44.0)
@@ -742,7 +756,7 @@ def test_legacy_lower_threshold_history_does_not_extend_active_cycle_past_target
 
     store = CompressedFeatureStore(tmp_path / "features.json.gz")
     store.initialize()
-    store.upsert(legacy_cycles + observed)
+    store.upsert(other_regime_cycles + observed)
     reloaded_store = CompressedFeatureStore(tmp_path / "features.json.gz")
     reloaded_store.initialize()
 
@@ -757,14 +771,37 @@ def test_legacy_lower_threshold_history_does_not_extend_active_cycle_past_target
     assert forecast.dhw_kwh[1:] == (0.0, 0.0)
 
 
-def test_cycle_efficiency_uses_historical_start_to_peak_lift():
-    lower_target_cycles = tuple(
+def test_different_setpoint_regime_is_not_used_for_future_cycle_energy():
+    other_regime = tuple(
         item
         for day in range(23, 27)
         for item in _completed_cycle(
             day,
             target_temperature_c=50.0,
             peak_temperature_c=51.0,
+            energy_scale=3.0,
+        )
+    )
+    baseline = (0.30, 0.25, 0.20)
+
+    forecast = _future_inactive_case(
+        current=dt.datetime(2026, 9, 6, 3, 0, tzinfo=TZ),
+        temperature_c=46.0,
+        history=other_regime,
+        dhw_baseline=baseline,
+    )
+
+    assert forecast.dhw_kwh == baseline
+
+
+def test_cycle_efficiency_uses_historical_start_to_peak_lift():
+    cycles = tuple(
+        item
+        for day in range(23, 27)
+        for item in _completed_cycle(
+            day,
+            target_temperature_c=53.0,
+            peak_temperature_c=55.0,
         )
     )
     observed = (
@@ -778,14 +815,14 @@ def test_cycle_efficiency_uses_historical_start_to_peak_lift():
 
     forecast = _case(
         49.7,
-        history_prefix=lower_target_cycles + observed,
+        history_prefix=cycles + observed,
         include_default_cycles=False,
         dhw_baseline=(0.30, 0.25, 0.20),
         current_power_w=2100.0,
     )
 
-    expected_specific_energy = 1.65 / (51.0 - 43.0)
-    expected_remaining = expected_specific_energy * (53.0 - 49.7)
+    expected_specific_energy = 1.65 / (55.0 - 43.0)
+    expected_remaining = expected_specific_energy * (55.0 - 49.7)
     assert sum(forecast.dhw_kwh) == pytest.approx(expected_remaining)
     assert forecast.dhw_kwh[1] > 0.1
 
@@ -857,6 +894,32 @@ def test_estimated_cycle_evidence_is_not_used_for_delta_t_calibration():
     with_unreliable_history = _case(49.0, history_prefix=unreliable)
 
     assert with_unreliable_history.dhw_kwh == pytest.approx(reference.dhw_kwh)
+
+
+def test_measurement_gap_invalidates_whole_cycle_for_energy_learning():
+    unreliable_middle = DataQuality(1.0, (QualityFlag.ESTIMATED,))
+    partial_cycles = []
+    for day in range(27, 31):
+        cycle = list(_completed_cycle(day, energy_scale=4.0))
+        component = cycle[1].load_components[0]
+        cycle[1] = replace(
+            cycle[1],
+            load_components=(
+                replace(component, quality=unreliable_middle),
+                *cycle[1].load_components[1:],
+            ),
+        )
+        partial_cycles.extend(cycle)
+
+    with_partial_cycles = _case(
+        49.0,
+        history_prefix=tuple(partial_cycles),
+        include_default_cycles=False,
+        current_power_w=2000.0,
+        dhw_baseline=(0.3, 0.0, 0.0),
+    )
+
+    assert with_partial_cycles.dhw_kwh == pytest.approx((0.5, 0.0, 0.0))
 
 
 def test_shorter_dhw_cycle_restores_heating_and_avoids_duplicate_recovery():

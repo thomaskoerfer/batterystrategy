@@ -2,6 +2,25 @@
 
 All notable changes to Battery Strategy are documented here.
 
+## [0.2.0-rc.22] - 2026-09-09
+
+### Changed
+
+- Recalculate the next domestic-hot-water cycle's electrical energy from its
+  expected cut-in, observed peak and weighted comparable-cycle efficiency even
+  when the historical timing prior remains unchanged.
+- Preserve the historical slot shape while scaling it to the thermally learned
+  cycle total, and include circulation state in cycle similarity.
+- Treat discontinuous or unusable active energy as invalidating a complete
+  training cycle instead of learning false partial cycles. Thermostat regimes
+  are identified by the physically observed cut-out rather than compatibility
+  with an obsolete source mapping.
+
+### Evaluation
+
+- Extend DHW walk-forward output with total-energy MAE and bias, and evaluate
+  only cycles belonging to the requested thermostat regime.
+
 ## [0.2.0-rc.21] - 2026-09-08
 
 ### Fixed

@@ -60,13 +60,16 @@ forecast of current compressor power. The configured target is the cut-out
 temperature; the cut-in temperature is target minus hysteresis. While a cycle
 is active, the model estimates remaining electrical energy from the measured
 temperature deficit and robust `kWh/K` evidence from comparable completed
-cycles. Comparable cycles are selected by initial temperature deficit, source
-temperature, time of day and day type. Replanning may update that estimate from
-new measurements, but it must not restart a fixed-duration continuation.
-Cycle efficiency is learned from the observed start-to-peak temperature lift.
-Recorded targets provide context, but an older, lower target cannot be treated
-as overshoot beyond the current cut-out; this keeps setpoint changes and
-corrected entity mappings from fabricating additional recovery energy.
+cycles. Comparable cycles are weighted by initial temperature lift, source
+temperature, circulation, time of day and day type. Replanning may update that
+estimate from new measurements, but it must not restart a fixed-duration
+continuation. Cycle efficiency is learned from the electrical energy and the
+observed start-to-peak temperature lift. A cycle is training evidence only
+after a clean active-to-inactive transition; an activity gap or unusable energy
+interval invalidates the complete cycle rather than creating partial cycles.
+Recorded targets provide context, while the observed peak proves whether a
+cycle physically reached the current cut-out. This separates real thermostat
+regimes without retaining source-mapping compatibility branches.
 If a live cycle first appears inside an unfinished slot, the model immediately
 publishes its complete thermally estimated remaining energy. Energy estimated
 since the configured charging or hot-water activity state actually became
@@ -77,17 +80,21 @@ evidence exists. A transient compressor ramp uses learned cycle power for
 duration while measured power still contributes the current-slot evidence.
 
 While the compressor is inactive, the historical cycle profile remains the
-long-range prior. The next cycle may be refined from comparable historical
-inactive states using tank temperature, circulation state, local time and day
-type. The three nearest independent cycles vote on the next start. This
-empirical time-to-event correction may move only the prior's next cycle, must
-start inside a configured allowed window, cannot overlap a following prior
-cycle and ignores a one-slot difference. These constraints prevent sparse draw
-events or sensor noise from causing speculative recursive temperature rollout
-and quarter-hour forecast churn. A tank already at or below cut-in is a direct
+long-range timing and slot-shape prior. The next cycle may be refined from
+comparable historical inactive states using tank temperature, circulation
+state, local time and day type. The three nearest independent cycles vote on
+the next start. Its total electrical energy is always recalculated from the
+expected cut-in temperature, learned peak and weighted cycle efficiency; the
+prior shape is then scaled to that total within learned cycle power. Thus a
+one-slot timing difference does not move the event, but it also no longer
+freezes a stale historical energy total. The correction may move only the
+prior's next cycle, must start inside a configured allowed window and cannot
+overlap a following prior cycle. These constraints prevent sparse draw events
+or sensor noise from causing speculative recursive temperature rollout and
+quarter-hour forecast churn. A tank already at or below cut-in is a direct
 thermostat trigger and moves the cycle only to the next configured allowed
-window. Missing, discontinuous or fewer than three independent cycles leave the
-historical prior intact.
+window. Missing or discontinuous timing evidence leaves the timing prior
+intact; complete thermal cycles continue to calibrate its energy.
 
 Outdoor temperature is a performance feature for hot-water recovery because it
 can affect COP, electrical energy per kelvin and duration. It is not treated as
@@ -123,9 +130,11 @@ check component summation and missing-data behavior; and prove that load and PV
 changes cannot affect each other unintentionally.
 
 Hot-water changes additionally require walk-forward comparison against the
-released model over every usable retained cycle. Start-time and slot-energy
-error must improve without increasing missed cycles; otherwise the candidate is
-rejected even if its physical model appears plausible.
+released model over every usable retained cycle in the evaluated thermostat
+regime. Start-time, slot-energy and total-cycle energy error and bias are
+reported. Timing and slot error must improve without increasing missed cycles;
+otherwise the candidate is rejected even if its physical model appears
+plausible.
 
 Run the same repository script with each code checkout on one copied feature
 store and compare the JSON summaries:

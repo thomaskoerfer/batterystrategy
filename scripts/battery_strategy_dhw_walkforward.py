@@ -51,18 +51,18 @@ def _feature(component: LoadComponentEnergy | None, key: str) -> float | None:
     return value.value
 
 
-def _active(item: HistoricalFeatureSlot) -> bool:
+def _activity(item: HistoricalFeatureSlot) -> bool | None:
     component = _component(item)
-    if (
-        component is None
-        or component.quality.coverage < 0.999
-        or component.quality.flags
-    ):
-        return False
+    if component is None:
+        return None
     charging = _feature(component, "dhw_charging_fraction")
-    return component.energy_kwh >= MIN_ACTIVE_ENERGY_KWH or (
-        charging is not None and charging >= MIN_ACTIVE_FRACTION
-    )
+    if charging is not None and charging >= MIN_ACTIVE_FRACTION:
+        return True
+    if component.quality.coverage >= 0.999 and not component.quality.flags:
+        return component.energy_kwh >= MIN_ACTIVE_ENERGY_KWH
+    if charging is not None:
+        return False
+    return None
 
 
 def _cycle_groups(
@@ -70,18 +70,51 @@ def _cycle_groups(
 ) -> list[list[HistoricalFeatureSlot]]:
     groups: list[list[HistoricalFeatureSlot]] = []
     current: list[HistoricalFeatureSlot] = []
+    valid = False
+    last_end_ms: int | None = None
     for item in history:
-        if _active(item):
-            if current and current[-1].slot.end_ms != item.slot.start_ms:
-                groups.append(current)
-                current = []
-            current.append(item)
-        elif current:
-            groups.append(current)
+        activity = _activity(item)
+        if current and last_end_ms != item.slot.start_ms:
             current = []
-    if current:
-        groups.append(current)
+            valid = False
+        if current:
+            last_end_ms = item.slot.end_ms
+            if activity is True:
+                current.append(item)
+                component = _component(item)
+                valid = bool(
+                    valid
+                    and component is not None
+                    and component.quality.coverage >= 0.999
+                    and not component.quality.flags
+                )
+                continue
+            if activity is None:
+                valid = False
+                continue
+            if valid:
+                groups.append(current)
+            current = []
+            valid = False
+        if activity is True:
+            component = _component(item)
+            current = [item]
+            valid = bool(
+                component is not None
+                and component.quality.coverage >= 0.999
+                and not component.quality.flags
+            )
+            last_end_ms = item.slot.end_ms
     return groups
+
+
+def _cycle_target(group: list[HistoricalFeatureSlot]) -> float | None:
+    values = [
+        value
+        for item in group
+        if (value := _feature(_component(item), "dhw_target_c")) is not None
+    ]
+    return float(statistics.median(values)) if values else None
 
 
 def _baseline_energy(
@@ -125,6 +158,9 @@ def evaluate(args: argparse.Namespace) -> dict[str, object]:
     }
     rows = []
     for group in _cycle_groups(all_slots):
+        cycle_target = _cycle_target(group)
+        if cycle_target is None or abs(cycle_target - args.target_c) > 0.1:
+            continue
         actual_start_ms = group[0].slot.start_ms
         for lead_hours in args.lead_hours:
             as_of_ms = actual_start_ms - round(lead_hours * 3_600_000)
@@ -199,6 +235,10 @@ def evaluate(args: argparse.Namespace) -> dict[str, object]:
                 abs(forecast[index] - actual_by_start.get(slot.start_ms, 0.0))
                 for index, slot in enumerate(slots)
             )
+            forecast_energy_kwh = sum(forecast)
+            actual_energy_kwh = sum(
+                actual_by_start.get(slot.start_ms, 0.0) for slot in slots
+            )
             rows.append(
                 {
                     "actual_start_ms": actual_start_ms,
@@ -210,6 +250,9 @@ def evaluate(args: argparse.Namespace) -> dict[str, object]:
                         else abs(predicted_start_ms - actual_start_ms) / 60_000.0
                     ),
                     "slot_mae_kwh": slot_mae,
+                    "forecast_energy_kwh": forecast_energy_kwh,
+                    "actual_energy_kwh": actual_energy_kwh,
+                    "energy_error_kwh": forecast_energy_kwh - actual_energy_kwh,
                 }
             )
 
@@ -231,6 +274,16 @@ def evaluate(args: argparse.Namespace) -> dict[str, object]:
             ),
             "slot_mae_kwh": (
                 statistics.fmean(item["slot_mae_kwh"] for item in selected)
+                if selected
+                else None
+            ),
+            "energy_mae_kwh": (
+                statistics.fmean(abs(item["energy_error_kwh"]) for item in selected)
+                if selected
+                else None
+            ),
+            "energy_bias_kwh": (
+                statistics.fmean(item["energy_error_kwh"] for item in selected)
                 if selected
                 else None
             ),
