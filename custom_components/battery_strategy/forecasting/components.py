@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import math
 import statistics
 
 from ..component_config import LoadComponentSpec, time_allowed
@@ -194,6 +195,17 @@ def _component_power_w(spec, target, history, context, weather, request) -> floa
     target_slot = target.hour * 4 + target.minute // 15
     target_weekend = target.weekday() >= 5
     target_oat = weather.temperature_c if weather is not None else None
+    driver = next(
+        (item for item in context.drivers if item.driver_key == spec.component_key),
+        None,
+    )
+    target_dhw_c = (
+        _driver_feature(driver, "dhw_target_c")
+        if spec.profile == LOAD_PROFILE_HEAT_PUMP
+        and spec.component_key == "heat_pump_dhw"
+        and driver is not None
+        else None
+    )
     for item in history[-90 * 96 :]:
         local = dt.datetime.fromtimestamp(
             item.slot.start_ms / 1000.0, tz=dt.UTC
@@ -216,6 +228,15 @@ def _component_power_w(spec, target, history, context, weather, request) -> floa
             or component.quality.flags
         ):
             continue
+        if target_dhw_c is not None:
+            sample_target_c = _feature(component.features, "dhw_target_c")
+            if sample_target_c is None or not math.isclose(
+                sample_target_c,
+                target_dhw_c,
+                rel_tol=0.0,
+                abs_tol=0.1,
+            ):
+                continue
         sample_oat = _feature(component.features, "outdoor_temperature_c")
         distance = (
             abs(sample_oat - target_oat)
@@ -226,10 +247,6 @@ def _component_power_w(spec, target, history, context, weather, request) -> floa
     samples.sort(key=lambda item: item[0])
     base = statistics.median(value for _, value in samples[:12]) if samples else 0.0
 
-    driver = next(
-        (item for item in context.drivers if item.driver_key == spec.component_key),
-        None,
-    )
     horizon_h = max(0.0, (target.timestamp() * 1000 - request.as_of_ms) / 3_600_000.0)
     if spec.profile == LOAD_PROFILE_HEAT_PUMP and spec.component_key == "heat_pump_dhw":
         if not time_allowed(target, spec.allowed_windows):

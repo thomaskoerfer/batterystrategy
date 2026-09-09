@@ -60,16 +60,22 @@ forecast of current compressor power. The configured target is the cut-out
 temperature; the cut-in temperature is target minus hysteresis. While a cycle
 is active, the model estimates remaining electrical energy from the measured
 temperature deficit and robust `kWh/K` evidence from comparable completed
-cycles. Comparable cycles are weighted by initial temperature lift, source
-temperature, circulation, time of day and day type. Replanning may update that
-estimate from new measurements, but it must not restart a fixed-duration
-continuation. Cycle efficiency is learned from the electrical energy and the
-observed start-to-peak temperature lift. A cycle is training evidence only
+cycles. Comparable cycle energy is weighted by initial temperature lift,
+source temperature and circulation. Time of day and day type remain timing
+features and do not proxy physical `kWh/K`. Replanning may update that estimate
+from new measurements, but it must not restart a fixed-duration continuation.
+Cycle efficiency is learned from the electrical energy and the observed
+start-to-peak temperature lift. A cycle is training evidence only
 after a clean active-to-inactive transition; an activity gap or unusable energy
 interval invalidates the complete cycle rather than creating partial cycles.
-Recorded targets provide context, while the observed peak proves whether a
-cycle physically reached the current cut-out. This separates real thermostat
-regimes without retaining source-mapping compatibility branches.
+Every material active sample's recorded target must match the current target,
+reliable temperatures must bracket the event, and the observed peak must reach
+the cut-out. Target values from a sub-threshold transition ramp are ignored
+because a quarter-hour aggregate can mix inactive and active source states. A
+target change therefore starts a clean learning regime; records with a missing
+or different material target are neither translated nor recovered by matching
+their peak. Changing a source that preserves the same normalized semantics does
+not create an artificial device-specific regime.
 If a live cycle first appears inside an unfinished slot, the model immediately
 publishes its complete thermally estimated remaining energy. Energy estimated
 since the configured charging or hot-water activity state actually became
@@ -88,13 +94,18 @@ expected cut-in temperature, learned peak and weighted cycle efficiency; the
 prior shape is then scaled to that total within learned cycle power. Thus a
 one-slot timing difference does not move the event, but it also no longer
 freezes a stale historical energy total. The correction may move only the
-prior's next cycle, must start inside a configured allowed window and cannot
-overlap a following prior cycle. These constraints prevent sparse draw events
-or sensor noise from causing speculative recursive temperature rollout and
-quarter-hour forecast churn. A tank already at or below cut-in is a direct
+prior's next cycle and must start inside a configured allowed window. If the
+rescaled physical event reaches another prior event, all touched fragments are
+replaced by the single coherent cycle instead of retaining stale energy or
+double counting. These constraints prevent sparse draw events or sensor noise
+from causing speculative recursive temperature rollout and quarter-hour
+forecast churn. A tank already at or below cut-in is a direct
 thermostat trigger and moves the cycle only to the next configured allowed
 window. Missing or discontinuous timing evidence leaves the timing prior
 intact; complete thermal cycles continue to calibrate its energy.
+Both the historical activity shape and empirical timing samples use the same
+target-regime filter as cycle energy, so an old regime cannot create or move a
+new-regime event.
 
 Outdoor temperature is a performance feature for hot-water recovery because it
 can affect COP, electrical energy per kelvin and duration. It is not treated as
@@ -120,7 +131,11 @@ one-household correction branches.
 Models consume normalized contracts, never entity IDs, addresses, device serial
 numbers, hostnames or installation URLs. Supported provider/device classes may
 be documented, but model semantics must remain portable to another installation
-with equivalent normalized inputs.
+with equivalent normalized inputs. Replacing a source with equivalent normalized
+semantics intentionally preserves learning. The model cannot infer a semantic
+source correction when target and feature keys stay unchanged; known corrupted
+feature history must therefore be reset operationally before it is trusted for
+learning. No source-ID compatibility branch is embedded in the model.
 
 ## Verification
 
@@ -131,10 +146,13 @@ changes cannot affect each other unintentionally.
 
 Hot-water changes additionally require walk-forward comparison against the
 released model over every usable retained cycle in the evaluated thermostat
-regime. Start-time, slot-energy and total-cycle energy error and bias are
-reported. Timing and slot error must improve without increasing missed cycles;
-otherwise the candidate is rejected even if its physical model appears
-plausible.
+regime. Production cycle extraction defines that population for the evaluator
+as well. Start-time and missed-cycle metrics assess timing; slot-energy error
+assesses placement; total-cycle MAE and bias are calculated only for the first
+contiguous predicted event and assess energy independently of later events in
+the horizon. A change must improve the metrics it is intended to affect without
+regressing unrelated behavior. Any unavoidable slot-placement tradeoff from an
+unchanged timing error must be reported explicitly.
 
 Run the same repository script with each code checkout on one copied feature
 store and compare the JSON summaries:
@@ -145,6 +163,12 @@ PYTHONPATH="$CHECKOUT" python scripts/battery_strategy_dhw_walkforward.py \
   --timezone Europe/Berlin --target-c 53 --hysteresis-k 9 \
   --allowed-windows '03:00-05:00,09:00-17:00'
 ```
+
+The replay calls the production component-baseline function, including target
+regime and outdoor-temperature sample selection. Since historical weather-
+forecast vintages are not retained, it uses the outdoor temperature known at
+the replay cutoff as the future-weather input; this limitation applies equally
+to compared versions and must be stated with reported results.
 
 ## Production status
 

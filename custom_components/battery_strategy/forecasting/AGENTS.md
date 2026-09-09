@@ -17,10 +17,22 @@ This package owns pure forecasting from normalized inputs.
   its prior timing remains unchanged; do not add an unvalidated recursive
   tank-temperature simulation.
 - Treat an activity gap or unusable energy interval as invalidating the whole
-  DHW training cycle. A target change is a new thermostat regime unless the
-  observed cycle peak proves that the same cut-out was physically reached.
-- Accept a DHW timing change only after walk-forward history improves both
-  start-time and slot-energy error without adding missed cycles.
+  DHW training cycle. Missing boundary temperatures or a missing recorded target
+  on a material active sample also invalidate it. Ignore target readings from a
+  sub-threshold transition ramp, where interval aggregation can mix inactive
+  and active source states. A target change is a new thermostat regime and must
+  learn fresh evidence; never reinterpret records from another target by
+  matching their observed peak.
+- Keep event-timing features separate from cycle-energy features. Time and day
+  type may select when a cycle occurs; electrical `kWh/K` may depend on thermal
+  lift, source temperature and circulation, but not on clock time by proxy.
+- Evaluate timing, event energy and slot placement separately. A timing change
+  must improve start error without adding missed cycles. An energy-only change
+  must improve cycle-energy error and bias; report any slot-error tradeoff
+  caused by unchanged timing rather than hiding it in a horizon-wide total.
+- Do not add provider/source identity to the pure model. Equivalent normalized
+  sources share learning; a known semantic correction with unchanged feature
+  keys requires an operational feature-history reset and explicit reevaluation.
 
 Run deterministic replay, model-isolation, component-composition, uncertainty
 and load/PV quality tests for changes in this package.

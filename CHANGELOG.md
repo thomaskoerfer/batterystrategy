@@ -12,14 +12,26 @@ All notable changes to Battery Strategy are documented here.
 - Preserve the historical slot shape while scaling it to the thermally learned
   cycle total, and include circulation state in cycle similarity.
 - Treat discontinuous or unusable active energy as invalidating a complete
-  training cycle instead of learning false partial cycles. Thermostat regimes
-  are identified by the physically observed cut-out rather than compatibility
-  with an obsolete source mapping.
+  training cycle instead of learning false partial cycles. Missing boundary
+  temperatures and missing or mixed targets on material active samples also
+  invalidate training evidence; sub-threshold transition ramps do not define a
+  regime. A changed thermostat target starts fresh learning, and records are not
+  translated through a compatibility path.
+- Filter the historical DHW timing/shape baseline by the current thermostat
+  target as well, so the warm-up path cannot reuse energy from an old regime.
+- Filter empirical next-cycle timing evidence by that target too, preventing an
+  old regime from shifting a current above-cut-in forecast.
+- Separate physical cycle-energy similarity (temperature lift, source
+  temperature and circulation) from time/day event-timing similarity.
+- Replace every touched historical-cycle fragment when a thermally rescaled
+  cycle overlaps it, avoiding stale or double-counted baseline energy.
 
 ### Evaluation
 
 - Extend DHW walk-forward output with total-energy MAE and bias, and evaluate
-  only cycles belonging to the requested thermostat regime.
+  only cycles belonging to the requested thermostat regime. The evaluator now
+  reuses production cycle extraction and compares the first contiguous forecast
+  event with the matching actual cycle rather than summing unrelated events.
 
 ## [0.2.0-rc.21] - 2026-09-08
 

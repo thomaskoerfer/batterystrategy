@@ -105,6 +105,16 @@ def _completed_cycle(
     base = dt.datetime(2026, 8, day, 3, 0, tzinfo=TZ)
     return (
         _history_slot(
+            base - dt.timedelta(minutes=15),
+            dhw_kwh=0.0,
+            dhw_temperature_c=start_temperature_c + 0.2,
+            charging_fraction=0.0 if include_charging_feature else None,
+            outdoor_temperature_c=outdoor_temperature_c,
+            quality=quality,
+            heating_kwh=heating_kwh,
+            target_temperature_c=target_temperature_c,
+        ),
+        _history_slot(
             base,
             dhw_kwh=0.60 * energy_scale,
             dhw_temperature_c=start_temperature_c,
@@ -225,6 +235,24 @@ def _with_dhw_feature(
         slot,
         load_components=(
             replace(dhw, features=(*dhw.features, _feature(key, value))),
+            *slot.load_components[1:],
+        ),
+    )
+
+
+def _without_dhw_feature(
+    slot: HistoricalFeatureSlot, key: str
+) -> HistoricalFeatureSlot:
+    dhw = slot.load_components[0]
+    return replace(
+        slot,
+        load_components=(
+            replace(
+                dhw,
+                features=tuple(
+                    feature for feature in dhw.features if feature.feature_key != key
+                ),
+            ),
             *slot.load_components[1:],
         ),
     )
@@ -419,7 +447,7 @@ def test_temperature_timing_cannot_start_outside_allowed_window():
     assert forecast.dhw_kwh == baseline
 
 
-def test_temperature_timing_does_not_overwrite_following_cycle():
+def test_temperature_timing_merges_overlapping_prior_cycles():
     baseline = tuple(
         0.3 if 6 <= index <= 8 or 10 <= index <= 12 else 0.0 for index in range(20)
     )
@@ -431,7 +459,9 @@ def test_temperature_timing_does_not_overwrite_following_cycle():
         dhw_baseline=baseline,
     )
 
-    assert forecast.dhw_kwh == baseline
+    assert forecast.dhw_kwh[:10] == (0.0,) * 10
+    assert sum(forecast.dhw_kwh) == pytest.approx(1.65)
+    assert forecast.dhw_kwh[13:] == (0.0,) * 7
 
 
 def test_temperature_timing_beyond_horizon_is_not_clamped_to_last_slot():
@@ -451,6 +481,47 @@ def test_temperature_timing_beyond_horizon_is_not_clamped_to_last_slot():
             _temperature_timing_history(),
             46.2,
             0.0,
+            53.0,
+        )
+        is None
+    )
+
+
+def test_temperature_timing_ignores_old_target_above_cut_in():
+    current = dt.datetime(2026, 9, 6, 10, 0, tzinfo=TZ)
+    request = ForecastRequest(
+        int(current.astimezone(dt.UTC).timestamp() * 1000),
+        "Europe/Berlin",
+        tuple(_slot(current + dt.timedelta(minutes=15 * index)) for index in range(20)),
+    )
+    old_regime = []
+    for item in _temperature_timing_history():
+        dhw = item.load_components[0]
+        old_regime.append(
+            replace(
+                item,
+                load_components=(
+                    replace(
+                        dhw,
+                        features=tuple(
+                            _feature("dhw_target_c", 50.0)
+                            if feature.feature_key == "dhw_target_c"
+                            else feature
+                            for feature in dhw.features
+                        ),
+                    ),
+                    *item.load_components[1:],
+                ),
+            )
+        )
+
+    assert (
+        estimate_next_cycle_start(
+            request,
+            tuple(old_regime),
+            46.2,
+            0.0,
+            53.0,
         )
         is None
     )
@@ -582,7 +653,7 @@ def test_hysteresis_crossing_replaces_later_historical_cycle():
     assert forecast.dhw_kwh[44] == 0.0
 
 
-def test_hysteresis_crossing_does_not_partially_overwrite_following_cycle():
+def test_hysteresis_crossing_replaces_overlapping_following_cycle():
     history = tuple(
         replace(
             item,
@@ -603,7 +674,9 @@ def test_hysteresis_crossing_does_not_partially_overwrite_following_cycle():
         dhw_baseline=baseline,
     )
 
-    assert forecast.dhw_kwh == baseline
+    assert forecast.dhw_kwh[40] > 0.0
+    assert sum(forecast.dhw_kwh) == pytest.approx(1.575)
+    assert forecast.dhw_kwh[43:] == (0.0,) * 5
 
 
 def test_active_cycle_uses_remaining_delta_t_instead_of_rolling_45_minutes():
@@ -792,6 +865,158 @@ def test_different_setpoint_regime_is_not_used_for_future_cycle_energy():
     )
 
     assert forecast.dhw_kwh == baseline
+
+
+def test_mislabeled_setpoint_is_not_recovered_from_matching_peak():
+    mislabeled_cycles = tuple(
+        item
+        for day in range(23, 27)
+        for item in _completed_cycle(
+            day,
+            target_temperature_c=44.0,
+            peak_temperature_c=55.0,
+            energy_scale=3.0,
+        )
+    )
+    baseline = (0.30, 0.25, 0.20)
+
+    forecast = _future_inactive_case(
+        current=dt.datetime(2026, 9, 6, 3, 0, tzinfo=TZ),
+        temperature_c=46.0,
+        history=mislabeled_cycles,
+        dhw_baseline=baseline,
+    )
+
+    assert forecast.dhw_kwh == baseline
+
+
+def test_old_regime_activity_cannot_suppress_direct_thermal_trigger():
+    current_regime = tuple(
+        item for day in range(23, 27) for item in _completed_cycle(day)
+    )
+    old_regime_activity = tuple(
+        _history_slot(
+            dt.datetime(2026, 8, day, 10, minute, tzinfo=TZ),
+            dhw_kwh=energy,
+            dhw_temperature_c=temperature,
+            charging_fraction=fraction,
+            target_temperature_c=50.0,
+        )
+        for day in (9, 16, 23, 30)
+        for minute, energy, temperature, fraction in (
+            (0, 0.60, 44.0, 1.0),
+            (15, 0.75, 48.0, 1.0),
+            (30, 0.30, 51.0, 0.4),
+            (45, 0.0, 51.0, 0.0),
+        )
+    )
+
+    forecast = _future_inactive_case(
+        current=dt.datetime(2026, 9, 6, 10, 0, tzinfo=TZ),
+        temperature_c=44.0,
+        history=current_regime + old_regime_activity,
+        dhw_baseline=(0.0, 0.0, 0.0),
+    )
+
+    assert sum(forecast.dhw_kwh) > 1.0
+
+
+def test_cycle_without_recorded_target_is_not_energy_training_evidence():
+    cycles = tuple(
+        _without_dhw_feature(item, "dhw_target_c")
+        for day in range(23, 27)
+        for item in _completed_cycle(day, energy_scale=4.0)
+    )
+
+    forecast = _case(
+        49.0,
+        history_prefix=cycles,
+        include_default_cycles=False,
+        current_power_w=2000.0,
+        dhw_baseline=(0.3, 0.0, 0.0),
+    )
+
+    assert forecast.dhw_kwh == pytest.approx((0.5, 0.0, 0.0))
+
+
+def test_cycle_with_mixed_targets_is_not_energy_training_evidence():
+    cycles = []
+    for day in range(23, 27):
+        cycle = list(_completed_cycle(day, energy_scale=4.0))
+        dhw = cycle[2].load_components[0]
+        cycle[2] = replace(
+            cycle[2],
+            load_components=(
+                replace(
+                    dhw,
+                    features=tuple(
+                        _feature("dhw_target_c", 50.0)
+                        if feature.feature_key == "dhw_target_c"
+                        else feature
+                        for feature in dhw.features
+                    ),
+                ),
+                *cycle[2].load_components[1:],
+            ),
+        )
+        cycles.extend(cycle)
+
+    forecast = _case(
+        49.0,
+        history_prefix=tuple(cycles),
+        include_default_cycles=False,
+        current_power_w=2000.0,
+        dhw_baseline=(0.3, 0.0, 0.0),
+    )
+
+    assert forecast.dhw_kwh == pytest.approx((0.5, 0.0, 0.0))
+
+
+@pytest.mark.parametrize("boundary_index", [0, 4])
+def test_cycle_without_reliable_boundary_temperature_is_not_training_evidence(
+    boundary_index: int,
+):
+    cycles = []
+    for day in range(23, 27):
+        cycle = list(_completed_cycle(day, energy_scale=4.0))
+        cycle[boundary_index] = _without_dhw_feature(
+            cycle[boundary_index], "dhw_temperature_c"
+        )
+        cycles.extend(cycle)
+
+    forecast = _case(
+        49.0,
+        history_prefix=tuple(cycles),
+        include_default_cycles=False,
+        current_power_w=2000.0,
+        dhw_baseline=(0.3, 0.0, 0.0),
+    )
+
+    assert forecast.dhw_kwh == pytest.approx((0.5, 0.0, 0.0))
+
+
+def test_higher_cutout_regime_is_not_used_for_future_cycle_energy():
+    current_regime = tuple(
+        item for day in range(23, 27) for item in _completed_cycle(day)
+    )
+    higher_regime = tuple(
+        item
+        for day in range(27, 31)
+        for item in _completed_cycle(
+            day,
+            target_temperature_c=60.0,
+            peak_temperature_c=62.0,
+            energy_scale=3.0,
+        )
+    )
+
+    reference = _case(49.0, history_prefix=current_regime)
+    with_higher_regime = _case(
+        49.0,
+        history_prefix=current_regime + higher_regime,
+    )
+
+    assert with_higher_regime.dhw_kwh == pytest.approx(reference.dhw_kwh)
 
 
 def test_cycle_efficiency_uses_historical_start_to_peak_lift():

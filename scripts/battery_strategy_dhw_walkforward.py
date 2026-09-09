@@ -10,7 +10,8 @@ import statistics
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from custom_components.battery_strategy.component_config import time_allowed
+from custom_components.battery_strategy.component_config import LoadComponentSpec
+from custom_components.battery_strategy.const import LOAD_PROFILE_HEAT_PUMP
 from custom_components.battery_strategy.contracts import (
     ForecastRequest,
     HistoricalFeatureSlot,
@@ -19,16 +20,18 @@ from custom_components.battery_strategy.contracts import (
     LoadFeatureValue,
     LoadForecastContext,
     SlotKey,
+    WeatherSlot,
 )
 from custom_components.battery_strategy.feature_store import CompressedFeatureStore
+from custom_components.battery_strategy.forecasting.components import _component_power_w
 from custom_components.battery_strategy.forecasting.heat_pump import (
     adjust_heat_pump_forecast,
+    completed_dhw_cycles,
 )
 from custom_components.battery_strategy.forecasting.history import ForecastTargetInput
 
 SLOT_MS = 15 * 60 * 1000
 MIN_ACTIVE_ENERGY_KWH = 0.02
-MIN_ACTIVE_FRACTION = 0.05
 
 
 def _component(item: HistoricalFeatureSlot) -> LoadComponentEnergy | None:
@@ -51,98 +54,6 @@ def _feature(component: LoadComponentEnergy | None, key: str) -> float | None:
     return value.value
 
 
-def _activity(item: HistoricalFeatureSlot) -> bool | None:
-    component = _component(item)
-    if component is None:
-        return None
-    charging = _feature(component, "dhw_charging_fraction")
-    if charging is not None and charging >= MIN_ACTIVE_FRACTION:
-        return True
-    if component.quality.coverage >= 0.999 and not component.quality.flags:
-        return component.energy_kwh >= MIN_ACTIVE_ENERGY_KWH
-    if charging is not None:
-        return False
-    return None
-
-
-def _cycle_groups(
-    history: tuple[HistoricalFeatureSlot, ...],
-) -> list[list[HistoricalFeatureSlot]]:
-    groups: list[list[HistoricalFeatureSlot]] = []
-    current: list[HistoricalFeatureSlot] = []
-    valid = False
-    last_end_ms: int | None = None
-    for item in history:
-        activity = _activity(item)
-        if current and last_end_ms != item.slot.start_ms:
-            current = []
-            valid = False
-        if current:
-            last_end_ms = item.slot.end_ms
-            if activity is True:
-                current.append(item)
-                component = _component(item)
-                valid = bool(
-                    valid
-                    and component is not None
-                    and component.quality.coverage >= 0.999
-                    and not component.quality.flags
-                )
-                continue
-            if activity is None:
-                valid = False
-                continue
-            if valid:
-                groups.append(current)
-            current = []
-            valid = False
-        if activity is True:
-            component = _component(item)
-            current = [item]
-            valid = bool(
-                component is not None
-                and component.quality.coverage >= 0.999
-                and not component.quality.flags
-            )
-            last_end_ms = item.slot.end_ms
-    return groups
-
-
-def _cycle_target(group: list[HistoricalFeatureSlot]) -> float | None:
-    values = [
-        value
-        for item in group
-        if (value := _feature(_component(item), "dhw_target_c")) is not None
-    ]
-    return float(statistics.median(values)) if values else None
-
-
-def _baseline_energy(
-    history: tuple[HistoricalFeatureSlot, ...],
-    local_start: dt.datetime,
-) -> float:
-    target_slot = local_start.hour * 4 + local_start.minute // 15
-    target_weekend = local_start.weekday() >= 5
-    values = []
-    for item in history:
-        component = _component(item)
-        if (
-            component is None
-            or component.quality.coverage < 0.999
-            or component.quality.flags
-        ):
-            continue
-        local = dt.datetime.fromtimestamp(
-            item.slot.start_ms / 1000.0, dt.UTC
-        ).astimezone(local_start.tzinfo)
-        if (
-            local.hour * 4 + local.minute // 15 == target_slot
-            and (local.weekday() >= 5) == target_weekend
-        ):
-            values.append(component.energy_kwh)
-    return float(statistics.median(values[-12:])) if values else 0.0
-
-
 def evaluate(args: argparse.Namespace) -> dict[str, object]:
     """Replay every mature cycle using only evidence available at each cutoff."""
     store = CompressedFeatureStore(args.feature_store)
@@ -155,17 +66,28 @@ def evaluate(args: argparse.Namespace) -> dict[str, object]:
         item.slot.start_ms: component.energy_kwh
         for item in all_slots
         if (component := _component(item)) is not None
+        and component.quality.coverage >= 0.999
+        and not component.quality.flags
     }
+    evaluation_as_of_ms = max((item.slot.end_ms for item in all_slots), default=0)
+    evaluation_request = ForecastRequest(
+        evaluation_as_of_ms,
+        args.timezone,
+        (SlotKey(evaluation_as_of_ms, evaluation_as_of_ms + SLOT_MS),),
+    )
+    actual_cycles = completed_dhw_cycles(all_slots, evaluation_request, args.target_c)
+    dhw_spec = LoadComponentSpec(
+        "heat_pump_dhw",
+        LOAD_PROFILE_HEAT_PUMP,
+        args.allowed_windows,
+    )
     rows = []
-    for group in _cycle_groups(all_slots):
-        cycle_target = _cycle_target(group)
-        if cycle_target is None or abs(cycle_target - args.target_c) > 0.1:
-            continue
-        actual_start_ms = group[0].slot.start_ms
+    for cycle in actual_cycles:
+        actual_start_ms = cycle.start_ms
         for lead_hours in args.lead_hours:
             as_of_ms = actual_start_ms - round(lead_hours * 3_600_000)
             history = tuple(item for item in all_slots if item.slot.end_ms <= as_of_ms)
-            if len(history) < minimum_history_slots:
+            if not history or len(history) < minimum_history_slots:
                 continue
             current = _component(history[-1])
             temperature_c = _feature(current, "dhw_temperature_c")
@@ -208,11 +130,22 @@ def evaluate(args: argparse.Namespace) -> dict[str, object]:
                     LoadDriverSnapshot("heat_pump_space_heating", 0.0),
                 ),
             )
+            current_oat_c = _feature(current, "outdoor_temperature_c")
+            replay_weather = tuple(
+                WeatherSlot(slot, temperature_c=current_oat_c) for slot in slots
+            )
             baseline = tuple(
-                _baseline_energy(history, target.local_start)
-                if time_allowed(target.local_start, args.allowed_windows)
-                else 0.0
-                for target in targets
+                _component_power_w(
+                    dhw_spec,
+                    target.local_start,
+                    history,
+                    context,
+                    replay_weather[index],
+                    request,
+                )
+                * 0.25
+                / 1000.0
+                for index, target in enumerate(targets)
             )
             forecast = adjust_heat_pump_forecast(
                 request,
@@ -222,6 +155,7 @@ def evaluate(args: argparse.Namespace) -> dict[str, object]:
                 args.allowed_windows,
                 baseline,
                 tuple(0.0 for _ in baseline),
+                tuple(current_oat_c for _ in slots),
             ).dhw_kwh
             predicted_start_ms = next(
                 (
@@ -231,14 +165,14 @@ def evaluate(args: argparse.Namespace) -> dict[str, object]:
                 ),
                 None,
             )
-            slot_mae = statistics.fmean(
-                abs(forecast[index] - actual_by_start.get(slot.start_ms, 0.0))
+            slot_errors = tuple(
+                abs(forecast[index] - actual_by_start[slot.start_ms])
                 for index, slot in enumerate(slots)
+                if slot.start_ms in actual_by_start
             )
-            forecast_energy_kwh = sum(forecast)
-            actual_energy_kwh = sum(
-                actual_by_start.get(slot.start_ms, 0.0) for slot in slots
-            )
+            slot_mae = statistics.fmean(slot_errors) if slot_errors else None
+            forecast_energy_kwh = first_cycle_energy(forecast)
+            actual_energy_kwh = cycle.total_energy_kwh
             rows.append(
                 {
                     "actual_start_ms": actual_start_ms,
@@ -264,6 +198,16 @@ def evaluate(args: argparse.Namespace) -> dict[str, object]:
             for item in selected
             if item["start_error_minutes"] is not None
         ]
+        energy_errors = [
+            item["energy_error_kwh"]
+            for item in selected
+            if item["predicted_start_ms"] is not None
+        ]
+        slot_errors = [
+            item["slot_mae_kwh"]
+            for item in selected
+            if item["slot_mae_kwh"] is not None
+        ]
         summary[str(lead_hours)] = {
             "cycles": len(selected),
             "missed_cycles": sum(
@@ -272,20 +216,14 @@ def evaluate(args: argparse.Namespace) -> dict[str, object]:
             "start_mae_minutes": (
                 statistics.fmean(start_errors) if start_errors else None
             ),
-            "slot_mae_kwh": (
-                statistics.fmean(item["slot_mae_kwh"] for item in selected)
-                if selected
-                else None
-            ),
+            "slot_mae_kwh": (statistics.fmean(slot_errors) if slot_errors else None),
             "energy_mae_kwh": (
-                statistics.fmean(abs(item["energy_error_kwh"]) for item in selected)
-                if selected
+                statistics.fmean(abs(value) for value in energy_errors)
+                if energy_errors
                 else None
             ),
             "energy_bias_kwh": (
-                statistics.fmean(item["energy_error_kwh"] for item in selected)
-                if selected
-                else None
+                statistics.fmean(energy_errors) if energy_errors else None
             ),
         }
     return {
@@ -302,6 +240,26 @@ def evaluate(args: argparse.Namespace) -> dict[str, object]:
         "summary": summary,
         "rows": rows,
     }
+
+
+def first_cycle_energy(forecast: tuple[float, ...]) -> float:
+    """Return one contiguous forecast event, excluding later cycles."""
+    start = next(
+        (
+            index
+            for index, value in enumerate(forecast)
+            if value >= MIN_ACTIVE_ENERGY_KWH
+        ),
+        None,
+    )
+    if start is None:
+        return 0.0
+    total = 0.0
+    for value in forecast[start:]:
+        if value < MIN_ACTIVE_ENERGY_KWH:
+            break
+        total += value
+    return total
 
 
 def _arguments() -> argparse.Namespace:

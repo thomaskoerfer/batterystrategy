@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import math
 import statistics
 from bisect import bisect_left
 from dataclasses import dataclass
@@ -30,9 +31,10 @@ def estimate_next_cycle_start(
     history: tuple[HistoricalFeatureSlot, ...],
     temperature_c: float,
     circulation_fraction: float | None,
+    target_c: float,
 ) -> int | None:
     """Return the nearest slot for the next cycle from comparable tank states."""
-    samples = _trigger_samples(history, request)
+    samples = _trigger_samples(history, request, target_c)
     if not samples or not request.slots:
         return None
     local = dt.datetime.fromtimestamp(request.as_of_ms / 1000.0, dt.UTC).astimezone(
@@ -81,7 +83,9 @@ def estimate_next_cycle_start(
 
 
 def _trigger_samples(
-    history: tuple[HistoricalFeatureSlot, ...], request: ForecastRequest
+    history: tuple[HistoricalFeatureSlot, ...],
+    request: ForecastRequest,
+    target_c: float,
 ) -> tuple[_TriggerSample, ...]:
     timezone = ZoneInfo(request.timezone)
     eligible = tuple(
@@ -91,20 +95,23 @@ def _trigger_samples(
     segment: list[HistoricalFeatureSlot] = []
     for item in eligible:
         if segment and segment[-1].slot.end_ms != item.slot.start_ms:
-            samples.extend(_segment_samples(segment, timezone))
+            samples.extend(_segment_samples(segment, timezone, target_c))
             segment = []
         segment.append(item)
-    samples.extend(_segment_samples(segment, timezone))
+    samples.extend(_segment_samples(segment, timezone, target_c))
     return tuple(samples)
 
 
 def _segment_samples(
-    history: list[HistoricalFeatureSlot], timezone: ZoneInfo
+    history: list[HistoricalFeatureSlot],
+    timezone: ZoneInfo,
+    target_c: float,
 ) -> list[_TriggerSample]:
     cycle_starts = []
     was_active = False
     for item in history:
-        is_active = _active(_component(item))
+        component = _component(item)
+        is_active = _active(component) and _target_matches(component, target_c)
         if is_active and not was_active:
             cycle_starts.append(item.slot.start_ms)
         was_active = is_active
@@ -112,7 +119,7 @@ def _segment_samples(
     samples = []
     for item in history:
         component = _component(item)
-        if not _inactive(component):
+        if not _inactive(component) or not _target_matches(component, target_c):
             continue
         temperature_c = _feature(component, "dhw_temperature_c")
         if temperature_c is None:
@@ -180,6 +187,16 @@ def _active(component: LoadComponentEnergy | None) -> bool:
     charging = _feature(component, "dhw_charging_fraction")
     return component.energy_kwh >= _MIN_CYCLE_ENERGY_KWH or (
         charging is not None and charging >= _MIN_ACTIVE_FRACTION
+    )
+
+
+def _target_matches(component: LoadComponentEnergy | None, target_c: float) -> bool:
+    value = _feature(component, "dhw_target_c")
+    return value is not None and math.isclose(
+        value,
+        target_c,
+        rel_tol=0.0,
+        abs_tol=0.1,
     )
 
 

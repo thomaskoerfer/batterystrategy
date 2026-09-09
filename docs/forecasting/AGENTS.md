@@ -28,9 +28,12 @@ extend current compressor power by restarting a rolling duration. Model the
 shared-compressor and post-hot-water heating-recovery relationship inside the
 heat-pump forecast implementation while continuing to publish separate load
 components. Learn cycle efficiency from the observed start-to-peak temperature
-lift. A historical target below the current cut-out must not be interpreted as
-thermal overshoot beyond that cut-out; target changes and corrected source
-mappings must not fabricate remaining cycle energy. Do not add weather features
+lift. Every material active sample must carry the same reliable target as the
+current thermostat regime; missing or mixed targets are not training evidence.
+A sub-threshold transition ramp is not target evidence because interval
+aggregation can mix inactive and active source states. A target change starts
+fresh learning, and historical baseline energy must be filtered by that same
+regime. Do not infer compatibility from a matching peak or add weather features
 such as humidity without demonstrated incremental walk-forward value.
 
 ## Setup independence

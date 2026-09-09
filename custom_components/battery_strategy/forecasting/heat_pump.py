@@ -6,7 +6,6 @@ import datetime as dt
 import math
 import statistics
 from dataclasses import dataclass
-from zoneinfo import ZoneInfo
 
 from ..component_config import time_allowed
 from ..contracts import (
@@ -35,6 +34,8 @@ class HeatPumpComponentForecast:
 
 @dataclass(frozen=True, slots=True)
 class _DhwCycle:
+    start_ms: int
+    end_ms: int
     total_energy_kwh: float
     active_hours: float
     start_temperature_c: float
@@ -42,8 +43,6 @@ class _DhwCycle:
     peak_temperature_c: float
     outdoor_temperature_c: float | None
     circulation_fraction: float | None
-    local_start_minute: int
-    weekend: bool
 
     @property
     def active_power_w(self) -> float:
@@ -56,8 +55,6 @@ class _DhwCycle:
 class _ObservedCycle:
     energy_kwh: float
     start_temperature_c: float | None
-    local_start_minute: int
-    weekend: bool
     accounted_through_ms: int | None
 
 
@@ -87,7 +84,11 @@ def adjust_heat_pump_forecast(
         )
     )
 
-    historical_active_fraction = _historical_active_fractions(history, targets)
+    historical_active_fraction = _historical_active_fractions(
+        history,
+        targets,
+        target_c,
+    )
     dhw = list(dhw_baseline_kwh)
     active_fraction = list(historical_active_fraction)
     if (
@@ -97,7 +98,7 @@ def adjust_heat_pump_forecast(
         and hysteresis_k > 0
         and target_c > hysteresis_k
     ):
-        cycles = _completed_cycles(history, request, target_c)
+        cycles = completed_dhw_cycles(history, request, target_c)
         observed = _observed_cycle(history, request)
         if cycles:
             dhw, active_fraction = _project_next_thermal_cycle(
@@ -162,7 +163,6 @@ def adjust_heat_pump_forecast(
                 ),
                 measured_power_w,
                 remaining_slot_h,
-                observed.weekend,
                 unfinalized_duration_h,
                 _driver_feature(dhw_driver, "circulation_fraction"),
             )
@@ -239,7 +239,6 @@ def _project_next_thermal_cycle(
             outdoor_temperature_c,
             dhw_driver.power_w if dhw_driver is not None else 0.0,
             remaining_slot_h,
-            observed.weekend,
             _unfinalized_cycle_duration_h(request, observed, active_age_s),
             _driver_feature(dhw_driver, "circulation_fraction"),
         )
@@ -285,6 +284,7 @@ def _project_next_thermal_cycle(
             history,
             temperature_c,
             _driver_feature(dhw_driver, "circulation_fraction"),
+            target_c,
         )
         if start_index is None:
             return energy, fractions
@@ -305,9 +305,6 @@ def _project_next_thermal_cycle(
         cycles,
         max(0.1, target_c - cycle_start_temperature_c),
         outdoor_temperature_c,
-        targets[start_index].local_start.hour * 60
-        + targets[start_index].local_start.minute,
-        targets[start_index].local_start.weekday() >= 5,
         target_c,
         _driver_feature(dhw_driver, "circulation_fraction"),
     )
@@ -333,18 +330,18 @@ def _project_next_thermal_cycle(
             respect_allowed_windows=False,
         )
     if baseline_cycle is not None:
-        following_cycle = _next_baseline_cycle(
+        replacement_end = max(baseline_cycle[1], allocated_end or baseline_cycle[1])
+        search_from = baseline_cycle[1] + 1
+        while following_cycle := _next_baseline_cycle(
             baseline_kwh,
             baseline_active_fraction,
-            baseline_cycle[1] + 1,
-        )
-        if (
-            following_cycle is not None
-            and allocated_end is not None
-            and allocated_end >= following_cycle[0]
+            search_from,
         ):
-            return energy, fractions
-        for clear_index in range(baseline_cycle[0], baseline_cycle[1] + 1):
+            if following_cycle[0] > replacement_end:
+                break
+            replacement_end = max(replacement_end, following_cycle[1])
+            search_from = following_cycle[1] + 1
+        for clear_index in range(baseline_cycle[0], replacement_end + 1):
             energy[clear_index] = 0.0
             fractions[clear_index] = 0.0
     _copy_allocation(energy, fractions, allocated, allocated_fractions)
@@ -427,10 +424,7 @@ def _scale_baseline_cycle(
     if baseline_total <= 0 or required_kwh <= 0:
         return energy, fractions, None
     scale = required_kwh / baseline_total
-    slot_capacity_kwh = max(
-        active_power_w * SLOT_H / 1000.0,
-        max(baseline_kwh[source_start : baseline_cycle[1] + 1]),
-    )
+    slot_capacity_kwh = active_power_w * SLOT_H / 1000.0
     last_index = None
     remaining = 0.0
     source_values = baseline_kwh[source_start : baseline_cycle[1] + 1]
@@ -461,7 +455,6 @@ def _remaining_cycle_energy(
     outdoor_temperature_c: float | None,
     measured_power_w: float,
     remaining_slot_h: float,
-    weekend: bool,
     unfinalized_duration_h: float,
     circulation_fraction: float | None = None,
 ) -> tuple[float, float]:
@@ -477,8 +470,6 @@ def _remaining_cycle_energy(
         cycles,
         start_delta_k,
         outdoor_temperature_c,
-        observed.local_start_minute,
-        weekend,
         target_c,
         circulation_fraction,
     )
@@ -511,8 +502,6 @@ def _cycle_characteristics(
     cycles: tuple[_DhwCycle, ...],
     start_delta_k: float,
     outdoor_temperature_c: float | None,
-    local_start_minute: int,
-    weekend: bool,
     target_c: float,
     circulation_fraction: float | None = None,
 ) -> tuple[float, float, float]:
@@ -520,8 +509,7 @@ def _cycle_characteristics(
         cycles,
         start_delta_k,
         outdoor_temperature_c,
-        local_start_minute,
-        weekend,
+        target_c,
         circulation_fraction,
     )
     weights = tuple(weight for _, weight in comparable)
@@ -581,11 +569,10 @@ def _nearest_cycles(
     cycles: tuple[_DhwCycle, ...],
     start_delta_k: float,
     outdoor_temperature_c: float | None,
-    local_start_minute: int,
-    weekend: bool,
+    target_c: float,
     circulation_fraction: float | None,
 ) -> tuple[tuple[_DhwCycle, float], ...]:
-    deltas = [cycle.peak_temperature_c - cycle.start_temperature_c for cycle in cycles]
+    deltas = [target_c - cycle.start_temperature_c for cycle in cycles]
     oats = [
         cycle.outdoor_temperature_c
         for cycle in cycles
@@ -596,8 +583,7 @@ def _nearest_cycles(
 
     def distance(cycle: _DhwCycle) -> float:
         delta_distance = (
-            abs((cycle.peak_temperature_c - cycle.start_temperature_c) - start_delta_k)
-            / delta_scale
+            abs((target_c - cycle.start_temperature_c) - start_delta_k) / delta_scale
         )
         oat_distance = 0.0
         if (
@@ -609,26 +595,12 @@ def _nearest_cycles(
             )
         elif outdoor_temperature_c is not None:
             oat_distance = 1.0
-        time_distance = (
-            min(
-                abs(cycle.local_start_minute - local_start_minute),
-                1440 - abs(cycle.local_start_minute - local_start_minute),
-            )
-            / 180.0
-        )
-        day_type_distance = 0.0 if cycle.weekend == weekend else 1.0
         circulation_distance = 0.0
         if circulation_fraction is not None and cycle.circulation_fraction is not None:
             circulation_distance = abs(
                 cycle.circulation_fraction - circulation_fraction
             )
-        return (
-            delta_distance
-            + oat_distance
-            + time_distance
-            + day_type_distance
-            + circulation_distance
-        )
+        return delta_distance + oat_distance + circulation_distance
 
     count = max(3, min(12, math.ceil(math.sqrt(len(cycles)) * 2)))
     nearest = sorted(cycles, key=distance)[:count]
@@ -715,7 +687,7 @@ def _trigger_index(
     return None
 
 
-def _completed_cycles(
+def completed_dhw_cycles(
     history: tuple[HistoricalFeatureSlot, ...],
     request: ForecastRequest,
     target_c: float,
@@ -776,7 +748,6 @@ def _completed_cycles(
             preceding = None
 
     result = []
-    timezone = ZoneInfo(request.timezone)
     for group, before, after in groups:
         active_temperatures = [
             value
@@ -790,7 +761,11 @@ def _completed_cycles(
             else None
         )
         after_temperature = _reliable_feature(after[1].features, "dhw_temperature_c")
-        if not active_temperatures:
+        if (
+            not active_temperatures
+            or before_temperature is None
+            or after_temperature is None
+        ):
             continue
         total_energy = sum(component.energy_kwh for _, component in group)
         charging_fractions = [
@@ -815,11 +790,18 @@ def _completed_cycles(
             if (value := _reliable_feature(component.features, "outdoor_temperature_c"))
             is not None
         ]
-        targets = [
-            value
+        target_samples = [
+            _reliable_feature(component.features, "dhw_target_c")
             for _, component in group
-            if (value := _reliable_feature(component.features, "dhw_target_c"))
-            is not None
+            if component.energy_kwh >= MIN_CYCLE_ENERGY_KWH
+            or (
+                _reliable_feature(
+                    component.features,
+                    "dhw_charging_fraction",
+                )
+                or 0.0
+            )
+            >= 0.5
         ]
         circulation = [
             value
@@ -827,26 +809,37 @@ def _completed_cycles(
             if (value := _reliable_feature(component.features, "circulation_fraction"))
             is not None
         ]
-        cycle_target_c = statistics.median(targets) if targets else target_c
+        if not target_samples or any(value is None for value in target_samples):
+            continue
+        targets = tuple(value for value in target_samples if value is not None)
+        if any(
+            not math.isclose(value, target_c, rel_tol=0.0, abs_tol=0.1)
+            for value in targets
+        ):
+            continue
+        cycle_target_c = statistics.median(targets)
         start_temperature_c = min(
-            active_temperatures[0],
-            before_temperature
-            if before_temperature is not None
-            else active_temperatures[0],
+            *active_temperatures,
+            before_temperature,
         )
         peak_temperature_c = max(
             *active_temperatures,
-            after_temperature
-            if after_temperature is not None
-            else active_temperatures[-1],
+            after_temperature,
         )
-        if peak_temperature_c < target_c:
+        if (
+            not math.isclose(
+                cycle_target_c,
+                target_c,
+                rel_tol=0.0,
+                abs_tol=0.1,
+            )
+            or peak_temperature_c < target_c
+        ):
             continue
-        local = dt.datetime.fromtimestamp(
-            group[0][0].slot.start_ms / 1000.0, dt.UTC
-        ).astimezone(timezone)
         result.append(
             _DhwCycle(
+                group[0][0].slot.start_ms,
+                after[0].slot.start_ms,
                 total_energy,
                 active_hours,
                 start_temperature_c,
@@ -854,8 +847,6 @@ def _completed_cycles(
                 peak_temperature_c,
                 statistics.mean(oats) if oats else None,
                 statistics.mean(circulation) if circulation else None,
-                local.hour * 60 + local.minute,
-                local.weekday() >= 5,
             )
         )
     return tuple(result)
@@ -899,28 +890,14 @@ def _observed_cycle(
         if (value := _reliable_feature(component.features, "dhw_temperature_c"))
         is not None
     ]
-    if current:
-        local = dt.datetime.fromtimestamp(
-            current[0][0].slot.start_ms / 1000.0, dt.UTC
-        ).astimezone(ZoneInfo(request.timezone))
-        minute = local.hour * 60 + local.minute
-        weekend = local.weekday() >= 5
-    else:
-        local = dt.datetime.fromtimestamp(request.as_of_ms / 1000.0, dt.UTC).astimezone(
-            ZoneInfo(request.timezone)
-        )
-        minute = local.hour * 60 + local.minute
-        weekend = local.weekday() >= 5
     return _ObservedCycle(
         sum(component.energy_kwh for _, component in current),
         min(temperatures) if temperatures else None,
-        minute,
-        weekend,
         current[-1][0].slot.end_ms if current else None,
     )
 
 
-def _historical_active_fractions(history, targets) -> list[float]:
+def _historical_active_fractions(history, targets, target_c) -> list[float]:
     if not targets:
         return []
     timezone = targets[0].local_start.tzinfo
@@ -929,6 +906,15 @@ def _historical_active_fractions(history, targets) -> list[float]:
         component = _component(item, "heat_pump_dhw")
         if not _component_usable(component):
             continue
+        if target_c is not None:
+            sample_target_c = _reliable_feature(component.features, "dhw_target_c")
+            if sample_target_c is None or not math.isclose(
+                sample_target_c,
+                target_c,
+                rel_tol=0.0,
+                abs_tol=0.1,
+            ):
+                continue
         fraction = _reliable_feature(component.features, "dhw_charging_fraction")
         if fraction is None:
             fraction = 1.0 if component.energy_kwh >= MIN_CYCLE_ENERGY_KWH else 0.0
