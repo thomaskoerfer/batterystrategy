@@ -155,7 +155,7 @@ async def async_migrate_entry(hass, entry) -> bool:
     # beta.4 accidentally removed this policy. Persist the safe historic default
     # so future defaults cannot silently change an upgraded installation.
     options.setdefault("pv_to_ev_first", True)
-    if entry.version < 3:
+    if entry.version < 4:
         _migrate_ems_esp_dhw_cutout_mapping(hass, entry)
     hass.config_entries.async_update_entry(
         entry,
@@ -166,7 +166,7 @@ async def async_migrate_entry(hass, entry) -> bool:
 
 
 def _migrate_ems_esp_dhw_cutout_mapping(hass, entry) -> None:
-    """Replace a verified EMS-ESP lower threshold with its effective cut-out."""
+    """Map EMS-ESP DHW targets to the stable configured cut-out."""
     subentries = getattr(entry, "subentries", {})
     states = getattr(hass, "states", None)
     if states is None:
@@ -178,29 +178,46 @@ def _migrate_ems_esp_dhw_cutout_mapping(hass, entry) -> None:
         data = dict(subentry.data)
         if data.get(CONF_LOAD_COMPONENT_PROFILE) != LOAD_PROFILE_HEAT_PUMP:
             continue
-        lower_entity = str(data.get(CONF_HP_DHW_TARGET_ENTITY) or "")
-        if not lower_entity.endswith("dhw_tempecoplus"):
+        source_entity = str(data.get(CONF_HP_DHW_TARGET_ENTITY) or "")
+        source_suffix = next(
+            (
+                suffix
+                for suffix in ("dhw_tempecoplus", "dhw_settemp")
+                if source_entity.endswith(suffix)
+            ),
+            None,
+        )
+        if source_suffix is None:
             continue
-        prefix = lower_entity.split(".", 1)[-1][: -len("dhw_tempecoplus")]
+        prefix = source_entity.split(".", 1)[-1][: -len(source_suffix)]
         candidates = [
             entity_id
             for entity_id in entity_ids
-            if entity_id.split(".", 1)[-1] == f"{prefix}dhw_settemp"
+            if entity_id.split(".", 1)[-1] == f"{prefix}dhw_ecoplusstop"
             and _registered_entity_enabled(registry, entity_id)
         ]
         if len(candidates) != 1:
             continue
-        lower = _state_float(hass, lower_entity)
+        source = _state_float(hass, source_entity)
         differential = _state_float(hass, data.get(CONF_HP_DHW_DIFFERENTIAL_ENTITY))
         cutout = _state_float(hass, candidates[0])
-        live_values_verify_role = (
-            lower is not None
-            and differential is not None
-            and cutout is not None
-            and abs(lower + differential - cutout) <= 0.25
-        )
+        if source_suffix == "dhw_tempecoplus":
+            live_values_verify_role = (
+                source is not None
+                and differential is not None
+                and cutout is not None
+                and abs(source + differential - cutout) <= 0.25
+            )
+        else:
+            # dhw_settemp follows the schedule and can fall to a frost-protection
+            # value while DHW is blocked. Equality is useful only while enabled.
+            live_values_verify_role = (
+                source is not None
+                and cutout is not None
+                and abs(source - cutout) <= 0.25
+            )
         if not live_values_verify_role and not _same_registered_device(
-            registry, lower_entity, candidates[0]
+            registry, source_entity, candidates[0]
         ):
             continue
         data[CONF_HP_DHW_TARGET_ENTITY] = candidates[0]

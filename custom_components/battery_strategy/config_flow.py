@@ -637,7 +637,7 @@ def _discover_ems_esp_entities(hass) -> dict[str, str]:
         CONF_HP_ACTIVITY_ENTITY: "hpactivity",
         CONF_HP_OUTDOOR_TEMP_ENTITY: "outdoortemp",
         CONF_HP_DHW_TEMP_ENTITY: "dhw_curtemp",
-        CONF_HP_DHW_TARGET_ENTITY: "dhw_settemp",
+        CONF_HP_DHW_TARGET_ENTITY: "dhw_ecoplusstop",
         CONF_HP_DHW_DIFFERENTIAL_ENTITY: "dhw_ecoplusdiff",
         CONF_HP_DHW_CHARGING_ENTITY: "dhw_charging",
         CONF_HP_CIRCULATION_ENTITY: "dhw_circ",

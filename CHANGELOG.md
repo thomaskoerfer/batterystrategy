@@ -2,6 +2,15 @@
 
 All notable changes to Battery Strategy are documented here.
 
+## [0.2.0-rc.23] - 2026-09-12
+
+### Fixed
+
+- Use the stable EMS-ESP domestic-hot-water cut-out setting instead of the
+  schedule-dependent effective setpoint. Existing lower-threshold and dynamic
+  setpoint mappings are migrated automatically, preventing future hot-water
+  cycles from disappearing during blocked preparation windows.
+
 ## [0.2.0-rc.22] - 2026-09-09
 
 ### Changed

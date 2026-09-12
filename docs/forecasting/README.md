@@ -57,10 +57,13 @@ names or vendor payload fields.
 
 Domestic-hot-water recovery is a finite thermostat cycle, not a persistence
 forecast of current compressor power. The configured target is the cut-out
-temperature; the cut-in temperature is target minus hysteresis. While a cycle
-is active, the model estimates remaining electrical energy from the measured
-temperature deficit and robust `kWh/K` evidence from comparable completed
-cycles. Comparable cycle energy is weighted by initial temperature lift,
+temperature; the cut-in temperature is target minus hysteresis. For EMS-ESP,
+the target must be the stable configured cut-out such as
+`dhw_ecoplusstop`, not the effective `dhw_settemp`: the latter follows the
+schedule and may expose a frost-protection value while hot water is blocked.
+While a cycle is active, the model estimates remaining electrical energy from
+the measured temperature deficit and robust `kWh/K` evidence from comparable
+completed cycles. Comparable cycle energy is weighted by initial temperature lift,
 source temperature and circulation. Time of day and day type remain timing
 features and do not proxy physical `kWh/K`. Replanning may update that estimate
 from new measurements, but it must not restart a fixed-duration continuation.
