@@ -2,6 +2,22 @@
 
 All notable changes to Battery Strategy are documented here.
 
+## [0.2.0-rc.25] - 2026-09-12
+
+### Fixed
+
+- Preserve unchanged Recorder power states within their 15-minute slot during
+  cyclic-appliance history bootstrap while still rejecting explicit
+  unavailable transitions. This prevents stable metering values from
+  fragmenting one appliance program into several partial cycles.
+- Include completed shorter comparison programs as zero energy after their end
+  when forecasting a running appliance. Mixed short and long programs no
+  longer bias every late forecast slot toward the longest observed cycle.
+
+### Safety
+
+- Keep optimizer, plan compiler, live policy and actuation unchanged.
+
 ## [0.2.0-rc.24] - 2026-09-12
 
 ### Added

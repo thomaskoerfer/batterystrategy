@@ -264,7 +264,7 @@ def test_backfill_does_not_carry_power_across_an_unavailable_transition():
     assert changed == ()
 
 
-def test_backfill_does_not_hold_positive_power_across_a_silent_gap():
+def test_backfill_holds_recorder_power_state_within_one_slot():
     history = (_slot(0),)
 
     changed = backfill_component_power_history(
@@ -272,7 +272,7 @@ def test_backfill_does_not_hold_positive_power_across_a_silent_gap():
         {"dryer": ((0.0, 1_000.0), (600.0, 0.0))},
     )
 
-    assert changed == ()
+    assert changed[0].load_components[0].energy_kwh == pytest.approx(1 / 6)
 
 
 def test_backfill_may_hold_a_confirmed_zero_state_across_a_quiet_slot():

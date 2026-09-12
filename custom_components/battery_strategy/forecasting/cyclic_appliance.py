@@ -73,10 +73,14 @@ def forecast_cyclic_appliance(
     result = []
     for offset in range(slot_count):
         relative_slot = elapsed_slots + offset
+        # A completed neighbor contributes zero beyond its end. Omitting short
+        # cycles would progressively bias the remaining forecast toward the
+        # longest programs in a mixed appliance history.
         values = [
             cycle.energy_kwh[relative_slot]
-            for cycle in neighbors
             if relative_slot < len(cycle.energy_kwh)
+            else 0.0
+            for cycle in neighbors
         ]
         result.append(float(statistics.median(values)) if values else 0.0)
 

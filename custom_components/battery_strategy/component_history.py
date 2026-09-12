@@ -11,7 +11,11 @@ from .contracts import (
     LoadComponentEnergy,
     QualityFlag,
 )
-from .feature_store import MAX_CONTINUOUS_SAMPLE_GAP_MS
+
+# Recorder stores state changes, not periodic samples. A state remains valid
+# until the next recorded transition; explicit unavailable states are retained.
+# Limit the carry to the slot being integrated so it cannot cross data gaps.
+RECORDER_STATE_HOLD_MAX_S = 15 * 60
 
 
 def backfill_component_power_history(
@@ -122,10 +126,7 @@ def _slot_energy_kwh(
     index += 1
     while index < len(series) and series[index][0] < end_s:
         timestamp_s, next_power_w = series[index]
-        if (
-            power_w > 0.0
-            and timestamp_s - cursor > MAX_CONTINUOUS_SAMPLE_GAP_MS / 1000.0
-        ):
+        if power_w > 0.0 and timestamp_s - cursor > RECORDER_STATE_HOLD_MAX_S:
             return None
         if next_power_w is None:
             return None
@@ -134,7 +135,7 @@ def _slot_energy_kwh(
             cursor = timestamp_s
         power_w = next_power_w
         index += 1
-    if power_w > 0.0 and end_s - cursor > MAX_CONTINUOUS_SAMPLE_GAP_MS / 1000.0:
+    if power_w > 0.0 and end_s - cursor > RECORDER_STATE_HOLD_MAX_S:
         return None
     energy_kwh += power_w * (end_s - cursor) / 3_600_000.0
     return max(0.0, energy_kwh)

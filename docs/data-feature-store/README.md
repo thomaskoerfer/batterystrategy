@@ -53,7 +53,9 @@ conditioning, finite cyclic appliances and a generic metered consumer.
 When a cyclic appliance is newly configured, the adapter may seed only its
 missing component energy from up to 21 days of Home Assistant Recorder power
 history. Recorder states are normalized to watts and integrated as stepwise
-measurements on the existing feature-store grid. Existing component facts,
+measurements on the existing feature-store grid. Recorder persists state
+transitions rather than periodic samples, so a valid state may be held within
+the 15-minute slot being integrated. Existing component facts,
 whole-house totals and other components are never overwritten. This bounded,
 idempotent bootstrap prevents an established feature store from losing all
 component-model readiness solely because a separately metered appliance was
@@ -62,9 +64,8 @@ and the existing warm-up gate remain authoritative. The bootstrap starts only
 after the coordinator and live tracking are available, is cancelled on unload,
 and records a small HA-storage completion marker per component and anonymized
 source mapping so reloads do not repeatedly scan the same range. Changing the
-mapped source permits one new bootstrap. Explicit unavailable transitions and
-silent positive-power gaps beyond the normal sampling tolerance invalidate a
-slot; a confirmed zero may remain valid until it changes.
+mapped source permits one new bootstrap. Explicit unavailable transitions
+invalidate a slot; a confirmed zero may remain valid until it changes.
 
 Backfill persistence performs the read, additive merge and atomic write under
 one store lock. Concurrent live or repair data therefore remains authoritative;

@@ -96,6 +96,36 @@ def _forecast(history, driver, slot_count=5):
     )
 
 
+def _mixed_length_history(active_tail: tuple[float, ...]):
+    profiles = (
+        (0.10, 0.20),
+        (0.10, 0.20),
+        (0.10, 0.20),
+        (0.10, 0.20, 0.30, 0.10),
+        (0.10, 0.20, 0.30, 0.10),
+    )
+    count = 7 * 96
+    energy = [0.0] * count
+    for start, profile in zip((96, 180, 270, 360, 450), profiles, strict=True):
+        energy[start : start + len(profile)] = profile
+    energy[-len(active_tail) :] = active_tail
+    return tuple(
+        HistoricalFeatureSlot(
+            slot=SlotKey(index * SLOT_MS, (index + 1) * SLOT_MS),
+            house_load_no_ev_kwh=0.20 + component_kwh,
+            pv_generation_kwh=0.0,
+            grid_import_kwh=0.20 + component_kwh,
+            grid_export_kwh=0.0,
+            battery_charge_kwh=0.0,
+            battery_discharge_kwh=0.0,
+            ev_charge_kwh=0.0,
+            price_ct_per_kwh=30.0,
+            load_components=(LoadComponentEnergy(COMPONENT_KEY, component_kwh),),
+        )
+        for index, component_kwh in enumerate(energy)
+    )
+
+
 class CyclicApplianceForecastTests(unittest.TestCase):
     def test_inactive_appliance_does_not_create_speculative_p50_load(self):
         forecast = _forecast(
@@ -171,6 +201,25 @@ class CyclicApplianceForecastTests(unittest.TestCase):
         self.assertGreater(appliance.slots[0].energy.p50_kwh, 0.0)
         self.assertGreater(appliance.slots[1].energy.p50_kwh, 0.0)
         self.assertEqual(appliance.slots[2].energy.p50_kwh, 0.0)
+
+    def test_completed_short_cycles_contribute_zero_to_later_slots(self):
+        forecast = _forecast(
+            _mixed_length_history((0.10,)),
+            LoadDriverSnapshot(
+                COMPONENT_KEY,
+                600.0,
+                features=(LoadFeatureValue("cycle_active_fraction", 1.0),),
+            ),
+        )
+
+        appliance = next(
+            item for item in forecast.components if item.component_key == COMPONENT_KEY
+        )
+
+        self.assertEqual(
+            [slot.energy.p50_kwh for slot in appliance.slots],
+            [0.20, 0.0, 0.0, 0.0, 0.0],
+        )
 
     def test_power_only_start_does_not_restart_a_complete_historical_cycle(self):
         forecast = _forecast(
