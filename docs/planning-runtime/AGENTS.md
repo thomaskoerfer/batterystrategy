@@ -21,6 +21,9 @@
   derive all time decisions from it.
 - Keep one `PlanningStateStore` as the atomic persistence owner and mutate only
   the typed owner state belonging to the current component.
+- Keep pending forecast vintages and matured residual cohorts bounded inside
+  forecast-owned state; never source production calibration from evaluation
+  traces.
 - Keep Recorder entity IDs in the private `PlanningCapture`; complete history
   in the executor before planning. Execute in this order: capture, read history,
   load owner state, plan, save owner state, publish.

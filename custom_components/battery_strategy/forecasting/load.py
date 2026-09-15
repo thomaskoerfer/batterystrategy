@@ -14,9 +14,15 @@ from ..contracts import (
     LoadForecast,
     LoadForecastComponent,
     LoadForecastContext,
-    QuantileEnergy,
 )
 from .history import ForecastHistorySample, ForecastTargetInput
+from .uncertainty import (
+    EMPTY_CALIBRATION,
+    TOTAL_LOAD_SERIES,
+    ForecastResidualCalibration,
+    calibrated_quantile_energy,
+    uncertainty_model_version,
+)
 
 SLOT_H = 0.25
 
@@ -38,6 +44,9 @@ def build_load_forecast(
     targets: tuple[ForecastTargetInput, ...],
     context: LoadForecastContext,
     config: LoadForecastModelConfig,
+    calibration: ForecastResidualCalibration = EMPTY_CALIBRATION,
+    series_key: str = TOTAL_LOAD_SERIES,
+    point_model_version: str = "slot-profile-load-v1",
 ) -> LoadForecast:
     """Forecast EV-free load without importing PV configuration or logic."""
     if len(request.slots) != len(targets):
@@ -56,39 +65,47 @@ def build_load_forecast(
     now_local = dt.datetime.fromtimestamp(
         request.as_of_ms / 1000.0, tz=dt.UTC
     ).astimezone(timezone)
-    slots = tuple(
-        ForecastSlot(
-            slot_key,
-            QuantileEnergy(
-                _forecast_load_w(
-                    samples,
-                    target.local_start,
-                    timezone,
-                    heat_pump_w,
-                    now_local,
-                    config.load_bias,
-                    config.load_slot_biases[_slot_index(target.local_start)],
-                )
-                * SLOT_H
-                / 1000.0
-            ),
+    model_version = point_model_version
+    slot_values = []
+    for slot_key, target in zip(request.slots, targets, strict=True):
+        p50_kwh = (
+            _forecast_load_w(
+                samples,
+                target.local_start,
+                timezone,
+                heat_pump_w,
+                now_local,
+                config.load_bias,
+                config.load_slot_biases[_slot_index(target.local_start)],
+            )
+            * SLOT_H
+            / 1000.0
         )
-        for slot_key, target in zip(request.slots, targets, strict=True)
-    )
+        residuals = calibration.residuals_for(
+            series_key,
+            model_version,
+            request.as_of_ms,
+            slot_key.start_ms,
+            target.local_start.weekday() >= 5,
+            p50_kwh > 1e-9,
+        )
+        slot_values.append(
+            ForecastSlot(slot_key, calibrated_quantile_energy(p50_kwh, residuals))
+        )
+    slots = tuple(slot_values)
     cutoff = min(
         request.as_of_ms,
         int(max((sample.ts_s for sample in samples), default=0.0) * 1000),
     )
+    model_version = uncertainty_model_version(model_version)
     return LoadForecast(
         forecast_id=f"slot-profile-{request.as_of_ms}-load",
         generated_at_ms=request.as_of_ms,
         training_cutoff_ms=cutoff,
-        model_version="slot-profile-load-v1",
+        model_version=model_version,
         slots=slots,
         components=(
-            LoadForecastComponent(
-                "general_house_load", "slot-profile-load-v1", cutoff, slots
-            ),
+            LoadForecastComponent("general_house_load", model_version, cutoff, slots),
         ),
     )
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import math
 import statistics
 
@@ -28,6 +29,14 @@ from .cyclic_appliance import forecast_cyclic_appliance
 from .heat_pump import adjust_heat_pump_forecast
 from .history import ForecastHistorySample, ForecastTargetInput
 from .load import LoadForecastModelConfig, build_load_forecast
+from .uncertainty import (
+    EMPTY_CALIBRATION,
+    TOTAL_LOAD_SERIES,
+    ForecastResidualCalibration,
+    calibrated_quantile_energy,
+    component_series,
+    uncertainty_model_version,
+)
 
 SLOT_H = 0.25
 MIN_COMPONENT_HISTORY_SLOTS = 7 * 96
@@ -51,11 +60,17 @@ def build_component_load_forecast(
     weather: tuple[WeatherSlot, ...],
     specs: tuple[LoadComponentSpec, ...],
     config: LoadForecastModelConfig,
+    calibration: ForecastResidualCalibration = EMPTY_CALIBRATION,
 ) -> LoadForecast:
     """Compose independently trained component forecasts and residual load."""
     if not specs:
         return build_load_forecast(
-            request, _total_samples(history), targets, context, config
+            request,
+            _total_samples(history),
+            targets,
+            context,
+            config,
+            calibration,
         )
     keys = tuple(spec.component_key for spec in specs)
     eligible = tuple(item for item in history if _has_components(item, keys))
@@ -63,7 +78,12 @@ def build_component_load_forecast(
         # Do not add a partially learned component to a whole-house baseline: that
         # would double count it. Collection warms up without changing the baseline output.
         fallback = build_load_forecast(
-            request, _total_samples(history), targets, context, config
+            request,
+            _total_samples(history),
+            targets,
+            context,
+            config,
+            calibration,
         )
         quality = DataQuality(0.0, (QualityFlag.ESTIMATED,))
         zero_slots = tuple(
@@ -71,7 +91,7 @@ def build_component_load_forecast(
         )
         general = LoadForecastComponent(
             "general_house_load",
-            "component-warming-v1",
+            fallback.model_version,
             fallback.training_cutoff_ms,
             fallback.slots,
         )
@@ -79,7 +99,7 @@ def build_component_load_forecast(
             f"component-warming-{request.as_of_ms}",
             request.as_of_ms,
             fallback.training_cutoff_ms,
-            "component-load-warming-v1",
+            fallback.model_version,
             fallback.slots,
             (
                 general,
@@ -101,12 +121,15 @@ def build_component_load_forecast(
         targets,
         _residual_context(context, keys),
         config,
+        calibration,
+        component_series("general_house_load"),
+        "residual-load-v1",
     )
     weather_by_slot = {item.slot: item for item in weather}
     components = [
         LoadForecastComponent(
             "general_house_load",
-            "residual-load-v1",
+            uncertainty_model_version("residual-load-v1"),
             residual.training_cutoff_ms,
             residual.slots,
         )
@@ -188,15 +211,27 @@ def build_component_load_forecast(
         component_slots = tuple(
             ForecastSlot(
                 slot,
-                QuantileEnergy(component_energy[spec.component_key][index]),
+                calibrated_quantile_energy(
+                    component_energy[spec.component_key][index],
+                    calibration.residuals_for(
+                        component_series(spec.component_key),
+                        component_versions[spec.component_key],
+                        request.as_of_ms,
+                        slot.start_ms,
+                        target.local_start.weekday() >= 5,
+                        component_energy[spec.component_key][index] > 1e-9,
+                    ),
+                ),
                 component_quality.get(spec.component_key, DataQuality()),
             )
-            for index, slot in enumerate(request.slots)
+            for index, (slot, target) in enumerate(
+                zip(request.slots, targets, strict=True)
+            )
         )
         components.append(
             LoadForecastComponent(
                 spec.component_key,
-                component_versions[spec.component_key],
+                uncertainty_model_version(component_versions[spec.component_key]),
                 residual.training_cutoff_ms,
                 component_slots,
             )
@@ -204,20 +239,32 @@ def build_component_load_forecast(
     total_slots = tuple(
         ForecastSlot(
             slot,
-            QuantileEnergy(
-                sum(component.slots[index].energy.p50_kwh for component in components)
+            calibrated_quantile_energy(
+                sum(component.slots[index].energy.p50_kwh for component in components),
+                calibration.residuals_for(
+                    TOTAL_LOAD_SERIES,
+                    _composite_model_version(specs, component_versions),
+                    request.as_of_ms,
+                    slot.start_ms,
+                    target.local_start.weekday() >= 5,
+                    sum(
+                        component.slots[index].energy.p50_kwh
+                        for component in components
+                    )
+                    > 1e-9,
+                ),
             ),
             DataQuality(0.0, (QualityFlag.ESTIMATED,))
             if any(quality.flags for quality in component_quality.values())
             else DataQuality(),
         )
-        for index, slot in enumerate(request.slots)
+        for index, (slot, target) in enumerate(zip(request.slots, targets, strict=True))
     )
     return LoadForecast(
         f"component-{request.as_of_ms}",
         request.as_of_ms,
         residual.training_cutoff_ms,
-        _composite_model_version(specs, component_versions),
+        uncertainty_model_version(_composite_model_version(specs, component_versions)),
         total_slots,
         tuple(components),
     )
@@ -229,14 +276,14 @@ def _composite_model_version(specs, component_versions) -> str:
         if any(spec.profile == LOAD_PROFILE_HEAT_PUMP for spec in specs)
         else "component-load-v1"
     )
-    cyclic_versions = sorted(
-        {
-            component_versions[spec.component_key]
+    composition = "|".join(
+        sorted(
+            f"{spec.component_key}:{spec.profile}:{component_versions[spec.component_key]}"
             for spec in specs
-            if spec.profile == LOAD_PROFILE_CYCLIC_APPLIANCE
-        }
+        )
     )
-    return "+".join((base, *cyclic_versions))
+    signature = hashlib.sha256(composition.encode()).hexdigest()[:10]
+    return f"{base}-set-{signature}"
 
 
 def _component_power_w(spec, target, history, context, weather, request) -> float:

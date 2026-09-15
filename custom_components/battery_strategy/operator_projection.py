@@ -325,8 +325,8 @@ def _raw_profile_attrs(
 
 def _profile(raw: object) -> list[list[float | int]]:
     out: list[list[float | int]] = []
-    for item in raw if isinstance(raw, (list, tuple)) else ():
-        if not isinstance(item, (list, tuple)) or len(item) < 2:
+    for item in raw if isinstance(raw, list | tuple) else ():
+        if not isinstance(item, list | tuple) or len(item) < 2:
             continue
         try:
             out.append([int(float(item[0])), float(item[1])])

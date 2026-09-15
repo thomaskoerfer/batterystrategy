@@ -462,8 +462,8 @@ def _points_from_output(
 
 def _series(raw: object) -> dict[int, float]:
     result = {}
-    for item in raw if isinstance(raw, (list, tuple)) else ():
-        if not isinstance(item, (list, tuple)) or len(item) < 2:
+    for item in raw if isinstance(raw, list | tuple) else ():
+        if not isinstance(item, list | tuple) or len(item) < 2:
             continue
         try:
             result[int(float(item[0]))] = float(item[1])
@@ -526,7 +526,7 @@ def _maybe_float(value: object) -> float | None:
 def _freeze(value: object) -> object:
     if isinstance(value, Mapping):
         return MappingProxyType({key: _freeze(item) for key, item in value.items()})
-    if isinstance(value, (list, tuple)):
+    if isinstance(value, list | tuple):
         return tuple(_freeze(item) for item in value)
     return value
 
@@ -534,6 +534,6 @@ def _freeze(value: object) -> object:
 def _thaw(value: object) -> object:
     if isinstance(value, Mapping):
         return {key: _thaw(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
+    if isinstance(value, list | tuple):
         return [_thaw(item) for item in value]
     return value

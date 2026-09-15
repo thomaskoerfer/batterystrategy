@@ -18,6 +18,8 @@ Read the root `ARCHITECTURE.md`, `INTERFACE_CONTRACTS.md`, this component's
   explicit owner approval, even when the implementation would be easy.
 - Keep historical design work in impact analyses; active guides describe only
   the production architecture and current limitations.
+- Keep forecast-owned calibration state separate from evaluation traces;
+  non-authoritative evaluation artifacts must never feed planning.
 
 ## Setup independence
 

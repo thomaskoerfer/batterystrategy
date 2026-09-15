@@ -31,6 +31,8 @@ def test_store_round_trip_preserves_schema_11_keys_and_unknown_salvage(tmp_path)
         "load_bias": 0.9,
         "pv_bias_slots": [1.0] * 96,
         "load_bias_slots": [1.0] * 96,
+        "quantile_pending": [],
+        "quantile_residuals": {},
         "virtual_energy_kwh": 3.0,
         "virtual_last_ts": None,
         "virtual_last_mode": "idle",
@@ -113,3 +115,29 @@ def test_malformed_typed_field_recovers_to_safe_empty_state(tmp_path):
 
     assert state.forecast.pv_bias == 1.0
     assert state.publication.last_output == {}
+
+
+def test_malformed_additive_quantile_state_does_not_reset_plan_display(tmp_path):
+    path = tmp_path / "battery_strategy_optimizer_state.json"
+    store = PlanningStateStore(str(path))
+    state = _load(store, 1_800_000_000_000)
+    document = store.to_document(state)
+    document["last_output"] = {"mode": "idle"}
+    document["quantile_pending"] = [
+        {"target_ms": "broken"},
+        {
+            "target_ms": 1000,
+            "target_end_ms": 2000,
+            "generated_at_ms": 0,
+            "lead_bucket": 0,
+            "series": {"@pv": ["pv-v1", 0.2]},
+        },
+    ]
+    document["quantile_residuals"] = {"valid": [0.1, "bad"], "invalid": None}
+    save_state_document(path, document)
+
+    restored = _load(store, 1_800_000_000_000)
+
+    assert restored.publication.last_output == {"mode": "idle"}
+    assert len(restored.forecast.quantile_pending) == 1
+    assert restored.forecast.quantile_residuals == {"valid": [0.1]}

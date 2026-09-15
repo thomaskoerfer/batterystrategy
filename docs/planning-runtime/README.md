@@ -65,8 +65,10 @@ state, invokes the planning orchestration, saves owner state and only then
 publishes the result. This preserves Home Assistant's event-loop boundary and
 keeps persistence lifecycle and leases out of planning inputs.
 
-The serialized planning state uses schema 11 and stores the canonical plan next
-to operator data. `PlanningStateStore` is the sole migration, validation and
+The serialized planning state remains schema 11 and stores the canonical plan
+next to operator data. Its additive bounded forecast section also stores issued quantile
+vintages until their actual slots mature and compact residual cohorts
+afterwards. `PlanningStateStore` is the sole migration, validation and
 atomic-write owner. It exposes separate typed owner state for forecast learning,
 simulation, market enrichment, savings and publication without splitting the
 on-disk document. A lifecycle lease and captured-time check prevent an obsolete

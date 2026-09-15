@@ -28,6 +28,19 @@ tuples. P50 is mandatory. P10/P90 are emitted only as a calibrated pair with
 sufficient matured residuals. Every forecast identifies its model version,
 training cutoff and quality.
 
+Uncertainty is calibrated only from P50 values actually issued by the production
+forecasters. Forecast-owned pending vintages are joined to exact finalized
+feature slots after their target interval ends. Residual cohorts keep series,
+point-model version and lead-time class separate. Weekday/weekend and predicted
+active/inactive evidence is preferred; broader cohorts of the same series,
+version and lead class are used while narrow evidence is immature. At least
+twelve residuals are required. P10/P90 are anchored to unchanged P50. Total load
+is calibrated directly, not by adding component quantiles, false-positive
+component events remain evidence, and PV remains independent.
+The derived `general_house_load` residual component remains point-only:
+uncertainty is calibrated for total EV-free load and separately metered physical
+components rather than persisting an unbounded component-membership snapshot.
+
 The combined `ForecastBundle` is constructed before optimization. Forecasting
 does not know prices, battery SoC, battery constraints, terminal value or a
 battery plan.
@@ -39,6 +52,10 @@ only combines their results into `ForecastBundle`. Current calibration inputs
 remain application configuration because the approved contracts do not expose
 them; moving them into contract data requires a separate impact analysis and
 owner approval.
+
+Issued vintages and matured residual cohorts are bounded forecast-owned learning
+state. They are distinct from non-authoritative evaluation traces: evaluation
+can inspect forecast outputs but never supplies calibration or control inputs.
 
 ## Load components
 

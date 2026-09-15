@@ -24,6 +24,7 @@ from .feature_store import eligible_feature_history, feature_samples
 from .history import ForecastTargetInput
 from .load import LoadForecastModelConfig, build_load_forecast
 from .pv import PvForecastModelConfig, build_pv_forecast
+from .uncertainty import EMPTY_CALIBRATION, ForecastResidualCalibration
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +34,7 @@ class ConfiguredLoadForecaster:
     config: LoadForecastModelConfig
     default_weather_factor: float
     component_specs: tuple[LoadComponentSpec, ...] = ()
+    calibration: ForecastResidualCalibration = EMPTY_CALIBRATION
 
     def forecast(
         self,
@@ -53,6 +55,7 @@ class ConfiguredLoadForecaster:
                 weather,
                 self.component_specs,
                 self.config,
+                self.calibration,
             )
         return build_load_forecast(
             request,
@@ -60,6 +63,7 @@ class ConfiguredLoadForecaster:
             targets,
             context,
             self.config,
+            self.calibration,
         )
 
 
@@ -69,6 +73,7 @@ class ConfiguredPvForecaster:
 
     config: PvForecastModelConfig
     default_weather_factor: float
+    calibration: ForecastResidualCalibration = EMPTY_CALIBRATION
 
     def forecast(
         self,
@@ -88,6 +93,7 @@ class ConfiguredPvForecaster:
                 pv_capacity_kwp=plant.generator_kwp,
                 pv_inverter_kw=plant.inverter_kw,
             ),
+            self.calibration,
         )
 
 

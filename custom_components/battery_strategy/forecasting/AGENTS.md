@@ -10,6 +10,10 @@ This package owns pure forecasting from normalized inputs.
 - Never read Home Assistant, recorder storage, files, network, prices, battery
   SoC or optimizer state.
 - Emit aligned immutable forecasts with model version, cutoff and quality.
+- Calibrate optional uncertainty only from matured P50 values actually issued by
+  the matching production point-model version and lead-time class. Never proxy
+  forecast error with dispersion of actuals or condition event residuals on the
+  realized outcome.
 - Treat missing data as missing, not zero.
 - Use semantic feature keys and setup-neutral fixtures.
 - Keep historical DHW timing and slot shape as the long-range prior. Recompute

@@ -47,6 +47,7 @@ class ForecastProductionTests(unittest.TestCase):
             "bisect",
             "dataclasses",
             "datetime",
+            "hashlib",
             "math",
             "statistics",
             "zoneinfo",
@@ -137,6 +138,9 @@ class ForecastProductionTests(unittest.TestCase):
         self.assertEqual(len(bundle.load.slots), 16)
         self.assertEqual(len(bundle.pv.slots), 16)
         self.assertGreaterEqual(summary["load_usable_slots"], 7 * 96)
+        self.assertEqual(
+            set(summary["quantile_slots"]), {"load_total", "pv", "load_components"}
+        )
 
     def test_contract_forecasters_are_independent_and_composer_only_combines(self):
         bundle, _ = self._forecast()

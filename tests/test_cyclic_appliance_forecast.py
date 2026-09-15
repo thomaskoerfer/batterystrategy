@@ -235,7 +235,10 @@ class CyclicApplianceForecastTests(unittest.TestCase):
             [slot.energy.p50_kwh for slot in appliance.slots],
             [0.2, 0.0, 0.0, 0.0, 0.0],
         )
-        self.assertEqual(appliance.model_version, "cyclic_appliance-fallback-v1")
+        self.assertEqual(
+            appliance.model_version,
+            "cyclic_appliance-fallback-v1+empirical-residual-q1",
+        )
         self.assertIn(QualityFlag.ESTIMATED, appliance.slots[0].quality.flags)
 
     def test_missing_slots_do_not_join_two_cycle_fragments(self):

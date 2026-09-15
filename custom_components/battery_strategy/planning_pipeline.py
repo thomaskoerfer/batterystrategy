@@ -13,6 +13,11 @@ from .forecast_application import (
     forecast_request,
     weather_factor_from_cloud_rad,
 )
+from .forecast_calibration import (
+    calibration_from_state,
+    mature_predictions,
+    queue_predictions,
+)
 from .forecast_evaluation import update_forecast_evaluation
 from .forecasting import FeatureStoreForecastNotReady
 from .market_context import MarketContextConfig, MarketContextService
@@ -390,6 +395,13 @@ def run(
     )
     if runtime.forecast_context is None:
         raise FeatureStoreForecastNotReady("missing_current_load_context")
+    timezone_name = str(getattr(settings.timezone, "key", settings.timezone))
+    mature_predictions(
+        forecast_state,
+        runtime.forecast_history,
+        as_of_ms=runtime.captured_at_ms,
+        timezone=timezone_name,
+    )
     forecast_config = ProductionForecastConfig(
         load_bias=load_bias_plan,
         load_slot_biases=tuple(forecast_state.load_bias_slots),
@@ -398,6 +410,7 @@ def run(
         current_weather_factor=weather_factor,
         current_pv_w=max(0.0, pv_w),
         tomorrow_energy_kwh=pv_tomorrow_kwh,
+        uncertainty=calibration_from_state(forecast_state),
     )
     forecast_result = ProductionForecastModule().forecast(
         request,
@@ -409,6 +422,7 @@ def run(
         runtime.forecast_component_specs,
     )
     forecast_bundle = forecast_result.bundle
+    queue_predictions(forecast_state, forecast_bundle)
     forecast_diagnostics = forecast_result.diagnostics
     publication = _planning_service(settings).plan(
         intervals=intervals,
@@ -578,6 +592,7 @@ def run(
         "forecast_slot_count": forecast_diagnostics.get("slot_count"),
         "forecast_runtime_ms": forecast_diagnostics.get("runtime_ms"),
         "forecast_model_version": forecast_diagnostics.get("model_version"),
+        "forecast_quantile_slots": forecast_diagnostics.get("quantile_slots"),
         "pv_bias": round(forecast_state.pv_bias, 3),
         "load_bias": round(forecast_state.load_bias, 3),
         "pv_bias_slot_now": round(float(forecast_state.pv_bias_slots[slot_now]), 3),

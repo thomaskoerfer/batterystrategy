@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import math
 import threading
 import uuid
 from dataclasses import dataclass, field
@@ -37,6 +38,8 @@ class ForecastLearningState:
     load_bias: float = 1.0
     pv_bias_slots: list[float] = field(default_factory=lambda: [1.0] * SLOTS_PER_DAY)
     load_bias_slots: list[float] = field(default_factory=lambda: [1.0] * SLOTS_PER_DAY)
+    quantile_pending: list[dict[str, Any]] = field(default_factory=list)
+    quantile_residuals: dict[str, list[float]] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -107,7 +110,7 @@ class PlanningStateStore:
         return cls(normalized, token)
 
     def load(self, settings, captured_at_ms: int) -> PlanningOwnerState:
-        """Load and type the unchanged atomic schema-11 document."""
+        """Load and type the additive atomic schema-11 document."""
         document = _load_document(settings, self.path)
         try:
             return _owner_state_from_document(document, captured_at_ms)
@@ -143,7 +146,7 @@ class PlanningStateStore:
         return True
 
     def to_document(self, state: PlanningOwnerState) -> dict[str, Any]:
-        """Serialize the exact existing schema-11 keys and meanings."""
+        """Serialize additive forecast state without changing schema-11 meanings."""
         document = {
             **state.extra,
             "samples": state.forecast.samples,
@@ -153,6 +156,8 @@ class PlanningStateStore:
             "load_bias": state.forecast.load_bias,
             "pv_bias_slots": state.forecast.pv_bias_slots,
             "load_bias_slots": state.forecast.load_bias_slots,
+            "quantile_pending": state.forecast.quantile_pending,
+            "quantile_residuals": state.forecast.quantile_residuals,
             "virtual_energy_kwh": state.simulation.energy_kwh,
             "virtual_last_ts": state.simulation.last_ts,
             "virtual_last_mode": state.simulation.last_mode,
@@ -227,6 +232,77 @@ def normalize_slot_biases(arr, lo, hi):
     return out
 
 
+def normalize_quantile_pending(value: object) -> list[dict[str, Any]]:
+    """Salvage only bounded, well-formed issued forecast records."""
+    if not isinstance(value, list):
+        return []
+    result = []
+    for item in value[-1200:]:
+        if not isinstance(item, dict) or not isinstance(item.get("series"), dict):
+            continue
+        try:
+            target_ms = int(item["target_ms"])
+            target_end_ms = int(item["target_end_ms"])
+            generated_at_ms = int(item["generated_at_ms"])
+            bucket = int(item["lead_bucket"])
+        except KeyError, TypeError, ValueError:
+            continue
+        if (
+            min(target_ms, generated_at_ms) < 0
+            or target_end_ms <= target_ms
+            or bucket not in range(4)
+        ):
+            continue
+        series = {}
+        for key, issued in list(item["series"].items())[:34]:
+            if (
+                not isinstance(key, str)
+                or not isinstance(issued, list)
+                or len(issued) != 2
+            ):
+                continue
+            try:
+                p50_kwh = float(issued[1])
+            except TypeError, ValueError:
+                continue
+            if issued[0] and math.isfinite(p50_kwh) and p50_kwh >= 0.0:
+                series[key] = [str(issued[0]), p50_kwh]
+        if series:
+            model_signature = str(item.get("model_signature", ""))
+            result.append(
+                {
+                    "target_ms": target_ms,
+                    "target_end_ms": target_end_ms,
+                    "generated_at_ms": generated_at_ms,
+                    "lead_bucket": bucket,
+                    "model_signature": model_signature,
+                    "series": series,
+                }
+            )
+    return result
+
+
+def normalize_quantile_residuals(value: object) -> dict[str, list[float]]:
+    """Salvage finite bounded residual cohorts without resetting other state."""
+    if not isinstance(value, dict):
+        return {}
+    result = {}
+    for key, values in list(value.items())[-1024:]:
+        if not isinstance(key, str) or not isinstance(values, list):
+            continue
+        finite = []
+        for item in values[-96:]:
+            try:
+                number = float(item)
+            except TypeError, ValueError:
+                continue
+            if math.isfinite(number):
+                finite.append(number)
+        if finite:
+            result[key] = finite
+    return result
+
+
 def _default_document(settings) -> dict[str, Any]:
     """Return one safe empty schema-11 document for the configured battery."""
     return {
@@ -237,6 +313,8 @@ def _default_document(settings) -> dict[str, Any]:
         "load_bias": 1.0,
         "pv_bias_slots": [1.0] * SLOTS_PER_DAY,
         "load_bias_slots": [1.0] * SLOTS_PER_DAY,
+        "quantile_pending": [],
+        "quantile_residuals": {},
         "virtual_energy_kwh": settings.battery_capacity_kwh * 0.5,
         "virtual_last_ts": None,
         "virtual_last_mode": "idle",
@@ -294,6 +372,8 @@ def _owner_state_from_document(
         "load_bias",
         "pv_bias_slots",
         "load_bias_slots",
+        "quantile_pending",
+        "quantile_residuals",
         "virtual_energy_kwh",
         "virtual_last_ts",
         "virtual_last_mode",
@@ -317,6 +397,10 @@ def _owner_state_from_document(
             load_bias=float(document["load_bias"]),
             pv_bias_slots=list(document["pv_bias_slots"]),
             load_bias_slots=list(document["load_bias_slots"]),
+            quantile_pending=normalize_quantile_pending(document["quantile_pending"]),
+            quantile_residuals=normalize_quantile_residuals(
+                document["quantile_residuals"]
+            ),
         ),
         simulation=SimulationState(
             energy_kwh=float(document["virtual_energy_kwh"]),

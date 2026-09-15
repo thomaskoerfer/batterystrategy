@@ -2,6 +2,31 @@
 
 All notable changes to Battery Strategy are documented here.
 
+## [0.2.0-rc.26] - 2026-09-15
+
+### Added
+
+- Populate optional P10/P90 intervals for total EV-free load, PV and named load
+  components from P50 vintages actually issued by each production model and
+  later joined to finalized actuals. Model version and lead-time classes remain
+  separate; matching weekday/weekend and predicted-activity evidence is
+  preferred before broader cohorts.
+- Report quantile readiness per forecast series in diagnostics. Existing
+  forecast traces and the offline evaluator record interval coverage and width.
+
+### Safety
+
+- Preserve every P50 value and keep the optimizer, plan compiler, live control
+  and actuation paths unchanged. Quantiles remain observational until a separate
+  optimizer policy and contract impact analysis are approved.
+- Leave P10/P90 absent when fewer than twelve causal residuals exist instead of
+  fabricating certainty or mixing incompatible component regimes.
+
+### Maintenance
+
+- Update existing projection type checks to the Python 3.14 form required by
+  the pinned Ruff release; behavior is unchanged.
+
 ## [0.2.0-rc.25] - 2026-09-12
 
 ### Fixed

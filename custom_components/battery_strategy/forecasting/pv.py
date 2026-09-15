@@ -7,8 +7,15 @@ import statistics
 from dataclasses import dataclass
 from zoneinfo import ZoneInfo
 
-from ..contracts import ForecastRequest, ForecastSlot, PvForecast, QuantileEnergy
+from ..contracts import ForecastRequest, ForecastSlot, PvForecast
 from .history import ForecastHistorySample, ForecastTargetInput
+from .uncertainty import (
+    EMPTY_CALIBRATION,
+    PV_SERIES,
+    ForecastResidualCalibration,
+    calibrated_quantile_energy,
+    uncertainty_model_version,
+)
 
 SLOT_H = 0.25
 PV_NOWCAST_BLEND_HOURS = 2.5
@@ -38,6 +45,7 @@ def build_pv_forecast(
     samples: tuple[ForecastHistorySample, ...],
     targets: tuple[ForecastTargetInput, ...],
     config: PvForecastModelConfig,
+    calibration: ForecastResidualCalibration = EMPTY_CALIBRATION,
 ) -> PvForecast:
     """Forecast PV without importing load context or load-model logic."""
     if len(request.slots) != len(targets):
@@ -46,6 +54,7 @@ def build_pv_forecast(
     now_local = dt.datetime.fromtimestamp(
         request.as_of_ms / 1000.0, tz=dt.UTC
     ).astimezone(timezone)
+    model_version = "slot-profile-pv-v1"
     preliminary = [
         (
             _forecast_pv_w(
@@ -81,7 +90,7 @@ def build_pv_forecast(
     slots = tuple(
         ForecastSlot(
             slot_key,
-            QuantileEnergy(
+            calibrated_quantile_energy(
                 max(
                     0.0,
                     pv_w
@@ -92,7 +101,15 @@ def build_pv_forecast(
                     ),
                 )
                 * SLOT_H
-                / 1000.0
+                / 1000.0,
+                calibration.residuals_for(
+                    PV_SERIES,
+                    model_version,
+                    request.as_of_ms,
+                    slot_key.start_ms,
+                    target.local_start.weekday() >= 5,
+                    pv_w > 1e-9,
+                ),
             ),
         )
         for slot_key, (pv_w, target) in zip(request.slots, preliminary, strict=True)
@@ -105,7 +122,7 @@ def build_pv_forecast(
         f"slot-profile-{request.as_of_ms}-pv",
         request.as_of_ms,
         cutoff,
-        "slot-profile-pv-v1",
+        uncertainty_model_version(model_version),
         slots,
     )
 

@@ -25,6 +25,7 @@ from .forecasting import (
     ForecastModelConfig,
     feature_store_forecast_readiness,
 )
+from .forecasting.uncertainty import EMPTY_CALIBRATION, ForecastResidualCalibration
 
 SLOT_H = 0.25
 
@@ -117,6 +118,7 @@ class ProductionForecastConfig:
     current_weather_factor: float
     current_pv_w: float | None
     tomorrow_energy_kwh: float | None
+    uncertainty: ForecastResidualCalibration = EMPTY_CALIBRATION
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,10 +180,12 @@ class ProductionForecastModule:
                 model_config.load_config(),
                 config.current_weather_factor,
                 component_specs,
+                config.uncertainty,
             ),
             ConfiguredPvForecaster(
                 model_config.pv_config(),
                 config.current_weather_factor,
+                config.uncertainty,
             ),
         ).compose(request, eligible, context, weather, plant)
         diagnostics = {
@@ -194,8 +198,20 @@ class ProductionForecastModule:
             "pv_usable_slots": readiness.pv_usable_slots,
             "component_usable_slots": readiness.component_usable_slots,
             "history_span_days": readiness.history_span_days,
+            "quantile_slots": {
+                "load_total": _quantile_slot_count(bundle.load.slots),
+                "pv": _quantile_slot_count(bundle.pv.slots),
+                "load_components": {
+                    component.component_key: _quantile_slot_count(component.slots)
+                    for component in bundle.load.components
+                },
+            },
         }
         return ProductionForecastResult(bundle, diagnostics)
+
+
+def _quantile_slot_count(slots) -> int:
+    return sum(item.energy.p10_kwh is not None for item in slots)
 
 
 def forecast_request(

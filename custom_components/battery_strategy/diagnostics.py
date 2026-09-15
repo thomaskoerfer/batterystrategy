@@ -67,6 +67,7 @@ async def async_get_config_entry_diagnostics(hass, entry) -> dict:
                 "forecast_slot_count",
                 "forecast_runtime_ms",
                 "forecast_model_version",
+                "forecast_quantile_slots",
             }
         },
         "feature_store": data.get("feature_store"),
