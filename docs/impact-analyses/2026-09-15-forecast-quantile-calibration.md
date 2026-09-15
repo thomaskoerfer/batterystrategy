@@ -52,3 +52,27 @@ and 21 days.
 
 Reinstall `0.2.0-rc.25`. Quantile fields return to absent. Its schema-11 loader
 preserves the additive calibration keys as unknown state without consuming them.
+
+## Observation gate and step 2
+
+The production observation window starts with deployment of this release. The
+first review happens after seven complete local calendar days; for a deployment
+on 2026-09-15 this is 2026-09-23. Components with too few matured events for a
+meaningful assessment remain observational until day 14 rather than being
+promoted on weak evidence.
+
+The review evaluates total EV-free load, PV and every eligible separately
+metered component independently and by lead-time class. It records:
+
+- P50 MAE and bias to prove the unchanged point forecast has not regressed;
+- P10/P90 empirical coverage, interval width and calibration sample count;
+- missing or zero-width intervals and fallback-cohort usage;
+- bounded-state size, update duration and any runtime errors.
+
+Step 2 is an evidence review and an optimizer-policy proposal, not an automatic
+control change. P50 remains the only optimizer input until the owner approves a
+separate impact analysis for any use of uncertainty. The proposal must identify
+which quantile or derived expectation is consumed, how it changes optimization,
+which contracts are affected and how perfect-foresight and live regressions are
+bounded. Sparse components may extend the observation window, but cannot delay
+the independent total-load and PV assessment.
