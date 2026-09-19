@@ -14,6 +14,9 @@ This package owns pure forecasting from normalized inputs.
   the matching production point-model version and lead-time class. Never proxy
   forecast error with dispersion of actuals or condition event residuals on the
   realized outcome.
+- Build optimizer scenarios as complete joint load/PV/EV paths. Preserve
+  temporal and cross-series dependence; marginal quantiles are never paths.
+- Keep EV separate from EV-free house load in every public forecast value.
 - Treat missing data as missing, not zero.
 - Use semantic feature keys and setup-neutral fixtures.
 - Keep historical DHW timing and slot shape as the long-range prior. Recompute

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from zoneinfo import ZoneInfo
 
 from .component_config import LoadComponentSpec
@@ -23,6 +23,7 @@ from .forecasting import (
     FeatureStoreForecastNotReady,
     ForecastComposer,
     ForecastModelConfig,
+    build_empirical_scenarios,
     feature_store_forecast_readiness,
 )
 from .forecasting.uncertainty import EMPTY_CALIBRATION, ForecastResidualCalibration
@@ -118,6 +119,7 @@ class ProductionForecastConfig:
     current_weather_factor: float
     current_pv_w: float | None
     tomorrow_energy_kwh: float | None
+    current_ev_charge_w: float = 0.0
     uncertainty: ForecastResidualCalibration = EMPTY_CALIBRATION
 
 
@@ -188,6 +190,14 @@ class ProductionForecastModule:
                 config.uncertainty,
             ),
         ).compose(request, eligible, context, weather, plant)
+        scenarios = build_empirical_scenarios(
+            bundle,
+            eligible,
+            timezone=request.timezone,
+            current_ev_charge_w=max(0.0, float(config.current_ev_charge_w)),
+        )
+        if scenarios is not None:
+            bundle = replace(bundle, scenarios=scenarios)
         diagnostics = {
             "source": "feature_store",
             "slot_count": len(request.slots),
@@ -206,6 +216,12 @@ class ProductionForecastModule:
                     for component in bundle.load.components
                 },
             },
+            "scenario_count": (
+                len(bundle.scenarios.scenarios) if bundle.scenarios is not None else 0
+            ),
+            "scenario_model_version": (
+                bundle.scenarios.model_version if bundle.scenarios is not None else None
+            ),
         }
         return ProductionForecastResult(bundle, diagnostics)
 

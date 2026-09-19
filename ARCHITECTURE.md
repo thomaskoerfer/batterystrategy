@@ -106,6 +106,8 @@ generation and owns current plant limits, weather adjustment and learned slot
 bias. Historical plant changes belong to explicit backtest preparation, not the
 operational forecast contract. Both forecasters return point estimates,
 uncertainty and data-quality metadata in a shared `ForecastBundle`.
+The bundle may carry bounded coherent load/PV/EV scenarios. EV remains separate
+from EV-free house load; marginal quantiles are not scenario trajectories.
 
 Forecasting does not know electricity prices, battery SoC, battery limits or a
 planned battery schedule. Net load is derived from load minus PV; it is not a
@@ -113,12 +115,17 @@ third independently learned forecast.
 
 ### Optimization
 
-Optimization is a deterministic, side-effect-free function of:
+Optimization is a reproducible, side-effect-free function of:
 
 - time grid and market prices;
 - `ForecastBundle` or forecast scenarios;
 - current battery state and physical constraints;
 - efficiency, feed-in value and commercial policy.
+
+Scenario optimization uses a common first action with weighted recourse. The
+replacement shadow executes only after the authoritative deterministic plan and
+is evaluation-only; its failure cannot affect publication. Cutover changes the
+optimizer adapter while retaining the same `BatteryPlan` interface.
 
 It produces a `BatteryPlan` containing the intended energy trajectory, charge
 and discharge actions, commercial discharge budgets and plan diagnostics. It

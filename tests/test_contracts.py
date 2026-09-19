@@ -17,8 +17,12 @@ from custom_components.battery_strategy.contracts import (
     CommandMode,
     CommercialPolicy,
     DataQuality,
+    EvInteractionPolicy,
     ForecastBundle,
     ForecastRequest,
+    ForecastScenario,
+    ForecastScenarioSet,
+    ForecastScenarioSlot,
     ForecastSlot,
     LivePolicy,
     LoadDriverSnapshot,
@@ -209,6 +213,57 @@ class ContractTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "same slot grid"):
             ForecastBundle(load, pv)
+
+    def test_forecast_bundle_accepts_weighted_coherent_load_pv_ev_paths(self):
+        slots = (slot(0), slot(1))
+        scenarios = ForecastScenarioSet(
+            "weekly-paths-1",
+            0,
+            0,
+            "empirical-weekly-path-v1",
+            (
+                ForecastScenario(
+                    "week-1",
+                    0.5,
+                    tuple(ForecastScenarioSlot(item, 0.2, 0.1, 0.0) for item in slots),
+                ),
+                ForecastScenario(
+                    "week-2",
+                    0.5,
+                    tuple(ForecastScenarioSlot(item, 0.4, 0.0, 0.3) for item in slots),
+                ),
+            ),
+        )
+
+        bundle = replace(forecast_bundle(*slots), scenarios=scenarios)
+
+        self.assertEqual(bundle.scenarios.scenarios[1].slots[0].ev_charge_kwh, 0.3)
+
+    def test_forecast_scenarios_require_bundle_grid_and_normalized_probabilities(self):
+        slots = (slot(0), slot(1))
+        path = tuple(ForecastScenarioSlot(item, 0.2, 0.1, 0.0) for item in slots)
+        with self.assertRaisesRegex(ValueError, "sum to one"):
+            ForecastScenarioSet(
+                "bad-weights",
+                0,
+                0,
+                "v1",
+                (ForecastScenario("only", 0.8, path),),
+            )
+        misaligned = ForecastScenarioSet(
+            "misaligned",
+            0,
+            0,
+            "v1",
+            (ForecastScenario("only", 1.0, (path[1],)),),
+        )
+        with self.assertRaisesRegex(ValueError, "same slot grid"):
+            replace(forecast_bundle(*slots), scenarios=misaligned)
+
+    def test_ev_interaction_policy_defaults_to_house_only(self):
+        policy = EvInteractionPolicy()
+        self.assertTrue(policy.pv_to_ev_first)
+        self.assertFalse(policy.battery_may_feed_ev)
 
     def test_optimization_problem_requires_identical_market_grid(self):
         bundle = forecast_bundle(slot(0))

@@ -12,8 +12,9 @@ documented impact analysis and explicit owner approval.
 - Market context: `market_context.py`; provider enrichment and commercial
   price context must not enter forecasting or the pure optimizer.
 - Optimization: `economic_optimizer.py` and `optimization_problem.py`.
-- Planning application: `planning_service.py`; invoke the optimizer once and
-  publish its plan without constructing forecasts.
+- Planning application: `planning_service.py`; publish exactly one authoritative
+  plan without constructing forecasts. A documented replacement shadow may run
+  afterward and flow only to bounded evaluation persistence.
 - Measured savings: `savings.py`; actual accounting is observational and must
   not influence planning or live control.
 - Home Assistant planning boundary: `planning_adapter.py` captures normalized

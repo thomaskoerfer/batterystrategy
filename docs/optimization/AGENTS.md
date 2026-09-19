@@ -6,7 +6,9 @@ rules before working on this layer.
 ## Allowed
 
 Own the pure economic objective, physical battery constraints, terminal value,
-PV headroom, source allocation and commercial discharge permission.
+PV headroom, source allocation, forecast EV interaction and commercial
+discharge permission. Scenario optimization enforces one common first action
+with probability-weighted recourse; marginal quantile curves are not scenarios.
 
 ## Forbidden
 

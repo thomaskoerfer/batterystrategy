@@ -111,8 +111,17 @@ class CommercialPolicy:
 
 
 @dataclass(frozen=True, slots=True)
+class EvInteractionPolicy:
+    """Optimizer-visible EV allocation semantics, independent of live control."""
+
+    pv_to_ev_first: bool = True
+    discharge_during_ev_charging: bool = True
+    battery_may_feed_ev: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class OptimizationProblem:
-    """Complete deterministic input to a pure optimizer."""
+    """Complete immutable input to a deterministic or scenario optimizer."""
 
     problem_id: str
     as_of_ms: int
@@ -121,6 +130,7 @@ class OptimizationProblem:
     battery: BatteryState
     constraints: BatteryConstraints
     policy: CommercialPolicy
+    ev_policy: EvInteractionPolicy = EvInteractionPolicy()
 
     def __post_init__(self) -> None:
         if not self.problem_id or self.as_of_ms < 0:

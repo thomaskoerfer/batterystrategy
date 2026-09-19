@@ -405,7 +405,9 @@ def test_planning_result_is_returned_before_forecast_trace_persistence(
     scheduled = []
     adapter._entry = object()
     adapter._forecast_trace_scheduler = SimpleNamespace(
-        schedule=lambda entry, value, *_args: scheduled.append((entry, value))
+        schedule=lambda entry, value, *_args, **_kwargs: scheduled.append(
+            (entry, value)
+        )
     )
 
     returned = adapter.run(

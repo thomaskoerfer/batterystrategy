@@ -1,153 +1,105 @@
-# Proposed impact analysis: optimizer use of forecast uncertainty
+# Coherent forecast scenarios and stochastic optimizer
 
-Status: **Proposed**. This document is not owner approval and does not authorize
-production behavior changes.
+Status: owner-approved on 2026-09-19 for implementation as a replacement
+shadow release. The previously proposed three-quantile-envelope gate is
+superseded by this analysis.
 
-## Reason and evidence
+## Decision
 
-Forecasting now emits empirically calibrated P10/P50/P90 slot energy when enough
-causal evidence exists. Optimization still consumes P50 only. Before uncertainty
-can affect control, the candidate behavior must be compared causally with the
-current optimizer and perfect foresight.
+The forecast contract is extended additively with an optional, weighted set of
+coherent load/PV/EV paths. Marginal P10/P50/P90 values remain available for
+calibration diagnostics, but are not treated as complete future trajectories.
 
-Load and PV quantiles are marginal, slot-local estimates. They do not define a
-joint probability distribution across series or time. Their combinations are
-therefore conservative stress envelopes, not probabilistic P10/P90 net-load
-scenarios. The optimizer must not derive an expected value from arbitrary fixed
-weights or describe an envelope as a likelihood.
+The first release keeps the existing deterministic P50 optimizer authoritative
+and executes the stochastic optimizer after it, failure-contained. This new
+shadow replaces the RC26 quantile-only observation gate. RC26 remains only the
+known-good production rollback point until cutover.
 
-## Stage A: non-authoritative evidence
-
-Production planning remains unchanged. Evaluation derives three aligned stress
-envelopes for replay:
-
-- central: load P50 and PV P50;
-- scarcity envelope: load P90 and PV P10;
-- surplus envelope: load P10 and PV P90.
-
-A non-central envelope is used for a slot only when load and PV both provide a
-complete calibrated pair. Otherwise that complete slot falls back to P50 for
-both series. Forecasting remains the sole owner of calibration readiness;
-evaluation and optimization do not add a second sample threshold.
-
-The scenario adapter is evaluation-only. It creates contract-valid synthetic
-totals without named components and assigns distinct non-authoritative forecast,
-problem and plan identities. It does not weaken `ForecastBundle` invariants.
-
-### Reproducible input capture
-
-One bounded, versioned, compressed evaluation snapshot is retained per planning
-quarter-hour. It contains the exact contemporaneous `OptimizationProblem`, the
-authoritative P50 `BatteryPlan`, policy fingerprint and software versions needed
-for deterministic replay. It contains no Home Assistant objects, entity IDs,
-credentials, vendor payloads or actuator reference.
-
-The capture is non-authoritative and failure-contained. Writing or evaluating it
-cannot delay planning, change persisted canonical plans, reach the compiler or
-authorize hardware. Retention is 21 days and publication is atomic.
-
-### Evaluation
-
-The existing pure optimizer runs independently against the central, scarcity
-and surplus envelopes. Later finalized actual slots are joined by exact UTC slot
-key. Reports keep metrics separate rather than hiding trade-offs in one score:
-
-- realized cost and regret against perfect foresight;
-- avoidable high-price import and PV export;
-- planned grid charge and battery throughput;
-- end-SoC error;
-- charge, discharge and budget divergence from the authoritative P50 plan;
-- quantile availability by series, slot and lead-time bucket.
-
-Replay must define its physical clipping and rolling-replan assumptions
-explicitly. It must not reconstruct old inputs from current settings or use
-information unavailable at the recorded planning timestamp.
-
-## Stage B: production decision after evidence
-
-No production algorithm is approved in Stage A. In particular, the proposal no
-longer claims that scarcity can protect inventory while leaving every P50 action
-unchanged: the plan invariant requires discharge budget to cover planned
-discharge. A production scarcity policy that protects energy may therefore need
-to change planned discharge and expected SoC, not only discretionary budget.
-
-The evidence review will compare two deliberately distinct candidates:
-
-1. budget-only: tails may alter optional discharge permission above the P50
-   action; this cannot protect energy already consumed by the P50 trajectory;
-2. trajectory-aware: uncertainty may alter planned actions, budgets and expected
-   SoC inside the optimizer while keeping `BatteryPlan` and downstream contracts
-   unchanged.
-
-The review must define exact equations and precedence before either candidate is
-approved. It must cover partial quantile availability, conflicting scarcity and
-surplus envelopes, price ordering, replacement energy, lookahead, terminal
-value and horizon boundaries.
-
-PV recovery remains on its existing P50 confidence-and-reserve formula during
-Stage A. A future proposal must explicitly replace or retain that formula; P90
-surplus must not be multiplied by the existing confidence coefficient without a
-new, defensible meaning. Grid-charge uncertainty is also deferred because
-marginal quantiles alone do not establish expected charging cost.
+After the shadow comparison is accepted, the prepared cutover branch makes the
+stochastic optimizer authoritative when valid scenarios are present and falls
+back to deterministic P50 when they are absent. Compiler, live-control and
+actuation contracts do not change.
 
 ## Contract impact
 
-Stage A changes no executable contract or production decision. It adds a
-versioned evaluation-storage schema and a non-authoritative adapter.
+`ForecastBundle` gains optional `scenarios`. Every scenario:
 
-Stage B will change optimizer semantics because optional forecast fields begin
-to affect `BatteryPlan`. The existing contract shape, units and ownership can
-remain unchanged, but the semantic change still requires a separate approved
-impact analysis. Quantiles remain confined to evaluation and optimization;
-compiler, live-control and actuator contracts must not receive them.
+- uses exactly the bundle slot grid;
+- carries EV-free house load, PV generation and EV charging separately;
+- has a positive probability and non-negative slot energies;
+- belongs to a set whose probabilities sum to one;
+- records generation and training cut-off timestamps.
 
-## Observability, restart and rollback
+`OptimizationProblem` gains an explicit EV interaction policy. This prevents
+the optimizer from inferring live-control semantics. EV remains excluded from
+house load and is never hidden inside its quantiles.
 
-Stage A exposes only non-authoritative report output. A later production
-candidate must provide optimizer diagnostics showing per-slot joint quantile
-availability, selected uncertainty policy, P50 counterfactual and the source of
-every budget difference.
+The owner approved these additive contract changes and their semantics in the
+conversation on 2026-09-19. Producer, optimizer and integration tests must move
+together. Persisted schemas are unchanged because scenario and shadow data are
+not part of the executable-plan snapshot.
 
-The candidate must use a new optimizer version and execution-policy fingerprint.
-Rollback must invalidate a persisted candidate plan before control resumes and
-must handle an active compiler commitment explicitly. Merely installing older
-files is insufficient because canonical plans and active-slot commitments are
-persisted.
+## Forecast implementation
 
-## Verification and gates
+The first scenario model is an empirical weekly-path ensemble:
 
-Stage A implementation requires:
+1. Complete historical paths from prior matching weekdays are selected using
+   only finalized data available at the forecast cut-off.
+2. For load and PV, each historical path contributes its deviation from the
+   median historical path to the current P50 forecast. This preserves the
+   current weather/component point forecast while retaining historical serial
+   dependence.
+3. EV paths are carried separately from the same historical weeks. An active
+   current EV measurement anchors only the first slot.
+4. A path is emitted only when all requested slots are present and quality
+   valid. All retained paths receive equal probability.
 
-1. contract-valid stress-envelope construction and exact P50 fallback tests;
-2. bounded, atomic, redacted snapshot persistence and failure containment;
-3. deterministic replay from the captured problem without current configuration;
-4. proof that production `BatteryPlan`, compiler directive and live command are
-   bit-for-bit unchanged when capture and evaluation are enabled;
-5. architecture, HACS, restart and full regression checks.
+Selecting the same historical week jointly for load, PV and EV is a
+Schaake-shuffle-style empirical copula: temporal and cross-series dependence is
+preserved instead of independently sampling marginal quantiles. The model is
+setup-neutral and bounded to 12 scenarios.
 
-Evidence review starts after at least seven complete local days. Each evaluated
-lead bucket must have at least 100 jointly quantile-covered load/PV slots, and
-the 80% interval target must lie inside the empirical 95% Wilson confidence
-interval for both total load and PV. Sparse buckets remain observational rather
-than being pooled silently.
+## Optimizer implementation
 
-Candidate comparisons use paired planning vintages and report confidence
-intervals for each metric. Promotion requires no statistically supported
-regression in realized cost, high-price import, PV export, grid charge or
-throughput; any unresolved trade-off returns to the owner instead of being
-collapsed into a composite score.
+The stochastic optimizer is a receding-horizon, two-stage model:
 
-## Rollout
+- the first battery transition is common to every scenario
+  (non-anticipativity);
+- future actions are scenario-specific recourse;
+- the common action minimizes probability-weighted import/export cost and the
+  existing cycling margin;
+- the visible remainder is a deterministic P50 recourse plan constrained to
+  that common first transition and is recalculated at the next planning run;
+- risk is initially expected cost. CVaR or other aversion is a later, measured
+  policy change, not a hard-coded safety premium.
 
-Development stays on `codex/optimizer-quantiles`. Stage A may be implemented and
-tested locally after owner approval, but nothing from this branch is deployed
-before the current forecast observation gate is accepted. Stage B requires a
-second explicit approval after its exact semantics and replay evidence exist.
+EV allocation follows the existing policy switches: PV-to-EV priority,
+discharge while EV charging, and whether battery energy may serve EV demand.
 
-## Owner decisions required now
+## Shadow and evaluation
 
-1. Approve or reject Stage A: bounded exact optimizer-input capture plus the
-   three non-authoritative stress-envelope replays.
-2. Confirm whether a later uncertainty-aware optimizer may change the canonical
-   action and SoC trajectory when evidence supports it. Without that permission,
-   scarcity handling is necessarily limited to optional budget above P50 actions.
+The shadow release publishes the existing deterministic plan unchanged. It
+records bounded diagnostics for scenario readiness, stochastic first action,
+P50 first action, disagreement and expected scenario cost. Failure or timeout
+in scenario generation or shadow optimization cannot delay or alter the
+authoritative plan.
+
+Release evaluation compares both plans on identical vintages against matured
+actuals and perfect foresight. Required checks are action agreement, realized
+cost/regret, PV export, grid charging, EV collision, scenario coverage and
+runtime. The comparison is observational and cannot feed planning.
+
+## Rollback
+
+- Shadow: disable/remove the optional scenario generation and shadow call;
+  authoritative behavior is already RC26-equivalent.
+- Cutover: restore the shadow release or RC26. A changed optimizer version
+  invalidates stale executable plans through the existing plan lifecycle.
+
+## Public-method basis
+
+The design follows scenario-based stochastic MPC with a common first action,
+empirical dependence reconstruction (Schaake shuffle / ensemble copula
+coupling), and rolling re-optimization. Public household optimizers reviewed
+for comparison use deterministic point forecasts; they are useful baselines,
+not evidence that marginal quantiles form valid trajectories.

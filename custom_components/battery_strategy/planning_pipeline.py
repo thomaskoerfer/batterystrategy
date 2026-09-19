@@ -5,7 +5,7 @@ import datetime as dt
 import math
 from dataclasses import dataclass
 
-from .contracts import ForecastBundle, PvPlant
+from .contracts import ForecastBundle, OptimizationProblem, PvPlant
 from .forecast_application import (
     ProductionForecastConfig,
     ProductionForecastModule,
@@ -81,6 +81,7 @@ class PlanningRunOutcome:
     owner_state: PlanningOwnerState
     persist_state: bool
     forecast_bundle: ForecastBundle | None = None
+    optimization_problem: OptimizationProblem | None = None
 
 
 # PV surplus anti-cycling thresholds
@@ -129,6 +130,9 @@ def _planning_service(settings: PlanningRuntimeSettings) -> PlanningService:
             discharge_allowed=settings.discharge_allowed,
             pv_recovery_confidence=PV_RECOVERY_CONFIDENCE,
             pv_recovery_reserve_kwh=PV_RECOVERY_RESERVE_KWH,
+            pv_to_ev_first=settings.pv_to_ev_first,
+            discharge_during_ev_charging=settings.discharge_during_ev_charging,
+            battery_may_feed_ev=settings.battery_may_feed_ev,
             slot_hours=SLOT_H,
         ),
     )
@@ -410,6 +414,7 @@ def run(
         current_weather_factor=weather_factor,
         current_pv_w=max(0.0, pv_w),
         tomorrow_energy_kwh=pv_tomorrow_kwh,
+        current_ev_charge_w=max(0.0, wallbox_w),
         uncertainty=calibration_from_state(forecast_state),
     )
     forecast_result = ProductionForecastModule().forecast(
@@ -755,7 +760,9 @@ def run(
     )
     result_options = _result_options(settings)
     owner_state.publication.last_output = persisted_output(result, result_options)
-    return PlanningRunOutcome(result, owner_state, True, forecast_bundle)
+    return PlanningRunOutcome(
+        result, owner_state, True, forecast_bundle, publication.optimization_problem
+    )
 
 
 def _result_options(settings: PlanningRuntimeSettings) -> StrategyOptions:

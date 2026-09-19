@@ -37,8 +37,10 @@ identifiers and provider payloads.
 quarter-hour in a compressed, 21-day sidecar below the Home Assistant config
 directory. Each vintage contains the already-produced load and PV contract
 outputs, model versions, target slots, P50 and optional calibrated quantiles,
-quality metadata and named load-component forecasts. It contains no entity IDs,
-provider payloads, battery decisions or actuator data. A trace write happens
+quality metadata and named load-component forecasts. Schema 2 also stores the
+bounded coherent scenario set plus authoritative and stochastic-shadow plans,
+so identical vintages can be compared against actuals and perfect foresight.
+It contains no entity IDs, provider payloads or actuator data. A trace write happens
 only after the authoritative planning result has been persisted and cached, in
 an independent best-effort executor task. Failure is rate-limited in the log and
 cannot invalidate or delay planner completion. Concurrent reload-era writers

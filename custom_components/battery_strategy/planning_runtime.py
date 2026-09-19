@@ -168,6 +168,9 @@ class PlanningRuntimeSettings:
     export_opportunity_ct_per_kwh: float
     pv_capacity_kwp: float
     pv_inverter_kw: float
+    pv_to_ev_first: bool
+    discharge_during_ev_charging: bool
+    battery_may_feed_ev: bool
 
     @classmethod
     def from_options(
@@ -205,6 +208,11 @@ class PlanningRuntimeSettings:
             ),
             pv_capacity_kwp=pv_capacity,
             pv_inverter_kw=max(0.1, float(options.pv_inverter_power_kw) or pv_capacity),
+            pv_to_ev_first=bool(options.pv_to_ev_first),
+            discharge_during_ev_charging=bool(
+                options.discharge_during_ev_charging
+            ),
+            battery_may_feed_ev=bool(options.battery_may_feed_ev),
         )
 
     @property

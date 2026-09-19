@@ -115,6 +115,17 @@ they can be calibrated from matured forecast residuals; missing quantiles mean
 "not calibrated", not zero uncertainty. A `ForecastBundle` is valid only when
 load and PV use the identical slot grid.
 
+`ForecastBundle.scenarios` is optional. When present it is a bounded weighted
+set of complete, coherent paths on that same grid. Every path carries EV-free
+house-load, PV-generation and EV-charge energy separately. Probabilities are
+positive and sum to one; generation time, causal training cutoff and model
+version are explicit. Marginal P10/P50/P90 values are not scenarios and must
+not be combined into synthetic all-low or all-high trajectories.
+
+The optimizer input carries EV interaction policy explicitly. Forecasting does
+not merge EV into house load; optimization may account for competition between
+EV, PV and battery only through the separate scenario values and policy.
+
 `LoadForecast` may expose independently modeled components. Component keys are
 stable semantic names, all component grids match the total grid, and component
 P50 values sum exactly to total P50. The optimizer consumes only that validated
@@ -321,9 +332,9 @@ the requested power.
 | EV-free house-load reconstruction | Feature engineering |
 | Load model and load bias | Load forecaster |
 | Current PV/inverter limits, weather model and PV bias | PV forecaster |
-| Price spread, RTE, terminal value and PV headroom | Optimizer |
+| Price spread, RTE, terminal value, PV headroom and forecast EV interaction | Optimizer |
 | Slot budgets and required-charge translation | Plan compiler |
-| EV policy, meter following and stale-input safety | Live controller |
+| Realized EV policy, meter following and stale-input safety | Live controller |
 | Vendor modes, limits and write throttling | Actuator |
 | Accuracy, savings and perfect-foresight comparison | Evaluation |
 

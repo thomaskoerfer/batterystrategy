@@ -53,6 +53,13 @@ remain application configuration because the approved contracts do not expose
 them; moving them into contract data requires a separate impact analysis and
 owner approval.
 
+The bundle may also contain bounded empirical weekly paths. Load, PV and EV are
+sampled jointly from the same historical week, while load and PV deviations are
+centered on the current P50 models. This preserves temporal and cross-series
+dependence without treating marginal quantiles as trajectories. EV remains a
+separate series. Incomplete history produces no scenario set and leaves the
+point forecast unchanged.
+
 Issued vintages and matured residual cohorts are bounded forecast-owned learning
 state. They are distinct from non-authoritative evaluation traces: evaluation
 can inspect forecast outputs but never supplies calibration or control inputs.

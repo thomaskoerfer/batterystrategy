@@ -18,6 +18,17 @@ The function is deterministic and side-effect free. It must not access Home
 Assistant, entities, recorder history, files, network resources or the wall
 clock. Every decision input is explicit in `OptimizationProblem`.
 
+With coherent scenarios, `StochasticDynamicProgrammingOptimizer` uses a
+probability-weighted two-stage receding horizon: all paths share the first
+battery transition and have independent optimal recourse afterwards. EV demand
+remains separate and can affect PV allocation or discharge only through the
+explicit EV interaction policy. Without scenarios it returns the deterministic
+P50 plan exactly.
+
+The replacement shadow keeps `DynamicProgrammingOptimizer` authoritative and
+stores the stochastic plan only for evaluation. Cutover changes optimizer
+selection, not the `BatteryPlan`, compiler, live-control or actuation contracts.
+
 ## Economic model
 
 The optimizer considers:

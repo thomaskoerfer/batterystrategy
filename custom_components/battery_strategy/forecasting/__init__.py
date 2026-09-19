@@ -20,6 +20,7 @@ from .feature_store import (
 )
 from .load import LoadForecastModelConfig, build_load_forecast
 from .pv import PvForecastModelConfig, build_pv_forecast
+from .scenarios import build_empirical_scenarios
 
 __all__ = [
     "ConfiguredLoadForecaster",
@@ -32,6 +33,7 @@ __all__ = [
     "ForecastTargetInput",
     "LoadForecastModelConfig",
     "PvForecastModelConfig",
+    "build_empirical_scenarios",
     "build_feature_store_forecast",
     "build_forecast_bundle",
     "build_load_forecast",

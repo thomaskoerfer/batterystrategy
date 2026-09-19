@@ -248,17 +248,81 @@ class PvForecast:
 
 
 @dataclass(frozen=True, slots=True)
+class ForecastScenarioSlot:
+    """One jointly sampled future slot; house load deliberately excludes EV."""
+
+    slot: SlotKey
+    load_no_ev_kwh: float
+    pv_generation_kwh: float
+    ev_charge_kwh: float
+
+    def __post_init__(self) -> None:
+        require_nonnegative("load_no_ev_kwh", self.load_no_ev_kwh)
+        require_nonnegative("pv_generation_kwh", self.pv_generation_kwh)
+        require_nonnegative("ev_charge_kwh", self.ev_charge_kwh)
+
+
+@dataclass(frozen=True, slots=True)
+class ForecastScenario:
+    """One coherent load/PV/EV path with an explicit probability."""
+
+    scenario_id: str
+    probability: float
+    slots: tuple[ForecastScenarioSlot, ...]
+
+    def __post_init__(self) -> None:
+        if not self.scenario_id:
+            raise ValueError("scenario_id is required")
+        if not 0.0 < self.probability <= 1.0:
+            raise ValueError("scenario probability must be in (0, 1]")
+        require_slots_sorted_unique(tuple(item.slot for item in self.slots))
+
+
+@dataclass(frozen=True, slots=True)
+class ForecastScenarioSet:
+    """Bounded weighted paths preserving temporal and cross-series dependence."""
+
+    scenario_set_id: str
+    generated_at_ms: int
+    training_cutoff_ms: int
+    model_version: str
+    scenarios: tuple[ForecastScenario, ...]
+
+    def __post_init__(self) -> None:
+        if not self.scenario_set_id or not self.model_version:
+            raise ValueError("scenario-set identity is required")
+        if self.generated_at_ms < 0 or self.training_cutoff_ms < 0:
+            raise ValueError("scenario-set timestamps must be non-negative")
+        if self.training_cutoff_ms > self.generated_at_ms:
+            raise ValueError("scenario training cutoff cannot be in the future")
+        if not self.scenarios:
+            raise ValueError("scenario set requires at least one path")
+        if len({item.scenario_id for item in self.scenarios}) != len(self.scenarios):
+            raise ValueError("scenario ids must be unique")
+        if abs(sum(item.probability for item in self.scenarios) - 1.0) > 1e-9:
+            raise ValueError("scenario probabilities must sum to one")
+        grid = tuple(item.slot for item in self.scenarios[0].slots)
+        if any(tuple(item.slot for item in scenario.slots) != grid for scenario in self.scenarios):
+            raise ValueError("all scenarios must use the same slot grid")
+
+
+@dataclass(frozen=True, slots=True)
 class ForecastBundle:
     """Aligned load and PV forecasts consumed by optimization."""
 
     load: LoadForecast
     pv: PvForecast
+    scenarios: ForecastScenarioSet | None = None
 
     def __post_init__(self) -> None:
         if tuple(item.slot for item in self.load.slots) != tuple(
             item.slot for item in self.pv.slots
         ):
             raise ValueError("load and PV forecasts must use the same slot grid")
+        if self.scenarios is not None:
+            scenario_grid = tuple(item.slot for item in self.scenarios.scenarios[0].slots)
+            if scenario_grid != tuple(item.slot for item in self.load.slots):
+                raise ValueError("forecast scenarios must use the same slot grid")
 
 
 @dataclass(frozen=True, slots=True)

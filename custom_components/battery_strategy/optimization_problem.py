@@ -7,6 +7,7 @@ from .contracts import (
     BatteryPlan,
     BatteryState,
     CommercialPolicy,
+    EvInteractionPolicy,
     ForecastBundle,
     MarketSlot,
     OptimizationProblem,
@@ -22,6 +23,7 @@ def build_optimization_problem(
     constraints: BatteryConstraints,
     policy: CommercialPolicy,
     evaluated_at_ms: int,
+    ev_policy: EvInteractionPolicy = EvInteractionPolicy(),
 ) -> OptimizationProblem:
     """Return one immutable problem from normalized market and forecast data."""
     return OptimizationProblem(
@@ -56,6 +58,7 @@ def build_optimization_problem(
         ),
         constraints=constraints,
         policy=policy,
+        ev_policy=ev_policy,
     )
 
 

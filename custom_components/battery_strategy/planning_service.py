@@ -10,7 +10,9 @@ from .contracts import (
     BatteryConstraints,
     BatteryPlan,
     CommercialPolicy,
+    EvInteractionPolicy,
     ForecastBundle,
+    OptimizationProblem,
 )
 from .economic_optimizer import OPTIMIZER_VERSION
 from .market_context import MarketContextService
@@ -36,6 +38,9 @@ class PlanningSettings:
     discharge_allowed: bool
     pv_recovery_confidence: float
     pv_recovery_reserve_kwh: float
+    pv_to_ev_first: bool = True
+    discharge_during_ev_charging: bool = True
+    battery_may_feed_ev: bool = False
     slot_hours: float = 0.25
 
 
@@ -47,6 +52,7 @@ class PlanningPublication:
     data: Mapping[str, object]
     operator_points: tuple[PlanPoint, ...]
     operator_daily_costs: Mapping[str, DailyCost]
+    optimization_problem: OptimizationProblem | None = None
 
 
 class PlanningService:
@@ -114,21 +120,50 @@ class PlanningService:
                 },
                 (),
                 {},
+                None,
             )
 
-        _, candidate = optimize_snapshot(
+        problem, candidate = optimize_snapshot(
             intervals=intervals,
             forecast=forecast_bundle,
             start_energy_kwh=start_energy_kwh,
             constraints=constraints,
             policy=policy,
             evaluated_at_ms=int(intervals[0].starts_at.timestamp() * 1000),
+            ev_policy=EvInteractionPolicy(
+                pv_to_ev_first=self._settings.pv_to_ev_first,
+                discharge_during_ev_charging=(
+                    self._settings.discharge_during_ev_charging
+                ),
+                battery_may_feed_ev=self._settings.battery_may_feed_ev,
+            ),
         )
-        return self._publish(
+        diagnostics = metadata.setdefault("forecast_diagnostics", {})
+        diagnostics["optimizer_shadow"] = {
+            "ready": problem.forecast.scenarios is not None,
+            "status": (
+                "scheduled"
+                if problem.forecast.scenarios is not None
+                else "forecast_scenarios_unavailable"
+            ),
+            "scenario_count": (
+                len(problem.forecast.scenarios.scenarios)
+                if problem.forecast.scenarios is not None
+                else 0
+            ),
+        }
+        publication = self._publish(
             candidate,
             intervals,
             forecast_bundle,
             metadata,
+        )
+        return PlanningPublication(
+            publication.battery_plan,
+            publication.data,
+            publication.operator_points,
+            publication.operator_daily_costs,
+            problem,
         )
 
     def _publish(
