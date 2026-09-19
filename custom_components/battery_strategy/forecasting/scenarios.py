@@ -77,10 +77,27 @@ def build_empirical_scenarios(
             )
             for local in target_local
         )
-        if (
-            all(item is not None for item in candidate)
-            and (candidate[0].ev_charge_kwh >= ev_active_kwh) == ev_active
-        ):
+        candidate_active = bool(
+            candidate[0] is not None and candidate[0].ev_charge_kwh >= ev_active_kwh
+        )
+        previous_local = target_local[0] - dt.timedelta(minutes=15)
+        previous = by_local.get(
+            (
+                (previous_local.date() - dt.timedelta(weeks=weeks_ago)).isoformat(),
+                previous_local.hour,
+                previous_local.minute,
+                previous_local.fold,
+            )
+        )
+        inactive_start = bool(
+            candidate_active
+            and previous is not None
+            and previous.ev_charge_kwh < ev_active_kwh
+        )
+        ev_compatible = (
+            candidate_active if ev_active else not candidate_active or inactive_start
+        )
+        if all(item is not None for item in candidate) and ev_compatible:
             paths.append((weeks_ago, candidate))  # type: ignore[arg-type]
         if len(paths) >= maximum_paths:
             break

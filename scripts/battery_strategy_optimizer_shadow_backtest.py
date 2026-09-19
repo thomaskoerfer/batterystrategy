@@ -8,6 +8,7 @@ import gzip
 import json
 import math
 import random
+from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -68,6 +69,7 @@ class ScenarioScore:
     p50_abs_error_kwh: float = 0.0
     event_probability: float | None = None
     event_actual: float | None = None
+    target_start_ms: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,7 +148,11 @@ def score_scenarios(
         pv_rows = trace.get("pv", {}).get("slots", ())
         for index, (slot, pv_row) in enumerate(zip(load_rows, pv_rows, strict=True)):
             start_ms, end_ms = int(slot[0]), int(slot[1])
-            if start_ms < int(trace["generated_at_ms"]):
+            if (
+                start_ms < int(trace["generated_at_ms"])
+                and int(trace["generated_at_ms"]) - start_ms
+                > BOUNDARY_DECISION_TOLERANCE_MS
+            ):
                 continue
             actual = _usable_actual(actuals.get(start_ms), end_ms, as_of_ms)
             if actual is None or not paths:
@@ -186,6 +192,7 @@ def score_scenarios(
                     "active" if ev_probability >= 0.5 else "inactive",
                     event_probability=ev_probability,
                     event_actual=ev_actual,
+                    target_start_ms=start_ms,
                 )
             )
     return scores
@@ -252,7 +259,8 @@ def score_paths(
             (
                 index
                 for index, row in enumerate(rows)
-                if int(row[0]) >= int(trace["generated_at_ms"])
+                if int(row[0]) + BOUNDARY_DECISION_TOLERANCE_MS
+                >= int(trace["generated_at_ms"])
             ),
             None,
         )
@@ -283,20 +291,20 @@ def score_paths(
         actual_start, actual_duration = _ev_shape(
             [float(item.get("ev_charge_kwh", 0.0)) for item in matured], threshold
         )
-        expected_start = 0.0
-        expected_duration = 0.0
+        expected_start_error = 0.0
+        expected_duration_error = 0.0
         for probability, path in zip(probabilities, paths, strict=True):
             start, duration = _ev_shape(
                 [float(row[3]) for row in path["slots"][first:]], threshold
             )
-            expected_start += probability * start
-            expected_duration += probability * duration
+            expected_start_error += probability * abs(start - actual_start)
+            expected_duration_error += probability * abs(duration - actual_duration)
         scores.append(
             PathScore(
                 _energy_score(scenario_vectors, probabilities, actual_vector),
                 _variogram_score(scenario_vectors, probabilities, actual_vector),
-                abs(expected_start - actual_start),
-                abs(expected_duration - actual_duration),
+                expected_start_error,
+                expected_duration_error,
                 _energy_score([p50_vector], [1.0], actual_vector),
                 _variogram_score([p50_vector], [1.0], actual_vector),
                 abs(float(len(matured)) - actual_start),
@@ -362,15 +370,7 @@ def summarize(
         if (item.get("shadow_evaluation") or {}).get("runtime_ms") is not None
     ]
     paths = path_scores or []
-    regret_deltas = [
-        item.shadow_regret_eur - item.authoritative_regret_eur for item in decisions
-    ]
-    regret_mean = (
-        sum(regret_deltas) / len(regret_deltas)
-        if regret_deltas and all(math.isfinite(value) for value in regret_deltas)
-        else None
-    )
-    regret_low, regret_high = _daily_block_bootstrap_ci(decisions)
+    regret_mean, regret_low, regret_high = _daily_block_bootstrap_summary(decisions)
     ev_brier = (
         sum((item.event_probability - item.event_actual) ** 2 for item in ev) / len(ev)
         if ev
@@ -380,6 +380,18 @@ def summarize(
     ev_climatology_brier = (
         ev_prevalence * (1.0 - ev_prevalence) if ev_prevalence is not None else None
     )
+    ev_actual_by_slot = {
+        item.target_start_ms: bool(item.event_actual)
+        for item in ev
+        if item.target_start_ms > 0 and item.event_actual is not None
+    }
+    ev_sessions = 0
+    previous_active = False
+    for active in (ev_actual_by_slot[key] for key in sorted(ev_actual_by_slot)):
+        if active and not previous_active:
+            ev_sessions += 1
+        previous_active = active
+    inactive_ev_slots = sum(not active for active in ev_actual_by_slot.values())
     report = {
         "non_authoritative": True,
         "trace_vintages": len(traces),
@@ -392,6 +404,8 @@ def summarize(
         "ev_event_samples": len(ev),
         "ev_event_brier_score": ev_brier,
         "ev_climatology_brier_score": ev_climatology_brier,
+        "matured_ev_sessions": ev_sessions,
+        "inactive_ev_slots": inactive_ev_slots,
         "perfect_foresight_vintages": len(decisions),
         "shadow_first_action_mae_kwh": (
             sum(item.shadow_error_kwh for item in decisions) / len(decisions)
@@ -470,12 +484,14 @@ def summarize(
         "shadow_runtime_max_ms": max(runtimes) if runtimes else None,
     }
     mature_cohorts = [value for value in cohorts.values() if value["samples"] >= 30]
-    observed_days = len(
-        {
-            int(item["generated_at_ms"]) // DAY_MS
-            for item in traces
-            if item.get("generated_at_ms") is not None
-        }
+    vintages_per_day = Counter(
+        int(item["generated_at_ms"]) // DAY_MS
+        for item in traces
+        if item.get("generated_at_ms") is not None
+    )
+    minimum_daily_vintages = math.ceil(0.9 * DAY_MS / SLOT_MS)
+    complete_observation_days = sum(
+        count >= minimum_daily_vintages for count in vintages_per_day.values()
     )
     finite_decisions = all(
         math.isfinite(item.shadow_regret_eur)
@@ -490,17 +506,18 @@ def summarize(
         and report["ev_duration_mae_slots"] <= report["inactive_ev_duration_mae_slots"]
     )
     ev_gate_ok = (
-        ev_brier is not None
+        ev_sessions >= 3
+        and inactive_ev_slots >= 30
+        and ev_brier is not None
         and ev_climatology_brier is not None
         and ev_brier <= ev_climatology_brier + 1e-12
     )
     enough = (
-        observed_days >= 7
+        complete_observation_days >= 7
         and len(decisions) >= 100
         and len(paths) >= 20
         and all_cohorts_mature
         and regret_high is not None
-        and finite_decisions
     )
     failed = (
         not finite_decisions
@@ -514,13 +531,21 @@ def summarize(
             for value in mature_cohorts
         )
     )
+    status = (
+        "fail"
+        if not finite_decisions
+        else ("insufficient_data" if not enough else ("fail" if failed else "pass"))
+    )
     report["release_gate"] = {
-        "status": "insufficient_data" if not enough else ("fail" if failed else "pass"),
+        "status": status,
         "minimum_decision_vintages": 100,
         "minimum_complete_path_vintages": 20,
         "minimum_cohort_samples": 30,
         "minimum_observation_days": 7,
-        "observed_days": observed_days,
+        "complete_observation_days": complete_observation_days,
+        "minimum_daily_vintages": minimum_daily_vintages,
+        "minimum_matured_ev_sessions": 3,
+        "minimum_inactive_ev_slots": 30,
         "maximum_runtime_ms": 5000.0,
     }
     return report
@@ -692,22 +717,26 @@ def _variogram_score(vectors, weights, actual):
     return score / max(1, len(pairs))
 
 
-def _daily_block_bootstrap_ci(decisions, samples=10_000):
-    """Return a deterministic paired 95% CI by resampling complete UTC days."""
+def _daily_block_bootstrap_summary(decisions, samples=10_000):
+    """Return a day-weighted mean and paired CI from complete UTC-day blocks."""
     blocks = {}
     for item in decisions:
         delta = item.shadow_regret_eur - item.authoritative_regret_eur
         if not math.isfinite(delta):
-            return None, None
+            return None, None, None
         blocks.setdefault(item.block_day, []).append(delta)
     daily = [sum(values) / len(values) for values in blocks.values()]
     if len(daily) < 2:
-        return None, None
+        return (daily[0], None, None) if daily else (None, None, None)
     generator = random.Random(0)
     draws = sorted(
         sum(generator.choice(daily) for _ in daily) / len(daily) for _ in range(samples)
     )
-    return draws[int(0.025 * samples)], draws[int(0.975 * samples)]
+    return (
+        sum(daily) / len(daily),
+        draws[int(0.025 * samples)],
+        draws[int(0.975 * samples)],
+    )
 
 
 def _ev_shape(values, threshold):

@@ -43,7 +43,8 @@ not trigger EV-specific discharge restrictions.
 
 The owner approved these additive contract changes and their semantics in the
 conversation on 2026-09-19. Producer, optimizer and integration tests must move
-together. The non-authoritative trace moves to schema 2. Executable-plan
+together. The non-authoritative trace moves to schema 3. Earlier trace schemas
+are deliberately excluded from the new observation window. Executable-plan
 persistence gains an internal optimizer-generation marker so a deployment or
 rollback cannot execute intent created by a different optimizer generation.
 

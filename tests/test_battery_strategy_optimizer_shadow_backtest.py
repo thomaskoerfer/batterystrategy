@@ -147,3 +147,35 @@ def test_decision_scores_ignore_mid_slot_vintages():
     }
 
     assert mod.score_decisions([trace], {}, as_of_ms=900_000) == []
+
+
+def test_daily_bootstrap_point_estimate_uses_same_day_weighting_as_ci():
+    decisions = [
+        mod.DecisionScore(0, 0, True, True, 1.0, 0.0, block_day=1),
+        *(
+            mod.DecisionScore(0, 0, True, True, 0.0, 1.0, block_day=2)
+            for _ in range(10)
+        ),
+    ]
+
+    mean, low, high = mod._daily_block_bootstrap_summary(decisions, samples=1000)
+
+    assert mean == pytest.approx(0.0)
+    assert low is not None
+    assert high is not None
+
+
+def test_release_gate_requires_complete_days_and_real_ev_sessions():
+    traces = [
+        {
+            "generated_at_ms": day * mod.DAY_MS,
+            "shadow_evaluation": {"status": "completed", "runtime_ms": 1.0},
+        }
+        for day in range(7)
+    ]
+
+    report = mod.summarize(traces, [], [], [])
+
+    assert report["release_gate"]["status"] == "insufficient_data"
+    assert report["release_gate"]["complete_observation_days"] == 0
+    assert report["matured_ev_sessions"] == 0
