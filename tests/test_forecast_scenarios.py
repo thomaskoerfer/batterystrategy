@@ -175,6 +175,54 @@ def test_empirical_scenarios_anchor_active_ev_in_first_slot_only():
     assert all(item.slots[0].ev_charge_kwh == 1.0 for item in result.scenarios)
 
 
+def test_active_ev_paths_retain_partial_slot_and_stop_uncertainty():
+    start = dt.datetime(2026, 9, 21, 18, 0, tzinfo=dt.UTC)
+    slots = (key(start), key(start + dt.timedelta(minutes=15)))
+    generated = int(start.timestamp() * 1000)
+    bundle = ForecastBundle(
+        LoadForecast(
+            "load",
+            generated,
+            generated,
+            "load-v1",
+            tuple(ForecastSlot(slot, QuantileEnergy(0.4)) for slot in slots),
+        ),
+        PvForecast(
+            "pv",
+            generated,
+            generated,
+            "pv-v1",
+            tuple(ForecastSlot(slot, QuantileEnergy(0.0)) for slot in slots),
+        ),
+    )
+    history = []
+    for weeks, values in ((1, (0.2, 1.0)), (2, (1.0, 0.0))):
+        for index, ev in enumerate(values):
+            history.append(
+                actual(
+                    start
+                    - dt.timedelta(weeks=weeks)
+                    + dt.timedelta(minutes=15 * index),
+                    load=0.4,
+                    pv=0.0,
+                    ev=ev,
+                )
+            )
+
+    result = build_empirical_scenarios(
+        bundle,
+        tuple(history),
+        timezone="UTC",
+        current_ev_charge_w=4000.0,
+        calibration=CALIBRATION,
+        minimum_paths=2,
+    )
+
+    assert result is not None
+    assert {item.slots[0].ev_charge_kwh for item in result.scenarios} == {0.2, 1.0}
+    assert {item.slots[1].ev_charge_kwh for item in result.scenarios} == {0.0, 1.0}
+
+
 def test_empirical_scenarios_never_read_history_after_generation_time():
     start = dt.datetime(2026, 9, 21, 18, 0, tzinfo=dt.UTC)
     slot = key(start)

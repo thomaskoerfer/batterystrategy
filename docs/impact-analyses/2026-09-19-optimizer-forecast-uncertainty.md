@@ -104,6 +104,10 @@ perfect-foresight replay; scenario CRPS, P10-P90 coverage, EV-event Brier score
 and runtime are reported separately. The comparison is observational and
 cannot feed planning.
 
+The replacement shadow uses trace schema 3. Earlier trace schemas are excluded
+because they do not encode both executable first-stage permissions; the
+seven-day observation window therefore starts anew with this release.
+
 ## Rollback
 
 - Shadow: disable/remove the optional scenario generation and shadow call;

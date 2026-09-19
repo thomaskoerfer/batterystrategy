@@ -90,6 +90,13 @@ def build_empirical_scenarios(
     probability = 1.0 / len(paths)
     for path_index, (weeks_ago, path) in enumerate(paths):
         slots = []
+        current_ev_slot_kwh = max(0.0, current_ev_charge_w / 1000.0 * SLOT_H)
+        historical_ev_peak = max((item.ev_charge_kwh for item in path), default=0.0)
+        ev_scale = (
+            current_ev_slot_kwh / historical_ev_peak
+            if ev_active and historical_ev_peak > 0.0
+            else 1.0
+        )
         for index, historical in enumerate(path):
             load_values = tuple(item[1][index].house_load_no_ev_kwh for item in paths)
             pv_values = tuple(item[1][index].pv_generation_kwh for item in paths)
@@ -126,11 +133,11 @@ def build_empirical_scenarios(
             pv = max(0.0, pv)
             if pv_slot_cap_kwh is not None:
                 pv = min(pv, max(0.0, pv_slot_cap_kwh))
-            ev = max(0.0, historical.ev_charge_kwh)
-            if index == 0:
-                # The current slot is observed, not uncertain. Exact anchoring
-                # avoids importing a historical session's different charge rate.
-                ev = max(0.0, current_ev_charge_w / 1000.0 * SLOT_H)
+            # Current power calibrates an active session's rate, while the
+            # historical path retains start/stop and partial-slot uncertainty.
+            # An inactive EV remains conditioned on inactive historical starts
+            # instead of being forced inactive for the complete first slot.
+            ev = max(0.0, historical.ev_charge_kwh * ev_scale)
             slots.append(
                 ForecastScenarioSlot(
                     bundle.load.slots[index].slot,

@@ -7,6 +7,7 @@ import argparse
 import gzip
 import json
 import math
+import random
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -38,7 +39,8 @@ SLOT_MS = 15 * 60 * 1000
 # quarter-hour boundary is the operational boundary decision, even though its
 # timestamp naturally includes scheduler latency.
 BOUNDARY_DECISION_TOLERANCE_MS = 30_000
-TRACE_SCHEMA = 2
+TRACE_SCHEMA = 3
+DAY_MS = 24 * 60 * 60 * 1000
 DEFAULT_TRACE_DIRECTORY = "/config/battery_strategy_forecast_trace"
 DEFAULT_FEATURE_STORE = "/config/battery_strategy_features.json.gz"
 INVALID_FLAGS = frozenset(
@@ -78,6 +80,7 @@ class DecisionScore:
     authoritative_direction_match: bool
     shadow_regret_eur: float
     authoritative_regret_eur: float
+    block_day: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,10 +91,14 @@ class PathScore:
     variogram_score: float
     ev_start_error_slots: float
     ev_duration_error_slots: float
+    p50_energy_score_kwh: float = 0.0
+    p50_variogram_score: float = 0.0
+    inactive_ev_start_error_slots: float = 0.0
+    inactive_ev_duration_error_slots: float = 0.0
 
 
 def load_traces(root: str | Path, start_ms: int, end_ms: int) -> list[dict]:
-    """Load complete schema-2 stochastic shadow traces."""
+    """Load only complete current-schema stochastic shadow traces."""
     traces = []
     root = Path(root)
     if not root.exists():
@@ -208,9 +215,9 @@ def score_decisions(
             continue
         optimizer = StochasticDynamicProgrammingOptimizer()
         perfect, perfect_diagnostics = optimizer.optimize_with_diagnostics(problem)
-        perfect_action = _plan_action(perfect.slots[0])
-        shadow_action = _serialized_action(shadow["slots"][0])
-        authoritative_action = _serialized_action(authoritative["slots"][0])
+        perfect_action = _policy_vector(perfect.slots[0])
+        shadow_action = _serialized_policy(shadow["slots"][0])
+        authoritative_action = _serialized_policy(authoritative["slots"][0])
         optimum = perfect_diagnostics["expected_scenario_cost_eur"]
         shadow_cost = _constrained_objective(optimizer, problem, shadow["slots"][0])
         authoritative_cost = _constrained_objective(
@@ -218,12 +225,14 @@ def score_decisions(
         )
         scores.append(
             DecisionScore(
-                abs(shadow_action - perfect_action),
-                abs(authoritative_action - perfect_action),
-                _direction(shadow_action) == _direction(perfect_action),
-                _direction(authoritative_action) == _direction(perfect_action),
+                _policy_distance(shadow_action, perfect_action),
+                _policy_distance(authoritative_action, perfect_action),
+                _policy_direction(shadow_action) == _policy_direction(perfect_action),
+                _policy_direction(authoritative_action)
+                == _policy_direction(perfect_action),
                 max(0.0, shadow_cost - optimum),
                 max(0.0, authoritative_cost - optimum),
+                first_start_ms // DAY_MS,
             )
         )
     return scores
@@ -263,6 +272,12 @@ def score_paths(
         scenario_vectors = [
             _scenario_path_vector(path["slots"][first:]) for path in paths
         ]
+        pv_rows = trace.get("pv", {}).get("slots", ())
+        p50_vector = tuple(
+            value
+            for load_row, pv_row in zip(rows[first:], pv_rows[first:], strict=True)
+            for value in (float(load_row[2]), float(pv_row[2]), 0.0)
+        )
         ev_policy = (trace.get("optimization_problem") or {}).get("ev_policy") or {}
         threshold = float(ev_policy.get("ev_active_threshold_w", 300.0)) / 4000.0
         actual_start, actual_duration = _ev_shape(
@@ -282,6 +297,10 @@ def score_paths(
                 _variogram_score(scenario_vectors, probabilities, actual_vector),
                 abs(expected_start - actual_start),
                 abs(expected_duration - actual_duration),
+                _energy_score([p50_vector], [1.0], actual_vector),
+                _variogram_score([p50_vector], [1.0], actual_vector),
+                abs(float(len(matured)) - actual_start),
+                abs(actual_duration),
             )
         )
     return scores
@@ -346,7 +365,21 @@ def summarize(
     regret_deltas = [
         item.shadow_regret_eur - item.authoritative_regret_eur for item in decisions
     ]
-    regret_mean, regret_low, regret_high = _mean_ci(regret_deltas)
+    regret_mean = (
+        sum(regret_deltas) / len(regret_deltas)
+        if regret_deltas and all(math.isfinite(value) for value in regret_deltas)
+        else None
+    )
+    regret_low, regret_high = _daily_block_bootstrap_ci(decisions)
+    ev_brier = (
+        sum((item.event_probability - item.event_actual) ** 2 for item in ev) / len(ev)
+        if ev
+        else None
+    )
+    ev_prevalence = sum(item.event_actual for item in ev) / len(ev) if ev else None
+    ev_climatology_brier = (
+        ev_prevalence * (1.0 - ev_prevalence) if ev_prevalence is not None else None
+    )
     report = {
         "non_authoritative": True,
         "trace_vintages": len(traces),
@@ -357,12 +390,8 @@ def summarize(
         "scenario_metrics": scenario_metrics,
         "scenario_cohorts": cohorts,
         "ev_event_samples": len(ev),
-        "ev_event_brier_score": (
-            sum((item.event_probability - item.event_actual) ** 2 for item in ev)
-            / len(ev)
-            if ev
-            else None
-        ),
+        "ev_event_brier_score": ev_brier,
+        "ev_climatology_brier_score": ev_climatology_brier,
         "perfect_foresight_vintages": len(decisions),
         "shadow_first_action_mae_kwh": (
             sum(item.shadow_error_kwh for item in decisions) / len(decisions)
@@ -407,6 +436,16 @@ def summarize(
         "mean_variogram_score": (
             sum(item.variogram_score for item in paths) / len(paths) if paths else None
         ),
+        "p50_mean_energy_score_kwh": (
+            sum(item.p50_energy_score_kwh for item in paths) / len(paths)
+            if paths
+            else None
+        ),
+        "p50_mean_variogram_score": (
+            sum(item.p50_variogram_score for item in paths) / len(paths)
+            if paths
+            else None
+        ),
         "ev_start_mae_slots": (
             sum(item.ev_start_error_slots for item in paths) / len(paths)
             if paths
@@ -417,14 +456,58 @@ def summarize(
             if paths
             else None
         ),
+        "inactive_ev_start_mae_slots": (
+            sum(item.inactive_ev_start_error_slots for item in paths) / len(paths)
+            if paths
+            else None
+        ),
+        "inactive_ev_duration_mae_slots": (
+            sum(item.inactive_ev_duration_error_slots for item in paths) / len(paths)
+            if paths
+            else None
+        ),
         "shadow_runtime_mean_ms": sum(runtimes) / len(runtimes) if runtimes else None,
         "shadow_runtime_max_ms": max(runtimes) if runtimes else None,
     }
     mature_cohorts = [value for value in cohorts.values() if value["samples"] >= 30]
-    enough = len(decisions) >= 100 and len(paths) >= 20 and bool(mature_cohorts)
+    observed_days = len(
+        {
+            int(item["generated_at_ms"]) // DAY_MS
+            for item in traces
+            if item.get("generated_at_ms") is not None
+        }
+    )
+    finite_decisions = all(
+        math.isfinite(item.shadow_regret_eur)
+        and math.isfinite(item.authoritative_regret_eur)
+        for item in decisions
+    )
+    all_cohorts_mature = bool(cohorts) and len(mature_cohorts) == len(cohorts)
+    path_gate_ok = bool(paths) and (
+        report["mean_energy_score_kwh"] <= report["p50_mean_energy_score_kwh"]
+        and report["mean_variogram_score"] <= report["p50_mean_variogram_score"]
+        and report["ev_start_mae_slots"] <= report["inactive_ev_start_mae_slots"]
+        and report["ev_duration_mae_slots"] <= report["inactive_ev_duration_mae_slots"]
+    )
+    ev_gate_ok = (
+        ev_brier is not None
+        and ev_climatology_brier is not None
+        and ev_brier <= ev_climatology_brier + 1e-12
+    )
+    enough = (
+        observed_days >= 7
+        and len(decisions) >= 100
+        and len(paths) >= 20
+        and all_cohorts_mature
+        and regret_high is not None
+        and finite_decisions
+    )
     failed = (
-        (runtimes and max(runtimes) > 5000.0)
+        not finite_decisions
+        or (runtimes and max(runtimes) > 5000.0)
         or (regret_high is not None and regret_high > 0.0)
+        or not path_gate_ok
+        or not ev_gate_ok
         or any(
             not 65.0 <= value["p10_p90_coverage_pct"] <= 95.0
             or value["mean_crps_kwh"] > value["p50_mean_abs_error_kwh"]
@@ -436,6 +519,8 @@ def summarize(
         "minimum_decision_vintages": 100,
         "minimum_complete_path_vintages": 20,
         "minimum_cohort_samples": 30,
+        "minimum_observation_days": 7,
+        "observed_days": observed_days,
         "maximum_runtime_ms": 5000.0,
     }
     return report
@@ -607,15 +692,22 @@ def _variogram_score(vectors, weights, actual):
     return score / max(1, len(pairs))
 
 
-def _mean_ci(values):
-    if not values:
-        return None, None, None
-    mean = sum(values) / len(values)
-    if len(values) == 1:
-        return mean, mean, mean
-    variance = sum((value - mean) ** 2 for value in values) / (len(values) - 1)
-    half_width = 1.96 * math.sqrt(variance / len(values))
-    return mean, mean - half_width, mean + half_width
+def _daily_block_bootstrap_ci(decisions, samples=10_000):
+    """Return a deterministic paired 95% CI by resampling complete UTC days."""
+    blocks = {}
+    for item in decisions:
+        delta = item.shadow_regret_eur - item.authoritative_regret_eur
+        if not math.isfinite(delta):
+            return None, None
+        blocks.setdefault(item.block_day, []).append(delta)
+    daily = [sum(values) / len(values) for values in blocks.values()]
+    if len(daily) < 2:
+        return None, None
+    generator = random.Random(0)
+    draws = sorted(
+        sum(generator.choice(daily) for _ in daily) / len(daily) for _ in range(samples)
+    )
+    return draws[int(0.025 * samples)], draws[int(0.975 * samples)]
 
 
 def _ev_shape(values, threshold):
@@ -625,12 +717,20 @@ def _ev_shape(values, threshold):
     return float(active[0]), float(len(active))
 
 
-def _plan_action(slot) -> float:
-    return float(slot.planned_charge_kwh) - float(slot.planned_discharge_kwh)
+def _policy_vector(slot) -> tuple[float, float]:
+    return float(slot.required_charge_kwh), float(slot.discharge_budget_kwh)
 
 
-def _serialized_action(slot) -> float:
-    return float(slot[2]) - float(slot[3])
+def _serialized_policy(slot) -> tuple[float, float]:
+    return float(slot[7]), float(slot[4])
+
+
+def _policy_distance(left, right) -> float:
+    return abs(left[0] - right[0]) + abs(left[1] - right[1])
+
+
+def _policy_direction(policy) -> int:
+    return 1 if policy[0] > 1e-6 else (-1 if policy[1] > 1e-6 else 0)
 
 
 def _constrained_objective(optimizer, problem, serialized_slot) -> float:
@@ -646,10 +746,6 @@ def _constrained_objective(optimizer, problem, serialized_slot) -> float:
         return diagnostics["expected_scenario_cost_eur"]
     except ValueError:
         return float("inf")
-
-
-def _direction(value: float) -> int:
-    return 1 if value > 1e-6 else (-1 if value < -1e-6 else 0)
 
 
 def _parse_as_of(value: str | None) -> int:

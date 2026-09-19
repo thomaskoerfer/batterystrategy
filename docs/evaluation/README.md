@@ -125,13 +125,17 @@ non-authoritative flags, retention, bounded attributes, redaction and failure
 containment. A release gate must state its observation duration and numerical
 tolerances before results are reviewed.
 
-The replacement-shadow gate is pre-registered as follows: at least 100 exact
-boundary decision vintages, 20 complete matured path vintages and 30 samples in
-each evaluated lead/regime cohort; maximum shadow runtime 5 seconds; the upper
-95% confidence bound of paired monetary-regret delta must not exceed zero; and
-each mature load/PV cohort must have central-80% coverage between 65% and 95%
-with scenario CRPS no worse than the P50 degenerate baseline. The evaluator
-returns `pass`, `fail` or `insufficient_data`; it never promotes code itself.
+The replacement-shadow gate is pre-registered as follows: at least seven UTC
+observation days, 100 first-boundary-cycle decision vintages, 20 complete
+matured path vintages and 30 samples in every observed lead/regime cohort;
+maximum shadow runtime 5 seconds; the upper 95% confidence bound from a paired
+UTC-day block bootstrap of monetary-regret delta must not exceed zero; and each
+load/PV cohort must have central-80% coverage between 65% and 95% with scenario
+CRPS no worse than the P50 degenerate baseline. Joint energy and variogram
+scores must be no worse than the degenerate P50 path, and EV Brier/start/duration
+scores must be no worse than the climatology/inactive-EV baselines. Non-finite
+policy costs fail closed. The evaluator returns `pass`, `fail` or
+`insufficient_data`; it never promotes code itself.
 
 Collect at least seven complete days before comparing weekday-sensitive model
 behavior. No automatic promotion threshold is defined: a proposed forecast
