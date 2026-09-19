@@ -390,6 +390,49 @@ def test_scenario_battery_priority_prices_pv_diverted_from_ev_as_grid_energy():
     assert limit == pytest.approx((0.0,))
 
 
+def test_battery_priority_does_not_serialize_diverted_pv_as_grid_charge():
+    candidate = problem(
+        [10.0, 50.0],
+        loads=[0.5, 0.5],
+        pv=[0.8, 0.0],
+        soc=10.0,
+        grid=False,
+    )
+    slots = tuple(item.slot for item in candidate.forecast.load.slots)
+    scenarios = ForecastScenarioSet(
+        "ev-pv",
+        candidate.as_of_ms,
+        candidate.as_of_ms,
+        "weekly-v1",
+        (
+            ForecastScenario(
+                "path",
+                1.0,
+                (
+                    ForecastScenarioSlot(slots[0], 0.5, 0.8, 0.8),
+                    ForecastScenarioSlot(slots[1], 0.5, 0.0, 0.0),
+                ),
+            ),
+        ),
+    )
+    candidate = replace(
+        candidate,
+        forecast=replace(candidate.forecast, scenarios=scenarios),
+        ev_policy=EvInteractionPolicy(
+            pv_to_ev_first=False,
+            battery_may_feed_ev=False,
+        ),
+    )
+
+    plan = StochasticDynamicProgrammingOptimizer().optimize(candidate)
+
+    assert plan.slots[0].planned_charge_kwh > 0.0
+    assert plan.slots[0].planned_grid_charge_kwh == pytest.approx(0.0)
+    assert plan.slots[0].planned_pv_charge_kwh == pytest.approx(
+        plan.slots[0].planned_charge_kwh
+    )
+
+
 def test_scenario_ev_below_threshold_is_not_treated_as_active():
     slot = SlotKey(0, 900_000)
     _demand, _charge_surplus, _physical_surplus, limit = _scenario_flows(

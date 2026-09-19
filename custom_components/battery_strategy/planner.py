@@ -72,9 +72,13 @@ class BackgroundPlanner:
     def _request_completion_refresh(self, _task: asyncio.Future) -> None:
         """Publish a completed background result without waiting for polling."""
         if not self._closing and self._publish_refresh is not None:
-            self._hass.async_create_task(self._publish_then_schedule_trace())
+            take_trace = getattr(self._adapter, "take_pending_forecast_trace", None)
+            pending_trace = take_trace() if take_trace is not None else None
+            self._hass.async_create_task(
+                self._publish_then_schedule_trace(pending_trace)
+            )
 
-    async def _publish_then_schedule_trace(self) -> None:
+    async def _publish_then_schedule_trace(self, pending_trace) -> None:
         """Expose the plan to HA before starting best-effort observation."""
         if self._publish_refresh is None:
             return
@@ -84,11 +88,9 @@ class BackgroundPlanner:
         # refresh, which would let observational work race HA publication.
         await self._publish_refresh()
         if not self._closing:
-            schedule_trace = getattr(
-                self._adapter, "schedule_pending_forecast_trace", None
-            )
+            schedule_trace = getattr(self._adapter, "schedule_forecast_trace", None)
             if schedule_trace is not None:
-                schedule_trace()
+                schedule_trace(pending_trace)
 
     def _collect_finished(self) -> None:
         if self._task is None or not self._task.done():

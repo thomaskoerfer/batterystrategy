@@ -601,7 +601,7 @@ class StochasticDynamicProgrammingOptimizer:
             (scenario.probability, _scenario_flows(scenario.slots, problem.ev_policy))
             for scenario in scenarios.scenarios
         )
-        required_charge, discharge_budget, expected_cost, expected_grid = (
+        required_charge, discharge_budget, expected_cost, _expected_grid_equivalent = (
             self._common_first_policy(
                 problem,
                 prices,
@@ -637,11 +637,12 @@ class StochasticDynamicProgrammingOptimizer:
             problem.constraints.capacity_kwh * problem.constraints.min_soc_pct / 100.0,
             problem.constraints.capacity_kwh * problem.constraints.max_soc_pct / 100.0,
         )
-        planned_grid = min(first_charge, expected_grid)
-        if required_charge > 1e-9 and planned_grid <= 1e-9:
-            # A positive common commitment is redundant when every scenario can
-            # satisfy it from PV; the optimizer tie-break normally prevents this.
-            required_charge = 0.0
+        # Only the common required charge is a physical grid commitment. Extra
+        # presentation charge follows forecast PV. Economic opportunity cost
+        # from diverting PV away from an EV stays inside the objective and must
+        # never be serialized as battery grid energy.
+        planned_grid = min(first_charge, required_charge)
+        planned_pv = first_charge - planned_grid
         first_mode = PlanMode.IDLE
         if first_charge > 1e-9:
             first_mode = PlanMode.CHARGE
@@ -660,7 +661,7 @@ class StochasticDynamicProgrammingOptimizer:
             * start_energy
             / problem.constraints.capacity_kwh,
             expected_soc_end_pct=100.0 * first_end / problem.constraints.capacity_kwh,
-            planned_pv_charge_kwh=first_charge - planned_grid,
+            planned_pv_charge_kwh=planned_pv,
             planned_grid_charge_kwh=planned_grid,
         )
         tail_slots = ()

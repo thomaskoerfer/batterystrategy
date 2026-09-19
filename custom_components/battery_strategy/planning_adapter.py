@@ -304,10 +304,14 @@ class PlanningPipelineAdapter:
         )
         return cached
 
-    def schedule_pending_forecast_trace(self) -> None:
-        """Schedule observation only after HA has published the cached result."""
+    def take_pending_forecast_trace(self):
+        """Detach observation data from the planning run that just completed."""
         pending = self._pending_forecast_trace
         self._pending_forecast_trace = None
+        return pending
+
+    def schedule_forecast_trace(self, pending) -> None:
+        """Schedule detached observation only after HA published its plan."""
         if pending is None or self._forecast_trace_scheduler is None or self._revoked:
             return
         bundle, authoritative_plan, optimization_problem, scenario_input = pending
