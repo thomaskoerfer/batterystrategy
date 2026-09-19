@@ -788,14 +788,18 @@ class StochasticDynamicProgrammingOptimizer:
         policies = tuple((charge, 0.0) for charge in charge_values) + tuple(
             (0.0, budget) for budget in budget_values[1:]
         )
-        for required_charge, discharge_budget in policies:
-            if required_first_policy is not None and not (
-                math.isclose(required_charge, required_first_policy[0], abs_tol=1e-6)
-                and math.isclose(
-                    discharge_budget, required_first_policy[1], abs_tol=1e-6
-                )
+        if required_first_policy is not None:
+            required_charge, discharge_budget = required_first_policy
+            if (
+                required_charge < 0.0
+                or discharge_budget < 0.0
+                or required_charge > max_charge + 1e-9
+                or discharge_budget > max_discharge + 1e-9
+                or (required_charge > 1e-9 and discharge_budget > 1e-9)
             ):
-                continue
+                raise ValueError("required first policy is outside executable bounds")
+            policies = ((required_charge, discharge_budget),)
+        for required_charge, discharge_budget in policies:
             expected = 0.0
             feasible = True
             grid_charge = 0.0

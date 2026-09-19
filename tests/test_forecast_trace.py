@@ -185,7 +185,7 @@ def test_concurrent_writers_publish_one_complete_first_vintage(tmp_path):
     files = list(tmp_path.rglob("*.json.gz"))
     assert len(files) == 1
     payload = json.loads(gzip.decompress(files[0].read_bytes()))
-    assert payload["schema_version"] == 2
+    assert payload["schema_version"] == 3
     assert payload["load"]["forecast_id"] == "load-id"
     assert not list(tmp_path.rglob("*.tmp"))
 

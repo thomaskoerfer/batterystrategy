@@ -92,7 +92,8 @@ def test_shadow_summary_compares_actions_with_perfect_foresight():
 def test_complete_path_scores_joint_shape_and_ev_timing():
     trace = {
         "generated_at_ms": 0,
-        "load": {"slots": [[0, 900_000], [900_000, 1_800_000]]},
+        "load": {"slots": [[0, 900_000, 0.2], [900_000, 1_800_000, 0.1]]},
+        "pv": {"slots": [[0, 900_000, 0.0], [900_000, 1_800_000, 0.3]]},
         "optimization_problem": {"ev_policy": {"ev_active_threshold_w": 300.0}},
         "scenarios": {
             "paths": [
@@ -126,7 +127,10 @@ def test_complete_path_scores_joint_shape_and_ev_timing():
     scores = mod.score_paths([trace], actuals, as_of_ms=1_800_000)
     summary = mod.summarize([], [], [], scores)
 
-    assert scores == [mod.PathScore(0.0, 0.0, 0.0, 0.0)]
+    assert scores[0].energy_score_kwh == 0.0
+    assert scores[0].variogram_score == 0.0
+    assert scores[0].ev_start_error_slots == 0.0
+    assert scores[0].ev_duration_error_slots == 0.0
     assert summary["complete_path_vintages"] == 1
     assert summary["mean_energy_score_kwh"] == 0.0
 

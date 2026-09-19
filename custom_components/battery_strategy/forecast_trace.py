@@ -21,7 +21,7 @@ from .economic_optimizer import StochasticDynamicProgrammingOptimizer
 from .forecasting.scenarios import ScenarioGenerationInput
 
 FORECAST_TRACE_DIRECTORY = "battery_strategy_forecast_trace"
-FORECAST_TRACE_SCHEMA_VERSION = 2
+FORECAST_TRACE_SCHEMA_VERSION = 3
 FORECAST_TRACE_RETENTION_DAYS = 21
 FORECAST_TRACE_MAX_SLOTS = 192
 FORECAST_TRACE_MAX_COMPONENTS = 32

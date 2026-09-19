@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import datetime as dt
+import math
 from dataclasses import replace
 from pathlib import Path
 
@@ -227,6 +228,39 @@ def test_stochastic_first_budget_is_common_permission_not_p50_target():
 
     assert plan.slots[0].planned_discharge_kwh <= plan.slots[0].discharge_budget_kwh
     assert plan.slots[0].discharge_budget_kwh <= 0.6
+
+
+def test_stochastic_policy_replay_accepts_continuous_executable_budget():
+    candidate = problem([50.0, 10.0], loads=[0.4, 0.0], soc=80.0)
+    slots = tuple(item.slot for item in candidate.forecast.load.slots)
+    scenarios = ForecastScenarioSet(
+        "paths",
+        candidate.as_of_ms,
+        candidate.as_of_ms,
+        "weekly-v1",
+        (
+            ForecastScenario(
+                "path",
+                1.0,
+                (
+                    ForecastScenarioSlot(slots[0], 0.4, 0.0, 0.0),
+                    ForecastScenarioSlot(slots[1], 0.0, 0.0, 0.0),
+                ),
+            ),
+        ),
+    )
+    candidate = replace(
+        candidate, forecast=replace(candidate.forecast, scenarios=scenarios)
+    )
+
+    plan, diagnostics = (
+        StochasticDynamicProgrammingOptimizer().optimize_with_diagnostics(
+            candidate, required_first_policy=(0.0, 0.12345)
+        )
+    )
+
+    assert plan.slots[0].discharge_budget_kwh == pytest.approx(0.12345)
+    assert math.isfinite(diagnostics["expected_scenario_cost_eur"])
 
 
 def test_stochastic_first_action_respects_sub_lattice_power_limit():
