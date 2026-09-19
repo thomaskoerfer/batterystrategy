@@ -420,7 +420,8 @@ def test_planning_result_is_returned_before_forecast_trace_persistence(
     assert returned.operator_plan == result.operator_plan
     assert adapter._last_result is returned
     assert scheduled == []
-    adapter.schedule_pending_forecast_trace()
+    pending = adapter.take_pending_forecast_trace()
+    adapter.schedule_forecast_trace(pending)
     assert scheduled == [(adapter._entry, bundle)]
 
 
