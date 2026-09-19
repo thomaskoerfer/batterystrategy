@@ -376,6 +376,8 @@ def _serialize_plan(plan: BatteryPlan | None) -> dict[str, object] | None:
                 item.discharge_budget_kwh,
                 item.expected_soc_start_pct,
                 item.expected_soc_end_pct,
+                item.required_charge_kwh,
+                item.planned_grid_charge_kwh,
             ]
             for item in plan.slots[:FORECAST_TRACE_MAX_SLOTS]
         ],

@@ -79,7 +79,8 @@ forecast application and is unchanged by this trace or evaluator.
 The replacement optimizer shadow has a separate evaluator. It reports load/PV
 scenario CRPS and central-80% coverage, EV-event Brier score, shadow runtime and
 first-action monetary regret versus a hindsight-perfect replay. Only vintages
-captured within 60 seconds of a slot boundary enter the decision comparison.
+captured exactly at a slot boundary enter the decision comparison; partial-slot
+actuals are never attributed to a later decision.
 Complete matured path suffixes additionally report an energy score, a local
 variogram score and EV start/duration error, so marginal calibration cannot hide
 implausible temporal or cross-series paths. The replay defaults to one vintage
@@ -124,6 +125,14 @@ Tests cover alignment, actual-data maturation, missing-data exclusion,
 non-authoritative flags, retention, bounded attributes, redaction and failure
 containment. A release gate must state its observation duration and numerical
 tolerances before results are reviewed.
+
+The replacement-shadow gate is pre-registered as follows: at least 100 exact
+boundary decision vintages, 20 complete matured path vintages and 30 samples in
+each evaluated lead/regime cohort; maximum shadow runtime 5 seconds; the upper
+95% confidence bound of paired monetary-regret delta must not exceed zero; and
+each mature load/PV cohort must have central-80% coverage between 65% and 95%
+with scenario CRPS no worse than the P50 degenerate baseline. The evaluator
+returns `pass`, `fail` or `insufficient_data`; it never promotes code itself.
 
 Collect at least seven complete days before comparing weekday-sensitive model
 behavior. No automatic promotion threshold is defined: a proposed forecast

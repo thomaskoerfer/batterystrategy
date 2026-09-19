@@ -67,14 +67,14 @@ therefore keeps the deterministic P50 path authoritative.
 
 The stochastic optimizer is a receding-horizon, two-stage model:
 
-- the first battery transition is common to every scenario
-  (non-anticipativity);
+- required charge and discharge budget in the first slot are common to every
+  scenario (non-anticipativity); realized PV-follow charge and load-following
+  discharge remain scenario-dependent within those permissions;
 - future actions are scenario-specific recourse;
 - the common action minimizes probability-weighted import/export cost and the
   existing cycling margin;
-- the visible remainder is a deterministic P50 recourse plan constrained to
-  that common first transition and is recalculated at the next planning run;
-- the executable first-slot discharge budget is capped to that common action;
+- the visible remainder is deterministic P50 recourse from the P50 realization
+  of those permissions and is recalculated at the next planning run;
 - risk is initially expected cost. CVaR or other aversion is a later, measured
   policy change, not a hard-coded safety premium.
 
@@ -108,7 +108,8 @@ cannot feed planning.
 
 ## Public-method basis
 
-The design follows scenario-based stochastic MPC with a common first action,
+The design follows scenario-based stochastic MPC with common first-stage
+control permissions,
 empirical dependence reconstruction (Schaake shuffle / ensemble copula
 coupling), and rolling re-optimization. Public household optimizers reviewed
 for comparison use deterministic point forecasts; they are useful baselines,

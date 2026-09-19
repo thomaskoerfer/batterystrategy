@@ -1402,6 +1402,7 @@ class HacsStrategyTests(unittest.TestCase):
 
     def test_background_planner_refreshes_coordinator_when_run_finishes(self):
         refreshed = asyncio.Event()
+        order = []
 
         class Adapter:
             @staticmethod
@@ -1411,6 +1412,10 @@ class HacsStrategyTests(unittest.TestCase):
             @staticmethod
             def run(*_args):
                 return None
+
+            @staticmethod
+            def schedule_pending_forecast_trace():
+                order.append("trace")
 
         class Hass:
             @staticmethod
@@ -1422,6 +1427,7 @@ class HacsStrategyTests(unittest.TestCase):
                 return asyncio.create_task(coro)
 
         async def refresh():
+            order.append("publish")
             refreshed.set()
 
         async def scenario():
@@ -1430,6 +1436,8 @@ class HacsStrategyTests(unittest.TestCase):
                 measurements(0, 0, 0, 0), StrategyOptions(), {}
             )
             await asyncio.wait_for(refreshed.wait(), timeout=1)
+            await asyncio.sleep(0)
+            assert order == ["publish", "trace"]
             assert not planner.running
             await planner.async_shutdown()
 

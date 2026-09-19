@@ -26,16 +26,17 @@ def build_optimization_problem(
     ev_policy: EvInteractionPolicy = EvInteractionPolicy(),
 ) -> OptimizationProblem:
     """Return one immutable problem from normalized market and forecast data."""
+    as_of_ms = max(
+        evaluated_at_ms,
+        forecast.load.generated_at_ms,
+        forecast.pv.generated_at_ms,
+    )
     return OptimizationProblem(
         problem_id=(
             f"plan:{evaluated_at_ms}:{forecast.load.forecast_id}:"
             f"{forecast.pv.forecast_id}"
         ),
-        as_of_ms=max(
-            evaluated_at_ms,
-            forecast.load.generated_at_ms,
-            forecast.pv.generated_at_ms,
-        ),
+        as_of_ms=as_of_ms,
         forecast=forecast,
         market=tuple(
             MarketSlot(
@@ -47,7 +48,7 @@ def build_optimization_problem(
             for interval, load_slot in zip(intervals, forecast.load.slots, strict=True)
         ),
         battery=BatteryState(
-            evaluated_at_ms,
+            as_of_ms,
             max(
                 constraints.min_soc_pct,
                 min(

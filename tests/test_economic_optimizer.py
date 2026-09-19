@@ -157,6 +157,42 @@ def test_stochastic_optimizer_uses_coherent_ev_paths_and_common_first_action():
     assert stochastic.optimizer_version.startswith("stochastic-")
 
 
+def test_stochastic_required_charge_remains_executable_when_pv_is_uncertain():
+    candidate = problem([10.0, 50.0], loads=[0.0, 0.0], soc=10.0)
+    slots = tuple(item.slot for item in candidate.forecast.load.slots)
+    scenarios = ForecastScenarioSet(
+        "mixed-pv",
+        candidate.as_of_ms,
+        candidate.as_of_ms,
+        "weekly-v1",
+        (
+            ForecastScenario(
+                "sun",
+                0.5,
+                (
+                    ForecastScenarioSlot(slots[0], 0.0, 0.6, 0.0),
+                    ForecastScenarioSlot(slots[1], 0.5, 0.0, 0.0),
+                ),
+            ),
+            ForecastScenario(
+                "cloud",
+                0.5,
+                (
+                    ForecastScenarioSlot(slots[0], 0.0, 0.0, 0.0),
+                    ForecastScenarioSlot(slots[1], 0.5, 0.0, 0.0),
+                ),
+            ),
+        ),
+    )
+
+    plan = StochasticDynamicProgrammingOptimizer().optimize(
+        replace(candidate, forecast=replace(candidate.forecast, scenarios=scenarios))
+    )
+
+    assert plan.slots[0].required_charge_kwh > 0.0
+    assert plan.slots[0].planned_grid_charge_kwh > 0.0
+
+
 def test_stochastic_optimizer_falls_back_exactly_without_scenarios():
     candidate = problem([10.0, 50.0], loads=[0.0, 0.5], soc=10.0)
     assert StochasticDynamicProgrammingOptimizer().optimize(candidate) == (
@@ -164,7 +200,7 @@ def test_stochastic_optimizer_falls_back_exactly_without_scenarios():
     )
 
 
-def test_stochastic_first_budget_cannot_exceed_common_discharge_action():
+def test_stochastic_first_budget_is_common_permission_not_p50_target():
     candidate = problem([50.0, 10.0], loads=[0.4, 0.0], soc=80.0)
     slots = tuple(item.slot for item in candidate.forecast.load.slots)
     scenarios = ForecastScenarioSet(
@@ -189,9 +225,8 @@ def test_stochastic_first_budget_cannot_exceed_common_discharge_action():
         replace(candidate, forecast=replace(candidate.forecast, scenarios=scenarios))
     )
 
-    assert plan.slots[0].discharge_budget_kwh == pytest.approx(
-        plan.slots[0].planned_discharge_kwh
-    )
+    assert plan.slots[0].planned_discharge_kwh <= plan.slots[0].discharge_budget_kwh
+    assert plan.slots[0].discharge_budget_kwh <= 0.6
 
 
 def test_stochastic_first_action_respects_sub_lattice_power_limit():
@@ -224,7 +259,7 @@ def test_stochastic_first_action_respects_sub_lattice_power_limit():
     assert 0.0 < plan.slots[0].planned_charge_kwh <= 0.045 + 1e-9
 
 
-def test_stochastic_common_discharge_is_not_rejected_by_zero_p50_load():
+def test_stochastic_common_budget_survives_zero_p50_load():
     candidate = problem([50.0, 10.0], loads=[0.0, 0.0], soc=50.0)
     slots = tuple(item.slot for item in candidate.forecast.load.slots)
     scenarios = ForecastScenarioSet(
@@ -249,10 +284,8 @@ def test_stochastic_common_discharge_is_not_rejected_by_zero_p50_load():
         replace(candidate, forecast=replace(candidate.forecast, scenarios=scenarios))
     )
 
-    assert plan.slots[0].planned_discharge_kwh > 0.0
-    assert plan.slots[0].discharge_budget_kwh == pytest.approx(
-        plan.slots[0].planned_discharge_kwh
-    )
+    assert plan.slots[0].planned_discharge_kwh == 0.0
+    assert plan.slots[0].discharge_budget_kwh > 0.0
 
 
 def test_stochastic_energy_lattice_never_crosses_physical_endpoint():
