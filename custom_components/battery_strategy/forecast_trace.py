@@ -16,7 +16,6 @@ from collections.abc import Callable
 from pathlib import Path
 
 from .contracts import BatteryPlan, ForecastBundle, ForecastSlot, OptimizationProblem
-from .economic_optimizer import StochasticDynamicProgrammingOptimizer
 
 FORECAST_TRACE_DIRECTORY = "battery_strategy_forecast_trace"
 FORECAST_TRACE_SCHEMA_VERSION = 2
@@ -113,22 +112,11 @@ class ForecastTraceScheduler:
         if not self._write_lock.acquire(blocking=False):
             return
         try:
-            shadow_plan = None
-            if (
-                optimization_problem is not None
-                and optimization_problem.forecast.scenarios is not None
-            ):
-                try:
-                    shadow_plan = StochasticDynamicProgrammingOptimizer().optimize(
-                        optimization_problem
-                    )
-                except Exception as err:
-                    self._warn(err)
             append_forecast_trace(
                 self._root,
                 bundle,
                 authoritative_plan=authoritative_plan,
-                shadow_plan=shadow_plan,
+                optimization_problem=optimization_problem,
             )
         except Exception as err:
             self._forget(bucket_ms)
@@ -154,7 +142,7 @@ def append_forecast_trace(
     bundle: ForecastBundle,
     *,
     authoritative_plan: BatteryPlan | None = None,
-    shadow_plan: BatteryPlan | None = None,
+    optimization_problem: OptimizationProblem | None = None,
 ) -> Path | None:
     """Persist one vintage while dropping work behind a surviving writer."""
     root = Path(root)
@@ -167,7 +155,7 @@ def append_forecast_trace(
             return None
         try:
             return _append_forecast_trace_locked(
-                root, bundle, authoritative_plan, shadow_plan
+                root, bundle, authoritative_plan, optimization_problem
             )
         finally:
             fcntl.flock(lock_handle, fcntl.LOCK_UN)
@@ -177,7 +165,7 @@ def _append_forecast_trace_locked(
     root: Path,
     bundle: ForecastBundle,
     authoritative_plan: BatteryPlan | None,
-    shadow_plan: BatteryPlan | None,
+    optimization_problem: OptimizationProblem | None,
 ) -> Path | None:
     """Persist at most one immutable forecast vintage per UTC quarter-hour."""
     generated_at_ms = max(bundle.load.generated_at_ms, bundle.pv.generated_at_ms)
@@ -225,8 +213,8 @@ def _append_forecast_trace_locked(
         "scenarios": _serialize_scenarios(bundle),
         "optimizer_plans": {
             "authoritative": _serialize_plan(authoritative_plan),
-            "shadow": _serialize_plan(shadow_plan),
         },
+        "optimization_problem": _serialize_problem(optimization_problem),
         "truncated": bool(
             len(bundle.load.slots) > FORECAST_TRACE_MAX_SLOTS
             or len(bundle.pv.slots) > FORECAST_TRACE_MAX_SLOTS
@@ -316,6 +304,57 @@ def _serialize_plan(plan: BatteryPlan | None) -> dict[str, object] | None:
                 item.expected_soc_end_pct,
             ]
             for item in plan.slots[:FORECAST_TRACE_MAX_SLOTS]
+        ],
+    }
+
+
+def _serialize_problem(problem: OptimizationProblem | None) -> dict[str, object] | None:
+    if problem is None:
+        return None
+    return {
+        "problem_id": problem.problem_id,
+        "as_of_ms": problem.as_of_ms,
+        "battery": {
+            "captured_at_ms": problem.battery.captured_at_ms,
+            "soc_pct": problem.battery.soc_pct,
+        },
+        "constraints": {
+            "capacity_kwh": problem.constraints.capacity_kwh,
+            "min_soc_pct": problem.constraints.min_soc_pct,
+            "max_soc_pct": problem.constraints.max_soc_pct,
+            "max_charge_power_w": problem.constraints.max_charge_power_w,
+            "max_discharge_power_w": problem.constraints.max_discharge_power_w,
+            "round_trip_efficiency": problem.constraints.round_trip_efficiency,
+        },
+        "commercial_policy": {
+            "min_margin_ct_per_kwh": problem.policy.min_margin_ct_per_kwh,
+            "terminal_value_ct_per_kwh": problem.policy.terminal_value_ct_per_kwh,
+            "export_opportunity_ct_per_kwh": (
+                problem.policy.export_opportunity_ct_per_kwh
+            ),
+            "discharge_floor_ct_per_kwh": problem.policy.discharge_floor_ct_per_kwh,
+            "pv_charging_allowed": problem.policy.pv_charging_allowed,
+            "grid_charging_allowed": problem.policy.grid_charging_allowed,
+            "discharge_allowed": problem.policy.discharge_allowed,
+            "pv_recovery_confidence": problem.policy.pv_recovery_confidence,
+            "pv_recovery_reserve_kwh": problem.policy.pv_recovery_reserve_kwh,
+        },
+        "ev_policy": {
+            "pv_to_ev_first": problem.ev_policy.pv_to_ev_first,
+            "discharge_during_ev_charging": (
+                problem.ev_policy.discharge_during_ev_charging
+            ),
+            "battery_may_feed_ev": problem.ev_policy.battery_may_feed_ev,
+            "ev_active_threshold_w": problem.ev_policy.ev_active_threshold_w,
+        },
+        "market": [
+            [
+                item.slot.start_ms,
+                item.import_price_ct_per_kwh,
+                item.export_price_ct_per_kwh,
+                item.source,
+            ]
+            for item in problem.market[:FORECAST_TRACE_MAX_SLOTS]
         ],
     }
 

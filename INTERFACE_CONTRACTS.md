@@ -116,13 +116,14 @@ they can be calibrated from matured forecast residuals; missing quantiles mean
 load and PV use the identical slot grid.
 
 `ForecastBundle.scenarios` is optional. When present it is a bounded weighted
-set of complete, coherent paths on that same grid. Every path carries EV-free
+set of at most 12 complete, coherent paths on that same grid. Every path carries EV-free
 house-load, PV-generation and EV-charge energy separately. Probabilities are
 positive and sum to one; generation time, causal training cutoff and model
 version are explicit. Marginal P10/P50/P90 values are not scenarios and must
 not be combined into synthetic all-low or all-high trajectories.
 
-The optimizer input carries EV interaction policy explicitly. Forecasting does
+The optimizer input carries EV interaction policy explicitly, including the
+configured active-power threshold shared with live control. Forecasting does
 not merge EV into house load; optimization may account for competition between
 EV, PV and battery only through the separate scenario values and policy.
 

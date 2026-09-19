@@ -13,6 +13,8 @@ from .common import (
     require_slots_sorted_unique,
 )
 
+MAX_FORECAST_SCENARIOS = 12
+
 
 @dataclass(frozen=True, slots=True)
 class LoadFeatureValue:
@@ -297,12 +299,19 @@ class ForecastScenarioSet:
             raise ValueError("scenario training cutoff cannot be in the future")
         if not self.scenarios:
             raise ValueError("scenario set requires at least one path")
+        if len(self.scenarios) > MAX_FORECAST_SCENARIOS:
+            raise ValueError(
+                f"scenario set exceeds the {MAX_FORECAST_SCENARIOS}-path limit"
+            )
         if len({item.scenario_id for item in self.scenarios}) != len(self.scenarios):
             raise ValueError("scenario ids must be unique")
         if abs(sum(item.probability for item in self.scenarios) - 1.0) > 1e-9:
             raise ValueError("scenario probabilities must sum to one")
         grid = tuple(item.slot for item in self.scenarios[0].slots)
-        if any(tuple(item.slot for item in scenario.slots) != grid for scenario in self.scenarios):
+        if any(
+            tuple(item.slot for item in scenario.slots) != grid
+            for scenario in self.scenarios
+        ):
             raise ValueError("all scenarios must use the same slot grid")
 
 
@@ -320,7 +329,13 @@ class ForecastBundle:
         ):
             raise ValueError("load and PV forecasts must use the same slot grid")
         if self.scenarios is not None:
-            scenario_grid = tuple(item.slot for item in self.scenarios.scenarios[0].slots)
+            if self.scenarios.generated_at_ms != max(
+                self.load.generated_at_ms, self.pv.generated_at_ms
+            ):
+                raise ValueError("forecast scenarios must match the bundle vintage")
+            scenario_grid = tuple(
+                item.slot for item in self.scenarios.scenarios[0].slots
+            )
             if scenario_grid != tuple(item.slot for item in self.load.slots):
                 raise ValueError("forecast scenarios must use the same slot grid")
 

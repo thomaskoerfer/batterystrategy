@@ -20,6 +20,8 @@ from .plan_models import DailyCost, PlanPoint, StrategyPlan
 
 PERSISTED_PLAN_KEY = "_canonical_battery_plan_v1"
 PERSISTED_POLICY_KEY = "_execution_policy_v1"
+PERSISTED_EXECUTION_KEY = "_optimizer_execution_generation"
+PERSISTED_EXECUTION_GENERATION = "stochastic-v1"
 SLOT_MS = 15 * 60 * 1000
 
 
@@ -142,6 +144,7 @@ def persisted_output(
             else None
         ),
         PERSISTED_POLICY_KEY: _execution_policy(options),
+        PERSISTED_EXECUTION_KEY: PERSISTED_EXECUTION_GENERATION,
     }
 
 
@@ -156,13 +159,16 @@ def result_from_persisted_output(
     display_data = {
         key: value
         for key, value in output.items()
-        if key not in (PERSISTED_PLAN_KEY, PERSISTED_POLICY_KEY)
+        if key
+        not in (PERSISTED_PLAN_KEY, PERSISTED_POLICY_KEY, PERSISTED_EXECUTION_KEY)
     }
     try:
         battery_plan = _deserialize_battery_plan(output.get(PERSISTED_PLAN_KEY))
-        if battery_plan.constraints != _constraints_from_options(options) or output.get(
-            PERSISTED_POLICY_KEY
-        ) != _execution_policy(options):
+        if (
+            battery_plan.constraints != _constraints_from_options(options)
+            or output.get(PERSISTED_POLICY_KEY) != _execution_policy(options)
+            or output.get(PERSISTED_EXECUTION_KEY) != PERSISTED_EXECUTION_GENERATION
+        ):
             battery_plan = None
     except KeyError, TypeError, ValueError:
         battery_plan = None

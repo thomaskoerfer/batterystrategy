@@ -13,8 +13,7 @@ documented impact analysis and explicit owner approval.
   price context must not enter forecasting or the pure optimizer.
 - Optimization: `economic_optimizer.py` and `optimization_problem.py`.
 - Planning application: `planning_service.py`; publish exactly one authoritative
-  plan without constructing forecasts. A documented replacement shadow may run
-  afterward and flow only to bounded evaluation persistence.
+  plan without constructing forecasts or running a second optimizer.
 - Measured savings: `savings.py`; actual accounting is observational and must
   not influence planning or live control.
 - Home Assistant planning boundary: `planning_adapter.py` captures normalized

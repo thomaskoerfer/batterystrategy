@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from .contracts import (
     BatteryConstraints,
     BatteryPlan,
@@ -12,7 +14,14 @@ from .contracts import (
     MarketSlot,
     OptimizationProblem,
 )
-from .economic_optimizer import DynamicProgrammingOptimizer
+from .economic_optimizer import (
+    ENERGY_STEP_KWH,
+    DynamicProgrammingOptimizer,
+    StochasticDynamicProgrammingOptimizer,
+)
+
+STOCHASTIC_MAX_FINE_STATES = 1200
+STOCHASTIC_BOUNDARY_TOLERANCE_MS = 60_000
 
 
 def build_optimization_problem(
@@ -65,4 +74,40 @@ def build_optimization_problem(
 def optimize_snapshot(**kwargs) -> tuple[OptimizationProblem, BatteryPlan]:
     """Optimize one captured snapshot and retain its auditable input contract."""
     problem = build_optimization_problem(**kwargs)
-    return problem, DynamicProgrammingOptimizer().optimize(problem)
+    deterministic = DynamicProgrammingOptimizer()
+    if problem.forecast.scenarios is None:
+        return problem, deterministic.optimize(problem)
+    if (
+        problem.as_of_ms - problem.forecast.load.slots[0].slot.start_ms
+        > STOCHASTIC_BOUNDARY_TOLERANCE_MS
+    ):
+        fallback = deterministic.optimize(problem)
+        version = f"{fallback.optimizer_version}-stochastic-mid-slot-fallback"
+        return problem, replace(
+            fallback,
+            plan_id=f"{problem.problem_id}:{version}",
+            optimizer_version=version,
+        )
+    usable_energy_kwh = (
+        problem.constraints.capacity_kwh
+        * (problem.constraints.max_soc_pct - problem.constraints.min_soc_pct)
+        / 100.0
+    )
+    if round(usable_energy_kwh / ENERGY_STEP_KWH) + 1 > STOCHASTIC_MAX_FINE_STATES:
+        fallback = deterministic.optimize(problem)
+        version = f"{fallback.optimizer_version}-stochastic-complexity-fallback"
+        return problem, replace(
+            fallback,
+            plan_id=f"{problem.problem_id}:{version}",
+            optimizer_version=version,
+        )
+    try:
+        return problem, StochasticDynamicProgrammingOptimizer().optimize(problem)
+    except Exception:
+        fallback = deterministic.optimize(problem)
+        version = f"{fallback.optimizer_version}-stochastic-fallback"
+        return problem, replace(
+            fallback,
+            plan_id=f"{problem.problem_id}:{version}",
+            optimizer_version=version,
+        )

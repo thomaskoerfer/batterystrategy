@@ -20,6 +20,11 @@ stochastic optimizer authoritative when valid scenarios are present and falls
 back to deterministic P50 when they are absent. Compiler, live-control and
 actuation contracts do not change.
 
+The cutover adapter also retains P50 for configurations whose 0.025 kWh
+first-action lattice would exceed 1,200 states. This explicit complexity guard
+prevents supported high-capacity settings from adding an unbounded stochastic
+delay; diagnostics expose the fallback reason.
+
 ## Contract impact
 
 `ForecastBundle` gains optional `scenarios`. Every scenario:
@@ -32,12 +37,15 @@ actuation contracts do not change.
 
 `OptimizationProblem` gains an explicit EV interaction policy. This prevents
 the optimizer from inferring live-control semantics. EV remains excluded from
-house load and is never hidden inside its quantiles.
+house load and is never hidden inside its quantiles. The policy includes the
+same configurable EV-active threshold used by live control; values below it do
+not trigger EV-specific discharge restrictions.
 
 The owner approved these additive contract changes and their semantics in the
 conversation on 2026-09-19. Producer, optimizer and integration tests must move
-together. Persisted schemas are unchanged because scenario and shadow data are
-not part of the executable-plan snapshot.
+together. The non-authoritative trace moves to schema 2. Executable-plan
+persistence gains an internal optimizer-generation marker so a deployment or
+rollback cannot execute intent created by a different optimizer generation.
 
 ## Forecast implementation
 
@@ -45,19 +53,20 @@ The first scenario model is an empirical weekly-path ensemble:
 
 1. Complete historical paths from prior matching weekdays are selected using
    only finalized data available at the forecast cut-off.
-2. For load and PV, each historical path contributes its deviation from the
-   median historical path to the current P50 forecast. This preserves the
-   current weather/component point forecast while retaining historical serial
-   dependence.
-3. EV paths are carried separately from the same historical weeks. An active
-   current EV measurement anchors only the first slot.
+2. For load and PV, each historical path contributes a joint rank template.
+   The rank selects from the matching current point-model/lead-time residual
+   distribution around P50; PV remains capped by inverter power.
+3. EV paths are carried separately from the same historical weeks. Current
+   active/inactive state selects compatible sessions and an active measurement
+   anchors the first slot.
 4. A path is emitted only when all requested slots are present and quality
    valid. All retained paths receive equal probability.
 
 Selecting the same historical week jointly for load, PV and EV is a
-Schaake-shuffle-style empirical copula: temporal and cross-series dependence is
-preserved instead of independently sampling marginal quantiles. The model is
-setup-neutral and bounded to 12 scenarios.
+Schaake-shuffle-style empirical copula: calibrated marginals are coupled through
+historical temporal and cross-series ranks. The model is setup-neutral and
+bounded to 12 scenarios. Missing residual calibration disables scenarios and
+therefore keeps the deterministic P50 path authoritative.
 
 ## Optimizer implementation
 
@@ -70,31 +79,37 @@ The stochastic optimizer is a receding-horizon, two-stage model:
   existing cycling margin;
 - the visible remainder is a deterministic P50 recourse plan constrained to
   that common first transition and is recalculated at the next planning run;
+- the executable first-slot discharge budget is capped to that common action;
 - risk is initially expected cost. CVaR or other aversion is a later, measured
   policy change, not a hard-coded safety premium.
 
 EV allocation follows the existing policy switches: PV-to-EV priority,
-discharge while EV charging, and whether battery energy may serve EV demand.
+discharge while EV charging, whether battery energy may serve EV demand and the
+configured active threshold. If battery priority permits PV to be diverted from
+an active EV, the optimizer values that diverted energy as induced grid import,
+not as free PV.
 
 ## Shadow and evaluation
 
-The shadow release publishes the existing deterministic plan unchanged. It
-records bounded diagnostics for scenario readiness, stochastic first action,
-P50 first action, disagreement and expected scenario cost. Failure or timeout
-in scenario generation or shadow optimization cannot delay or alter the
-authoritative plan.
+The shadow release publishes and persists the existing deterministic plan
+before scenario generation starts. A best-effort evaluation task then builds
+the scenarios, runs the stochastic optimizer and records bounded diagnostics
+for readiness, both first actions, expected scenario cost and runtime. Failure
+or slow execution cannot delay or alter the authoritative plan; a busy sidecar
+drops later observational vintages instead of queueing work.
 
 Release evaluation compares both plans on identical vintages against matured
-actuals and perfect foresight. Required checks are action agreement, realized
-cost/regret, PV export, grid charging, EV collision, scenario coverage and
-runtime. The comparison is observational and cannot feed planning.
+actuals and perfect foresight. The first executable actions are compared with a
+perfect-foresight replay; scenario CRPS, P10-P90 coverage, EV-event Brier score
+and runtime are reported separately. The comparison is observational and
+cannot feed planning.
 
 ## Rollback
 
 - Shadow: disable/remove the optional scenario generation and shadow call;
   authoritative behavior is already RC26-equivalent.
-- Cutover: restore the shadow release or RC26. A changed optimizer version
-  invalidates stale executable plans through the existing plan lifecycle.
+- Cutover: restore the shadow release or RC26. The optimizer-generation marker
+  invalidates stale executable plans in either direction.
 
 ## Public-method basis
 

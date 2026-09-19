@@ -20,7 +20,7 @@ def _write_trace(root, *, generated_at_ms, slots):
     day = root / "2027-01-20"
     day.mkdir(parents=True, exist_ok=True)
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "non_authoritative": True,
         "generated_at_ms": generated_at_ms,
         "load": {

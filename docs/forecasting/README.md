@@ -53,12 +53,13 @@ remain application configuration because the approved contracts do not expose
 them; moving them into contract data requires a separate impact analysis and
 owner approval.
 
-The bundle may also contain bounded empirical weekly paths. Load, PV and EV are
-sampled jointly from the same historical week, while load and PV deviations are
-centered on the current P50 models. This preserves temporal and cross-series
-dependence without treating marginal quantiles as trajectories. EV remains a
-separate series. Incomplete history produces no scenario set and leaves the
-point forecast unchanged.
+The bundle may also contain bounded calibrated weekly-copula paths. A matching
+historical week supplies the joint temporal rank template for load, PV and EV;
+those ranks select values from the current lead-time residual distributions
+around P50. PV is capped by inverter power. Current EV active/inactive state
+selects compatible session paths, and EV remains separate from house load.
+Incomplete history or immature residual calibration produces no scenario set
+and leaves the point forecast unchanged.
 
 Issued vintages and matured residual cohorts are bounded forecast-owned learning
 state. They are distinct from non-authoritative evaluation traces: evaluation

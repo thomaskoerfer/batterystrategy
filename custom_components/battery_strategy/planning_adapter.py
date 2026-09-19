@@ -300,7 +300,7 @@ class PlanningPipelineAdapter:
                 outcome.forecast_bundle,
                 lambda: not self._revoked,
                 authoritative_plan=outcome.result.battery_plan,
-                optimization_problem=outcome.optimization_problem,
+                optimization_problem=outcome.evaluation_problem,
             )
         return cached
 

@@ -122,10 +122,9 @@ Optimization is a reproducible, side-effect-free function of:
 - current battery state and physical constraints;
 - efficiency, feed-in value and commercial policy.
 
-Scenario optimization uses a common first action with weighted recourse. The
-replacement shadow executes only after the authoritative deterministic plan and
-is evaluation-only; its failure cannot affect publication. Cutover changes the
-optimizer adapter while retaining the same `BatteryPlan` interface.
+Scenario optimization uses a common first action with weighted recourse. It is
+selected only for a valid coherent scenario set and otherwise falls back to the
+deterministic P50 optimizer, retaining the same `BatteryPlan` interface.
 
 It produces a `BatteryPlan` containing the intended energy trajectory, charge
 and discharge actions, commercial discharge budgets and plan diagnostics. It

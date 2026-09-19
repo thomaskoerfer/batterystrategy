@@ -120,6 +120,7 @@ class ProductionForecastConfig:
     current_pv_w: float | None
     tomorrow_energy_kwh: float | None
     current_ev_charge_w: float = 0.0
+    ev_active_threshold_w: float = 300.0
     uncertainty: ForecastResidualCalibration = EMPTY_CALIBRATION
 
 
@@ -190,12 +191,22 @@ class ProductionForecastModule:
                 config.uncertainty,
             ),
         ).compose(request, eligible, context, weather, plant)
-        scenarios = build_empirical_scenarios(
-            bundle,
-            eligible,
-            timezone=request.timezone,
-            current_ev_charge_w=max(0.0, float(config.current_ev_charge_w)),
-        )
+        scenario_status = "unavailable"
+        try:
+            scenarios = build_empirical_scenarios(
+                bundle,
+                eligible,
+                timezone=request.timezone,
+                current_ev_charge_w=max(0.0, float(config.current_ev_charge_w)),
+                ev_active_threshold_w=max(0.0, float(config.ev_active_threshold_w)),
+                calibration=config.uncertainty,
+                pv_slot_cap_kwh=max(0.0, plant.inverter_kw * SLOT_H),
+            )
+            scenario_status = "ready" if scenarios is not None else "unavailable"
+        except Exception:
+            # Scenario enrichment is optional; P50 remains a complete fallback.
+            scenarios = None
+            scenario_status = "failed_p50_fallback"
         if scenarios is not None:
             bundle = replace(bundle, scenarios=scenarios)
         diagnostics = {
@@ -222,6 +233,7 @@ class ProductionForecastModule:
             "scenario_model_version": (
                 bundle.scenarios.model_version if bundle.scenarios is not None else None
             ),
+            "scenario_status": scenario_status,
         }
         return ProductionForecastResult(bundle, diagnostics)
 

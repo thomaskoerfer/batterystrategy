@@ -41,6 +41,7 @@ class PlanningSettings:
     pv_to_ev_first: bool = True
     discharge_during_ev_charging: bool = True
     battery_may_feed_ev: bool = False
+    ev_active_threshold_w: float = 300.0
     slot_hours: float = 0.25
 
 
@@ -52,7 +53,7 @@ class PlanningPublication:
     data: Mapping[str, object]
     operator_points: tuple[PlanPoint, ...]
     operator_daily_costs: Mapping[str, DailyCost]
-    optimization_problem: OptimizationProblem | None = None
+    evaluation_problem: OptimizationProblem | None = None
 
 
 class PlanningService:
@@ -136,15 +137,32 @@ class PlanningService:
                     self._settings.discharge_during_ev_charging
                 ),
                 battery_may_feed_ev=self._settings.battery_may_feed_ev,
+                ev_active_threshold_w=self._settings.ev_active_threshold_w,
             ),
         )
         diagnostics = metadata.setdefault("forecast_diagnostics", {})
-        diagnostics["optimizer_shadow"] = {
-            "ready": problem.forecast.scenarios is not None,
-            "status": (
-                "scheduled"
-                if problem.forecast.scenarios is not None
-                else "forecast_scenarios_unavailable"
+        diagnostics["optimizer"] = {
+            "mode": (
+                "stochastic"
+                if candidate.optimizer_version.startswith("stochastic-")
+                else "deterministic_p50_fallback"
+            ),
+            "fallback_reason": (
+                "stochastic_optimizer_error"
+                if candidate.optimizer_version.endswith("-stochastic-fallback")
+                else (
+                    "stochastic_mid_slot_guard"
+                    if candidate.optimizer_version.endswith(
+                        "-stochastic-mid-slot-fallback"
+                    )
+                    else (
+                        "stochastic_complexity_guard"
+                        if candidate.optimizer_version.endswith(
+                            "-stochastic-complexity-fallback"
+                        )
+                        else None
+                    )
+                )
             ),
             "scenario_count": (
                 len(problem.forecast.scenarios.scenarios)
