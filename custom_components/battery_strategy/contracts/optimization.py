@@ -117,6 +117,10 @@ class EvInteractionPolicy:
     pv_to_ev_first: bool = True
     discharge_during_ev_charging: bool = True
     battery_may_feed_ev: bool = False
+    ev_active_threshold_w: float = 300.0
+
+    def __post_init__(self) -> None:
+        require_nonnegative("ev_active_threshold_w", self.ev_active_threshold_w)
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,6 +142,10 @@ class OptimizationProblem:
         if (
             self.forecast.load.generated_at_ms > self.as_of_ms
             or self.forecast.pv.generated_at_ms > self.as_of_ms
+            or (
+                self.forecast.scenarios is not None
+                and self.forecast.scenarios.generated_at_ms > self.as_of_ms
+            )
         ):
             raise ValueError("forecasts cannot be newer than optimization as_of_ms")
         forecast_slots = tuple(item.slot for item in self.forecast.load.slots)

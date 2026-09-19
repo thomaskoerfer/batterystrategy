@@ -301,6 +301,7 @@ class PlanningPipelineAdapter:
                 lambda: not self._revoked,
                 authoritative_plan=outcome.result.battery_plan,
                 optimization_problem=outcome.optimization_problem,
+                scenario_input=outcome.scenario_input,
             )
         return cached
 

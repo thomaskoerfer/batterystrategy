@@ -14,7 +14,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 SLOT_MS = 15 * 60 * 1000
-TRACE_SCHEMA_VERSION = 1
+SUPPORTED_TRACE_SCHEMAS = frozenset({1, 2})
 SUPPORTED_FEATURE_STORE_SCHEMAS = frozenset({1, 2, 3})
 DEFAULT_TRACE_DIRECTORY = "/config/battery_strategy_forecast_trace"
 DEFAULT_FEATURE_STORE = "/config/battery_strategy_features.json.gz"
@@ -88,7 +88,10 @@ def load_forecast_observations(
         for path in sorted(day_dir.glob("*.json.gz")):
             try:
                 payload = json.loads(gzip.decompress(path.read_bytes()))
-                if int(payload.get("schema_version", -1)) != TRACE_SCHEMA_VERSION:
+                if (
+                    int(payload.get("schema_version", -1))
+                    not in SUPPORTED_TRACE_SCHEMAS
+                ):
                     continue
                 vintage_generated_at_ms = int(payload["generated_at_ms"])
                 if not (

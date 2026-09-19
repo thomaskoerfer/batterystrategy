@@ -41,6 +41,7 @@ class PlanningSettings:
     pv_to_ev_first: bool = True
     discharge_during_ev_charging: bool = True
     battery_may_feed_ev: bool = False
+    ev_active_threshold_w: float = 300.0
     slot_hours: float = 0.25
 
 
@@ -136,21 +137,14 @@ class PlanningService:
                     self._settings.discharge_during_ev_charging
                 ),
                 battery_may_feed_ev=self._settings.battery_may_feed_ev,
+                ev_active_threshold_w=self._settings.ev_active_threshold_w,
             ),
         )
         diagnostics = metadata.setdefault("forecast_diagnostics", {})
         diagnostics["optimizer_shadow"] = {
-            "ready": problem.forecast.scenarios is not None,
-            "status": (
-                "scheduled"
-                if problem.forecast.scenarios is not None
-                else "forecast_scenarios_unavailable"
-            ),
-            "scenario_count": (
-                len(problem.forecast.scenarios.scenarios)
-                if problem.forecast.scenarios is not None
-                else 0
-            ),
+            "ready": False,
+            "status": "post_publication_scheduled",
+            "scenario_count": 0,
         }
         publication = self._publish(
             candidate,

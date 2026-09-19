@@ -25,9 +25,16 @@ remains separate and can affect PV allocation or discharge only through the
 explicit EV interaction policy. Without scenarios it returns the deterministic
 P50 plan exactly.
 
-The replacement shadow keeps `DynamicProgrammingOptimizer` authoritative and
-stores the stochastic plan only for evaluation. Cutover changes optimizer
-selection, not the `BatteryPlan`, compiler, live-control or actuation contracts.
+Only the shared first transition is executable scenario output. Remaining plan
+slots are deterministic P50 recourse for safe restart continuity and are
+replaced by rolling optimization before execution. `optimized_cost_eur` remains
+the presentation plan's P50 energy bill; stochastic objective values are not
+reported as accounting costs.
+
+The replacement shadow keeps `DynamicProgrammingOptimizer` authoritative. Only
+after that plan has been persisted does the evaluation sidecar generate
+scenarios and store the stochastic plan. Cutover changes optimizer selection,
+not the `BatteryPlan`, compiler, live-control or actuation contracts.
 
 ## Economic model
 
@@ -88,6 +95,8 @@ replays assess economic quality but never participate in live actuation.
 
 ## Production status
 
-The pure optimizer is authoritative. Market-policy metadata is computed once
-and one explicit `OptimizationProblem` is optimized; there is no runtime
-optimizer selector or second economic plan.
+The pure deterministic optimizer remains authoritative. Market-policy metadata
+is computed once and one explicit `OptimizationProblem` produces executable
+intent. During the approved replacement-shadow window only, evaluation reuses
+that immutable problem after publication to calculate one non-authoritative
+stochastic plan. It cannot reach the compiler or live control.

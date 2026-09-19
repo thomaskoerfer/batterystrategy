@@ -13,10 +13,12 @@ import threading
 import time
 import uuid
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
 from .contracts import BatteryPlan, ForecastBundle, ForecastSlot, OptimizationProblem
 from .economic_optimizer import StochasticDynamicProgrammingOptimizer
+from .forecasting.scenarios import ScenarioGenerationInput
 
 FORECAST_TRACE_DIRECTORY = "battery_strategy_forecast_trace"
 FORECAST_TRACE_SCHEMA_VERSION = 2
@@ -46,6 +48,7 @@ class ForecastTraceScheduler:
         *,
         authoritative_plan: BatteryPlan | None = None,
         optimization_problem: OptimizationProblem | None = None,
+        scenario_input: ScenarioGenerationInput | None = None,
     ) -> None:
         """Schedule one lifecycle-owned trace without blocking the caller."""
         if is_active is not None and not is_active():
@@ -63,7 +66,11 @@ class ForecastTraceScheduler:
                 self._forget(bucket_ms)
                 return
             coroutine = self._async_write(
-                bundle, bucket_ms, authoritative_plan, optimization_problem
+                bundle,
+                bucket_ms,
+                authoritative_plan,
+                optimization_problem,
+                scenario_input,
             )
             try:
                 entry.async_create_background_task(
@@ -88,6 +95,7 @@ class ForecastTraceScheduler:
         bucket_ms: int,
         authoritative_plan: BatteryPlan | None = None,
         optimization_problem: OptimizationProblem | None = None,
+        scenario_input: ScenarioGenerationInput | None = None,
     ) -> None:
         try:
             await self._hass.async_add_executor_job(
@@ -96,6 +104,7 @@ class ForecastTraceScheduler:
                 bucket_ms,
                 authoritative_plan,
                 optimization_problem,
+                scenario_input,
             )
         except Exception as err:
             self._forget(bucket_ms)
@@ -107,29 +116,71 @@ class ForecastTraceScheduler:
         bucket_ms: int,
         authoritative_plan: BatteryPlan | None = None,
         optimization_problem: OptimizationProblem | None = None,
+        scenario_input: ScenarioGenerationInput | None = None,
     ) -> None:
-        # A writer that survived reload owns this lock until its real file I/O
-        # returns. Later vintages are dropped instead of waiting in the executor.
+        # This instance lock handles overlap within one config-entry lifetime.
         if not self._write_lock.acquire(blocking=False):
             return
         try:
-            shadow_plan = None
-            if (
-                optimization_problem is not None
-                and optimization_problem.forecast.scenarios is not None
-            ):
+            self._root.mkdir(parents=True, exist_ok=True)
+            lock_path = self._root / ".write.lock"
+            with lock_path.open("a+b") as lock_handle:
                 try:
-                    shadow_plan = StochasticDynamicProgrammingOptimizer().optimize(
-                        optimization_problem
+                    # Cross-reload single-flight starts before expensive work.
+                    fcntl.flock(lock_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    return
+                try:
+                    shadow_plan = None
+                    shadow_status = "scenario_inputs_unavailable"
+                    shadow_runtime_ms = None
+                    shadow_bundle = bundle
+                    shadow_problem = optimization_problem
+                    started = time.perf_counter()
+                    if scenario_input is not None:
+                        try:
+                            scenarios = scenario_input.build(bundle)
+                            if scenarios is None:
+                                shadow_status = "scenarios_unavailable"
+                            elif optimization_problem is None:
+                                shadow_status = "optimization_problem_unavailable"
+                            else:
+                                shadow_bundle = replace(bundle, scenarios=scenarios)
+                                shadow_problem = replace(
+                                    optimization_problem, forecast=shadow_bundle
+                                )
+                                (
+                                    shadow_plan,
+                                    optimizer_diagnostics,
+                                ) = StochasticDynamicProgrammingOptimizer().optimize_with_diagnostics(
+                                    shadow_problem
+                                )
+                                shadow_status = "completed"
+                        except Exception as err:
+                            shadow_status = "failed"
+                            self._warn(err)
+                        finally:
+                            shadow_runtime_ms = round(
+                                (time.perf_counter() - started) * 1000.0, 3
+                            )
+                    _append_forecast_trace_locked(
+                        self._root,
+                        shadow_bundle,
+                        authoritative_plan,
+                        shadow_plan,
+                        shadow_problem,
+                        {
+                            "status": shadow_status,
+                            "runtime_ms": shadow_runtime_ms,
+                            **(
+                                optimizer_diagnostics
+                                if shadow_status == "completed"
+                                else {}
+                            ),
+                        },
                     )
-                except Exception as err:
-                    self._warn(err)
-            append_forecast_trace(
-                self._root,
-                bundle,
-                authoritative_plan=authoritative_plan,
-                shadow_plan=shadow_plan,
-            )
+                finally:
+                    fcntl.flock(lock_handle, fcntl.LOCK_UN)
         except Exception as err:
             self._forget(bucket_ms)
             self._warn(err)
@@ -155,6 +206,8 @@ def append_forecast_trace(
     *,
     authoritative_plan: BatteryPlan | None = None,
     shadow_plan: BatteryPlan | None = None,
+    optimization_problem: OptimizationProblem | None = None,
+    shadow_evaluation: dict[str, object] | None = None,
 ) -> Path | None:
     """Persist one vintage while dropping work behind a surviving writer."""
     root = Path(root)
@@ -167,7 +220,12 @@ def append_forecast_trace(
             return None
         try:
             return _append_forecast_trace_locked(
-                root, bundle, authoritative_plan, shadow_plan
+                root,
+                bundle,
+                authoritative_plan,
+                shadow_plan,
+                optimization_problem,
+                shadow_evaluation,
             )
         finally:
             fcntl.flock(lock_handle, fcntl.LOCK_UN)
@@ -178,6 +236,8 @@ def _append_forecast_trace_locked(
     bundle: ForecastBundle,
     authoritative_plan: BatteryPlan | None,
     shadow_plan: BatteryPlan | None,
+    optimization_problem: OptimizationProblem | None,
+    shadow_evaluation: dict[str, object] | None,
 ) -> Path | None:
     """Persist at most one immutable forecast vintage per UTC quarter-hour."""
     generated_at_ms = max(bundle.load.generated_at_ms, bundle.pv.generated_at_ms)
@@ -227,6 +287,8 @@ def _append_forecast_trace_locked(
             "authoritative": _serialize_plan(authoritative_plan),
             "shadow": _serialize_plan(shadow_plan),
         },
+        "optimization_problem": _serialize_problem(optimization_problem),
+        "shadow_evaluation": shadow_evaluation,
         "truncated": bool(
             len(bundle.load.slots) > FORECAST_TRACE_MAX_SLOTS
             or len(bundle.pv.slots) > FORECAST_TRACE_MAX_SLOTS
@@ -316,6 +378,57 @@ def _serialize_plan(plan: BatteryPlan | None) -> dict[str, object] | None:
                 item.expected_soc_end_pct,
             ]
             for item in plan.slots[:FORECAST_TRACE_MAX_SLOTS]
+        ],
+    }
+
+
+def _serialize_problem(problem: OptimizationProblem | None) -> dict[str, object] | None:
+    if problem is None:
+        return None
+    return {
+        "problem_id": problem.problem_id,
+        "as_of_ms": problem.as_of_ms,
+        "battery": {
+            "captured_at_ms": problem.battery.captured_at_ms,
+            "soc_pct": problem.battery.soc_pct,
+        },
+        "constraints": {
+            "capacity_kwh": problem.constraints.capacity_kwh,
+            "min_soc_pct": problem.constraints.min_soc_pct,
+            "max_soc_pct": problem.constraints.max_soc_pct,
+            "max_charge_power_w": problem.constraints.max_charge_power_w,
+            "max_discharge_power_w": problem.constraints.max_discharge_power_w,
+            "round_trip_efficiency": problem.constraints.round_trip_efficiency,
+        },
+        "commercial_policy": {
+            "min_margin_ct_per_kwh": problem.policy.min_margin_ct_per_kwh,
+            "terminal_value_ct_per_kwh": problem.policy.terminal_value_ct_per_kwh,
+            "export_opportunity_ct_per_kwh": (
+                problem.policy.export_opportunity_ct_per_kwh
+            ),
+            "discharge_floor_ct_per_kwh": problem.policy.discharge_floor_ct_per_kwh,
+            "pv_charging_allowed": problem.policy.pv_charging_allowed,
+            "grid_charging_allowed": problem.policy.grid_charging_allowed,
+            "discharge_allowed": problem.policy.discharge_allowed,
+            "pv_recovery_confidence": problem.policy.pv_recovery_confidence,
+            "pv_recovery_reserve_kwh": problem.policy.pv_recovery_reserve_kwh,
+        },
+        "ev_policy": {
+            "pv_to_ev_first": problem.ev_policy.pv_to_ev_first,
+            "discharge_during_ev_charging": (
+                problem.ev_policy.discharge_during_ev_charging
+            ),
+            "battery_may_feed_ev": problem.ev_policy.battery_may_feed_ev,
+            "ev_active_threshold_w": problem.ev_policy.ev_active_threshold_w,
+        },
+        "market": [
+            [
+                item.slot.start_ms,
+                item.import_price_ct_per_kwh,
+                item.export_price_ct_per_kwh,
+                item.source,
+            ]
+            for item in problem.market[:FORECAST_TRACE_MAX_SLOTS]
         ],
     }
 

@@ -1,6 +1,8 @@
 import datetime as dt
 import gzip
 import json
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
@@ -22,8 +24,13 @@ from custom_components.battery_strategy.contracts import (
 from custom_components.battery_strategy.forecast_trace import (
     FORECAST_TRACE_RETENTION_DAYS,
     SLOT_MS,
+    ForecastTraceScheduler,
     append_forecast_trace,
 )
+from custom_components.battery_strategy.forecasting.scenarios import (
+    ScenarioGenerationInput,
+)
+from custom_components.battery_strategy.forecasting.uncertainty import EMPTY_CALIBRATION
 
 
 def forecast_bundle(
@@ -196,3 +203,62 @@ def test_trace_payload_has_no_installation_mapping_fields(tmp_path):
         "config_path",
     ):
         assert forbidden not in rendered
+
+
+def test_post_publication_scenario_failure_is_contained_and_traced(tmp_path):
+    bundle = forecast_bundle(1_800_000_000_000)
+    scenario_input = ScenarioGenerationInput(
+        history=(),
+        timezone="Invalid/Timezone",
+        current_ev_charge_w=0.0,
+        ev_active_threshold_w=300.0,
+        calibration=EMPTY_CALIBRATION,
+        pv_slot_cap_kwh=0.5,
+    )
+
+    ForecastTraceScheduler(None, tmp_path)._write_if_available(
+        bundle,
+        trace_module.forecast_trace_bucket_ms(bundle),
+        scenario_input=scenario_input,
+    )
+
+    path = next(tmp_path.rglob("*.json.gz"))
+    payload = json.loads(gzip.decompress(path.read_bytes()))
+    assert payload["shadow_evaluation"]["status"] == "failed"
+    assert payload["optimizer_plans"]["shadow"] is None
+
+
+def test_reload_schedulers_share_single_flight_before_scenario_work(tmp_path):
+    active = 0
+    maximum = 0
+    lock = threading.Lock()
+
+    class SlowScenarioInput:
+        def build(self, _bundle):
+            nonlocal active, maximum
+            with lock:
+                active += 1
+                maximum = max(maximum, active)
+            time.sleep(0.05)
+            with lock:
+                active -= 1
+            return None
+
+    bundle = forecast_bundle(1_800_000_000_000)
+    schedulers = (
+        ForecastTraceScheduler(None, tmp_path),
+        ForecastTraceScheduler(None, tmp_path),
+    )
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(
+            pool.map(
+                lambda scheduler: scheduler._write_if_available(
+                    bundle,
+                    trace_module.forecast_trace_bucket_ms(bundle),
+                    scenario_input=SlowScenarioInput(),
+                ),
+                schedulers,
+            )
+        )
+
+    assert maximum == 1

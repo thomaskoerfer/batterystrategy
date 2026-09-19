@@ -10,6 +10,7 @@ from custom_components.battery_strategy import planning_result
 from custom_components.battery_strategy.models import StrategyOptions
 from custom_components.battery_strategy.plan_models import PlanPoint, StrategyPlan
 from custom_components.battery_strategy.planning_result import (
+    PERSISTED_EXECUTION_KEY,
     PERSISTED_PLAN_KEY,
     build_fresh_planning_result,
     build_planning_result,
@@ -141,6 +142,24 @@ def test_changed_execution_policy_invalidates_persisted_plan():
         StrategyOptions(grid_charging="price_sensitive"),
         timezone=dt.UTC,
         now_ms=start_ms,
+    )
+
+    assert restored.battery_plan is None
+
+
+@pytest.mark.parametrize("stored_generation", [None, "different-generation"])
+def test_missing_or_changed_optimizer_generation_invalidates_persisted_plan(
+    stored_generation,
+):
+    result, options, start_ms = _result_fixture()
+    stored = persisted_output(result, options)
+    if stored_generation is None:
+        stored.pop(PERSISTED_EXECUTION_KEY)
+    else:
+        stored[PERSISTED_EXECUTION_KEY] = stored_generation
+
+    restored = result_from_persisted_output(
+        stored, options, timezone=dt.UTC, now_ms=start_ms
     )
 
     assert restored.battery_plan is None

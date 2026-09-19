@@ -11,8 +11,11 @@ model versions, readiness and failures without exposing private configuration.
 Evaluation consumes immutable outputs and later matured actual slots. It may
 write bounded reports, forecast observations, backtest results and command
 traces. It cannot feed a live command, change a plan, retrain during a backtest
-window or obtain an actuator reference. No duplicate forecast, optimizer or
-compiler implementation remains at runtime.
+window or obtain an actuator reference. No duplicate authoritative forecast,
+optimizer or compiler path remains at runtime. The temporary owner-approved
+stochastic optimizer shadow is the sole exception: it runs only after
+authoritative publication, has no compiler/actuator reference and is removed or
+promoted after its release gate.
 
 ## Metrics
 
@@ -40,6 +43,9 @@ outputs, model versions, target slots, P50 and optional calibrated quantiles,
 quality metadata and named load-component forecasts. Schema 2 also stores the
 bounded coherent scenario set plus authoritative and stochastic-shadow plans,
 so identical vintages can be compared against actuals and perfect foresight.
+The same sidecar stores the redacted normalized market curve, battery state and
+constraints, commercial policy and EV interaction policy required to reproduce
+the optimization problem; it contains no entity or device identifiers.
 It contains no entity IDs, provider payloads or actuator data. A trace write happens
 only after the authoritative planning result has been persisted and cached, in
 an independent best-effort executor task. Failure is rate-limited in the log and
@@ -47,8 +53,9 @@ cannot invalidate or delay planner completion. Concurrent reload-era writers
 publish atomically and preserve the first complete vintage for a quarter-hour.
 Only one trace write may occupy the shared executor at a time; an overdue write
 causes later observational vintages to be skipped rather than queued. The
-non-blocking filesystem lock spans config-entry reloads, background tasks belong
-to the active entry lifecycle, and a revoked adapter cannot enqueue new work.
+non-blocking filesystem lock is acquired before scenario generation and spans
+config-entry reloads, background tasks belong to the active entry lifecycle,
+and a revoked adapter cannot enqueue new work.
 
 The offline `scripts/battery_strategy_forecast_backtest.py` utility joins those
 vintages to finalized feature-store actuals by exact UTC slot key. It excludes
@@ -68,6 +75,27 @@ python3 scripts/battery_strategy_forecast_backtest.py \
 These metrics are evidence for a later reviewed model change, not an online
 reinforcement loop. The existing online calibration remains owned by the
 forecast application and is unchanged by this trace or evaluator.
+
+The replacement optimizer shadow has a separate evaluator. It reports load/PV
+scenario CRPS and central-80% coverage, EV-event Brier score, shadow runtime and
+first-action monetary regret versus a hindsight-perfect replay. Only vintages
+captured within 60 seconds of a slot boundary enter the decision comparison.
+Complete matured path suffixes additionally report an energy score, a local
+variogram score and EV start/duration error, so marginal calibration cannot hide
+implausible temporal or cross-series paths. The replay defaults to one vintage
+per hour to keep runtime bounded. Realized live cost and
+export remain owned by measured savings/command evaluation; a planning trace
+cannot reconstruct compiler and live-control intervention faithfully:
+
+```sh
+python3 scripts/battery_strategy_optimizer_shadow_backtest.py \
+  --trace-dir PATH_TO_FORECAST_TRACE \
+  --feature-store PATH_TO_FEATURE_STORE \
+  --days 7
+```
+
+This report replaces the former RC26 observation gate. RC26 is retained only as
+a rollback reference and is not executed as a second shadow.
 
 Finite cyclic appliances also have an event-level walk-forward evaluator. It
 uses only prior completed cycles, starts each replay after the first finalized
