@@ -81,6 +81,56 @@ def test_revoked_lifecycle_rejects_late_executor_write(tmp_path):
         store.save(state)
 
 
+def test_incompatible_publication_is_atomically_made_non_executable(tmp_path):
+    path = tmp_path / "battery_strategy_optimizer_state.json"
+    store = PlanningStateStore.claim(path)
+    save_state_document(
+        path,
+        {
+            "last_output": {
+                "mode": "discharge_planned",
+                "_canonical_battery_plan_v1": {"optimizer_version": "stochastic"},
+                "_optimizer_execution_generation": "stochastic-v1",
+            },
+            "state_schema": STATE_SCHEMA_VERSION,
+        },
+    )
+
+    changed = store.invalidate_incompatible_publication(
+        execution_key="_optimizer_execution_generation",
+        expected_generation="deterministic-v2",
+        plan_key="_canonical_battery_plan_v1",
+    )
+
+    assert changed is True
+    output = load_state_document(path)["last_output"]
+    assert output["mode"] == "discharge_planned"
+    assert output["_canonical_battery_plan_v1"] is None
+    assert output["_optimizer_execution_generation"] == "deterministic-v2"
+
+
+def test_matching_publication_generation_is_not_rewritten(tmp_path):
+    path = tmp_path / "battery_strategy_optimizer_state.json"
+    store = PlanningStateStore.claim(path)
+    source = {
+        "last_output": {
+            "_canonical_battery_plan_v1": {"optimizer_version": "deterministic"},
+            "_optimizer_execution_generation": "deterministic-v2",
+        },
+        "state_schema": STATE_SCHEMA_VERSION,
+    }
+    save_state_document(path, source)
+
+    changed = store.invalidate_incompatible_publication(
+        execution_key="_optimizer_execution_generation",
+        expected_generation="deterministic-v2",
+        plan_key="_canonical_battery_plan_v1",
+    )
+
+    assert changed is False
+    assert load_state_document(path) == source
+
+
 def test_older_run_cannot_replace_newer_persisted_output(tmp_path):
     path = tmp_path / "battery_strategy_optimizer_state.json"
     store = PlanningStateStore(str(path))
