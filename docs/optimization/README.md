@@ -19,13 +19,14 @@ Assistant, entities, recorder history, files, network resources or the wall
 clock. Every decision input is explicit in `OptimizationProblem`.
 
 With coherent scenarios, `StochasticDynamicProgrammingOptimizer` uses a
-probability-weighted two-stage receding horizon: all paths share the first
-battery transition and have independent optimal recourse afterwards. EV demand
+probability-weighted two-stage receding horizon: all paths share the first-slot
+required charge and discharge budget, while realized PV/load response and later
+optimal recourse remain scenario-dependent. EV demand
 remains separate and can affect PV allocation or discharge only through the
 explicit EV interaction policy. Without scenarios it returns the deterministic
 P50 plan exactly.
 
-Only the shared first transition is executable scenario output. Remaining plan
+Only the shared first-slot permissions are executable scenario output. Remaining plan
 slots are deterministic P50 recourse for safe restart continuity and are
 replaced by rolling optimization before execution. `optimized_cost_eur` remains
 the presentation plan's P50 energy bill; stochastic objective values are not
@@ -108,7 +109,7 @@ the deterministic P50 optimizer remains authoritative and diagnostics report
 `stochastic_complexity_guard`.
 
 The stochastic first-stage action is authoritative only for a planning vintage
-captured within 60 seconds of the current slot boundary. A later mid-slot
+captured exactly at the current slot boundary. A later mid-slot
 replan uses the deterministic P50 optimizer and reports
 `stochastic_mid_slot_guard`; already-used energy and slot commitment remain the
 compiler's responsibility.

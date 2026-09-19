@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import datetime as dt
 import math
-from dataclasses import dataclass
 from zoneinfo import ZoneInfo
 
 from ..contracts import (
@@ -30,30 +29,6 @@ _INVALID_FLAGS = frozenset(
         QualityFlag.RESTART_GAP,
     }
 )
-
-
-@dataclass(frozen=True, slots=True)
-class ScenarioGenerationInput:
-    """Captured inputs for post-publication scenario generation."""
-
-    history: tuple[HistoricalFeatureSlot, ...]
-    timezone: str
-    current_ev_charge_w: float
-    ev_active_threshold_w: float
-    calibration: ForecastResidualCalibration
-    pv_slot_cap_kwh: float
-
-    def build(self, bundle: ForecastBundle) -> ForecastScenarioSet | None:
-        """Build scenarios without reading mutable runtime state."""
-        return build_empirical_scenarios(
-            bundle,
-            self.history,
-            timezone=self.timezone,
-            current_ev_charge_w=self.current_ev_charge_w,
-            ev_active_threshold_w=self.ev_active_threshold_w,
-            calibration=self.calibration,
-            pv_slot_cap_kwh=self.pv_slot_cap_kwh,
-        )
 
 
 def build_empirical_scenarios(

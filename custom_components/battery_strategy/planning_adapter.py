@@ -126,6 +126,7 @@ class PlanningPipelineAdapter:
         self._forecast_drivers: tuple[LoadDriverSnapshot, ...] = ()
         self._forecast_component_specs: tuple[LoadComponentSpec, ...] = ()
         self._revoked = False
+        self._pending_forecast_trace = None
         self._forecast_trace_scheduler = forecast_trace_scheduler or (
             ForecastTraceScheduler(
                 hass,
@@ -291,18 +292,35 @@ class PlanningPipelineAdapter:
         self._last_options = options
         self._last_run_monotonic = cache_now
         cached = self.cached_result(inputs, options)
-        if (
-            self._forecast_trace_scheduler is not None
-            and outcome.forecast_bundle is not None
-        ):
-            self._forecast_trace_scheduler.schedule(
-                self._entry,
+        self._pending_forecast_trace = (
+            (
                 outcome.forecast_bundle,
-                lambda: not self._revoked,
-                authoritative_plan=outcome.result.battery_plan,
-                optimization_problem=outcome.evaluation_problem,
+                outcome.result.battery_plan,
+                outcome.evaluation_problem,
+                outcome.optimization_diagnostics,
             )
+            if outcome.forecast_bundle is not None
+            else None
+        )
         return cached
+
+    def schedule_pending_forecast_trace(self) -> None:
+        """Schedule observation only after HA has published the cached result."""
+        pending = self._pending_forecast_trace
+        self._pending_forecast_trace = None
+        if pending is None or self._forecast_trace_scheduler is None or self._revoked:
+            return
+        bundle, authoritative_plan, optimization_problem, optimization_diagnostics = (
+            pending
+        )
+        self._forecast_trace_scheduler.schedule(
+            self._entry,
+            bundle,
+            lambda: not self._revoked,
+            authoritative_plan=authoritative_plan,
+            optimization_problem=optimization_problem,
+            optimization_diagnostics=optimization_diagnostics,
+        )
 
     def runtime_context(
         self, inputs: LiveMeasurements, options: StrategyOptions
@@ -531,5 +549,6 @@ class PlanningPipelineAdapter:
     def revoke_state_writer(self) -> None:
         """Close state publication for this unloaded coordinator generation."""
         self._revoked = True
+        self._pending_forecast_trace = None
         if self._state_store is not None:
             self._state_store.revoke()

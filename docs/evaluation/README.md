@@ -79,8 +79,9 @@ forecast application and is unchanged by this trace or evaluator.
 The retained replacement-shadow evaluator reports load/PV scenario CRPS and
 central-80% coverage, EV-event Brier score, complete-path energy/variogram
 scores, EV start/duration error, runtime and first-action monetary regret versus
-a hindsight-perfect replay. It evaluates decision vintages only within 60
-seconds of a slot boundary. The replay defaults to one vintage per hour to keep
+a hindsight-perfect replay. It evaluates decision vintages only exactly at a
+slot boundary, so partial-slot actuals are never attributed to a later
+decision. The replay defaults to one vintage per hour to keep
 runtime bounded. Cutover traces without a shadow plan still contribute forecast
 scenario metrics. Realized live cost and
 export remain owned by measured savings/command evaluation; a planning trace
@@ -123,6 +124,14 @@ Tests cover alignment, actual-data maturation, missing-data exclusion,
 non-authoritative flags, retention, bounded attributes, redaction and failure
 containment. A release gate must state its observation duration and numerical
 tolerances before results are reviewed.
+
+The replacement-shadow gate is pre-registered as follows: at least 100 exact
+boundary decision vintages, 20 complete matured path vintages and 30 samples in
+each evaluated lead/regime cohort; maximum shadow runtime 5 seconds; the upper
+95% confidence bound of paired monetary-regret delta must not exceed zero; and
+each mature load/PV cohort must have central-80% coverage between 65% and 95%
+with scenario CRPS no worse than the P50 degenerate baseline. The evaluator
+returns `pass`, `fail` or `insufficient_data`; it never promotes code itself.
 
 Collect at least seven complete days before comparing weekday-sensitive model
 behavior. No automatic promotion threshold is defined: a proposed forecast

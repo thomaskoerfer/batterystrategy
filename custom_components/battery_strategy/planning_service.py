@@ -54,6 +54,7 @@ class PlanningPublication:
     operator_points: tuple[PlanPoint, ...]
     operator_daily_costs: Mapping[str, DailyCost]
     evaluation_problem: OptimizationProblem | None = None
+    optimization_diagnostics: Mapping[str, object] | None = None
 
 
 class PlanningService:
@@ -124,7 +125,7 @@ class PlanningService:
                 None,
             )
 
-        problem, candidate = optimize_snapshot(
+        problem, candidate, optimization_diagnostics = optimize_snapshot(
             intervals=intervals,
             forecast=forecast_bundle,
             start_energy_kwh=start_energy_kwh,
@@ -169,6 +170,7 @@ class PlanningService:
                 if problem.forecast.scenarios is not None
                 else 0
             ),
+            **optimization_diagnostics,
         }
         publication = self._publish(
             candidate,
@@ -182,6 +184,7 @@ class PlanningService:
             publication.operator_points,
             publication.operator_daily_costs,
             problem,
+            optimization_diagnostics,
         )
 
     def _publish(

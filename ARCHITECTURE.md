@@ -122,7 +122,7 @@ Optimization is a reproducible, side-effect-free function of:
 - current battery state and physical constraints;
 - efficiency, feed-in value and commercial policy.
 
-Scenario optimization uses a common first action with weighted recourse. It is
+Scenario optimization uses common first-slot executable permissions with weighted recourse. It is
 selected only for a valid coherent scenario set and otherwise falls back to the
 deterministic P50 optimizer, retaining the same `BatteryPlan` interface.
 

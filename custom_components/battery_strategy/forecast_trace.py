@@ -45,6 +45,7 @@ class ForecastTraceScheduler:
         *,
         authoritative_plan: BatteryPlan | None = None,
         optimization_problem: OptimizationProblem | None = None,
+        optimization_diagnostics: dict | None = None,
     ) -> None:
         """Schedule one lifecycle-owned trace without blocking the caller."""
         if is_active is not None and not is_active():
@@ -62,7 +63,11 @@ class ForecastTraceScheduler:
                 self._forget(bucket_ms)
                 return
             coroutine = self._async_write(
-                bundle, bucket_ms, authoritative_plan, optimization_problem
+                bundle,
+                bucket_ms,
+                authoritative_plan,
+                optimization_problem,
+                optimization_diagnostics,
             )
             try:
                 entry.async_create_background_task(
@@ -87,6 +92,7 @@ class ForecastTraceScheduler:
         bucket_ms: int,
         authoritative_plan: BatteryPlan | None = None,
         optimization_problem: OptimizationProblem | None = None,
+        optimization_diagnostics: dict | None = None,
     ) -> None:
         try:
             await self._hass.async_add_executor_job(
@@ -95,6 +101,7 @@ class ForecastTraceScheduler:
                 bucket_ms,
                 authoritative_plan,
                 optimization_problem,
+                optimization_diagnostics,
             )
         except Exception as err:
             self._forget(bucket_ms)
@@ -106,6 +113,7 @@ class ForecastTraceScheduler:
         bucket_ms: int,
         authoritative_plan: BatteryPlan | None = None,
         optimization_problem: OptimizationProblem | None = None,
+        optimization_diagnostics: dict | None = None,
     ) -> None:
         # A writer that survived reload owns this lock until its real file I/O
         # returns. Later vintages are dropped instead of waiting in the executor.
@@ -117,6 +125,7 @@ class ForecastTraceScheduler:
                 bundle,
                 authoritative_plan=authoritative_plan,
                 optimization_problem=optimization_problem,
+                optimization_diagnostics=optimization_diagnostics,
             )
         except Exception as err:
             self._forget(bucket_ms)
@@ -143,6 +152,7 @@ def append_forecast_trace(
     *,
     authoritative_plan: BatteryPlan | None = None,
     optimization_problem: OptimizationProblem | None = None,
+    optimization_diagnostics: dict | None = None,
 ) -> Path | None:
     """Persist one vintage while dropping work behind a surviving writer."""
     root = Path(root)
@@ -155,7 +165,11 @@ def append_forecast_trace(
             return None
         try:
             return _append_forecast_trace_locked(
-                root, bundle, authoritative_plan, optimization_problem
+                root,
+                bundle,
+                authoritative_plan,
+                optimization_problem,
+                optimization_diagnostics,
             )
         finally:
             fcntl.flock(lock_handle, fcntl.LOCK_UN)
@@ -166,6 +180,7 @@ def _append_forecast_trace_locked(
     bundle: ForecastBundle,
     authoritative_plan: BatteryPlan | None,
     optimization_problem: OptimizationProblem | None,
+    optimization_diagnostics: dict | None,
 ) -> Path | None:
     """Persist at most one immutable forecast vintage per UTC quarter-hour."""
     generated_at_ms = max(bundle.load.generated_at_ms, bundle.pv.generated_at_ms)
@@ -215,6 +230,7 @@ def _append_forecast_trace_locked(
             "authoritative": _serialize_plan(authoritative_plan),
         },
         "optimization_problem": _serialize_problem(optimization_problem),
+        "optimizer_diagnostics": optimization_diagnostics,
         "truncated": bool(
             len(bundle.load.slots) > FORECAST_TRACE_MAX_SLOTS
             or len(bundle.pv.slots) > FORECAST_TRACE_MAX_SLOTS
@@ -302,6 +318,8 @@ def _serialize_plan(plan: BatteryPlan | None) -> dict[str, object] | None:
                 item.discharge_budget_kwh,
                 item.expected_soc_start_pct,
                 item.expected_soc_end_pct,
+                item.required_charge_kwh,
+                item.planned_grid_charge_kwh,
             ]
             for item in plan.slots[:FORECAST_TRACE_MAX_SLOTS]
         ],

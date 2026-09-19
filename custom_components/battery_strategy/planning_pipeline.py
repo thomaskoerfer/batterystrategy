@@ -82,6 +82,7 @@ class PlanningRunOutcome:
     persist_state: bool
     forecast_bundle: ForecastBundle | None = None
     evaluation_problem: OptimizationProblem | None = None
+    optimization_diagnostics: dict | None = None
 
 
 # PV surplus anti-cycling thresholds
@@ -763,7 +764,12 @@ def run(
     result_options = _result_options(settings)
     owner_state.publication.last_output = persisted_output(result, result_options)
     return PlanningRunOutcome(
-        result, owner_state, True, forecast_bundle, publication.evaluation_problem
+        result,
+        owner_state,
+        True,
+        forecast_bundle,
+        publication.evaluation_problem,
+        dict(publication.optimization_diagnostics or {}),
     )
 
 

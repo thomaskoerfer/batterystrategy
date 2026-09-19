@@ -31,9 +31,10 @@ from custom_components.battery_strategy.contracts import (
 from custom_components.battery_strategy.economic_optimizer import (
     StochasticDynamicProgrammingOptimizer,
 )
+from custom_components.battery_strategy.forecasting.uncertainty import lead_bucket
 
 SLOT_MS = 15 * 60 * 1000
-BOUNDARY_DECISION_TOLERANCE_MS = 60 * 1000
+BOUNDARY_DECISION_TOLERANCE_MS = 0
 TRACE_SCHEMA = 2
 DEFAULT_TRACE_DIRECTORY = "/config/battery_strategy_forecast_trace"
 DEFAULT_FEATURE_STORE = "/config/battery_strategy_features.json.gz"
@@ -57,6 +58,9 @@ class ScenarioScore:
     series: str
     crps_kwh: float
     covered_80: bool
+    lead_bucket: int = 0
+    regime: str = "all"
+    p50_abs_error_kwh: float = 0.0
     event_probability: float | None = None
     event_actual: float | None = None
 
@@ -128,7 +132,9 @@ def score_scenarios(
         ev_active_kwh = (
             float(ev_policy.get("ev_active_threshold_w", 300.0)) / 1000.0 * 0.25
         )
-        for index, slot in enumerate(trace.get("load", {}).get("slots", ())):
+        load_rows = trace.get("load", {}).get("slots", ())
+        pv_rows = trace.get("pv", {}).get("slots", ())
+        for index, (slot, pv_row) in enumerate(zip(load_rows, pv_rows, strict=True)):
             start_ms, end_ms = int(slot[0]), int(slot[1])
             if start_ms < int(trace["generated_at_ms"]):
                 continue
@@ -136,9 +142,10 @@ def score_scenarios(
             if actual is None or not paths:
                 continue
             probabilities = [float(path["probability"]) for path in paths]
-            for series, position, actual_key in (
-                ("load", 1, "house_load_no_ev_kwh"),
-                ("pv", 2, "pv_generation_kwh"),
+            bucket = lead_bucket(int(trace["generated_at_ms"]), start_ms)
+            for series, position, actual_key, p50 in (
+                ("load", 1, "house_load_no_ev_kwh", float(slot[2])),
+                ("pv", 2, "pv_generation_kwh", float(pv_row[2])),
             ):
                 values = [float(path["slots"][index][position]) for path in paths]
                 target = float(actual[actual_key])
@@ -149,6 +156,9 @@ def score_scenarios(
                         _weighted_quantile(values, probabilities, 0.1)
                         <= target
                         <= _weighted_quantile(values, probabilities, 0.9),
+                        bucket,
+                        "active" if p50 > 1e-9 else "inactive",
+                        abs(p50 - target),
                     )
                 )
             ev_probability = sum(
@@ -162,8 +172,10 @@ def score_scenarios(
                     "ev_event",
                     0.0,
                     True,
-                    ev_probability,
-                    ev_actual,
+                    bucket,
+                    "active" if ev_probability >= 0.5 else "inactive",
+                    event_probability=ev_probability,
+                    event_actual=ev_actual,
                 )
             )
     return scores
@@ -294,6 +306,32 @@ def summarize(
                 if selected
                 else None
             ),
+            "p50_mean_abs_error_kwh": (
+                sum(item.p50_abs_error_kwh for item in selected) / len(selected)
+                if selected
+                else None
+            ),
+        }
+    cohorts = {}
+    for item in scenario_scores:
+        if item.series not in {"load", "pv"}:
+            continue
+        key = f"{item.series}:lead_{item.lead_bucket}:{item.regime}"
+        selected = [
+            candidate
+            for candidate in scenario_scores
+            if candidate.series == item.series
+            and candidate.lead_bucket == item.lead_bucket
+            and candidate.regime == item.regime
+        ]
+        cohorts[key] = {
+            "samples": len(selected),
+            "mean_crps_kwh": sum(value.crps_kwh for value in selected) / len(selected),
+            "p50_mean_abs_error_kwh": sum(value.p50_abs_error_kwh for value in selected)
+            / len(selected),
+            "p10_p90_coverage_pct": 100.0
+            * sum(value.covered_80 for value in selected)
+            / len(selected),
         }
     ev = [item for item in scenario_scores if item.series == "ev_event"]
     runtimes = [
@@ -302,7 +340,11 @@ def summarize(
         if (item.get("shadow_evaluation") or {}).get("runtime_ms") is not None
     ]
     paths = path_scores or []
-    return {
+    regret_deltas = [
+        item.shadow_regret_eur - item.authoritative_regret_eur for item in decisions
+    ]
+    regret_mean, regret_low, regret_high = _mean_ci(regret_deltas)
+    report = {
         "non_authoritative": True,
         "trace_vintages": len(traces),
         "completed_shadow_vintages": sum(
@@ -310,6 +352,7 @@ def summarize(
             for item in traces
         ),
         "scenario_metrics": scenario_metrics,
+        "scenario_cohorts": cohorts,
         "ev_event_samples": len(ev),
         "ev_event_brier_score": (
             sum((item.event_probability - item.event_actual) ** 2 for item in ev)
@@ -352,6 +395,8 @@ def summarize(
             if decisions
             else None
         ),
+        "paired_regret_delta_mean_eur": regret_mean,
+        "paired_regret_delta_95pct_ci_eur": [regret_low, regret_high],
         "complete_path_vintages": len(paths),
         "mean_energy_score_kwh": (
             sum(item.energy_score_kwh for item in paths) / len(paths) if paths else None
@@ -372,6 +417,25 @@ def summarize(
         "shadow_runtime_mean_ms": sum(runtimes) / len(runtimes) if runtimes else None,
         "shadow_runtime_max_ms": max(runtimes) if runtimes else None,
     }
+    mature_cohorts = [value for value in cohorts.values() if value["samples"] >= 30]
+    enough = len(decisions) >= 100 and len(paths) >= 20 and bool(mature_cohorts)
+    failed = (
+        (runtimes and max(runtimes) > 5000.0)
+        or (regret_high is not None and regret_high > 0.0)
+        or any(
+            not 65.0 <= value["p10_p90_coverage_pct"] <= 95.0
+            or value["mean_crps_kwh"] > value["p50_mean_abs_error_kwh"]
+            for value in mature_cohorts
+        )
+    )
+    report["release_gate"] = {
+        "status": "insufficient_data" if not enough else ("fail" if failed else "pass"),
+        "minimum_decision_vintages": 100,
+        "minimum_complete_path_vintages": 20,
+        "minimum_cohort_samples": 30,
+        "maximum_runtime_ms": 5000.0,
+    }
+    return report
 
 
 def _perfect_foresight_problem(
@@ -519,17 +583,36 @@ def _energy_score(vectors, weights, actual):
 
 
 def _variogram_score(vectors, weights, actual):
-    # Adjacent elements cover within-slot cross-series and between-slot temporal
-    # dependence without a quadratic all-pairs cost on long planning horizons.
+    slot_count = len(actual) // 3
+    pairs = []
+    for series in range(3):
+        for lag in (1, 4, 16):
+            pairs.extend(
+                (3 * slot + series, 3 * (slot + lag) + series)
+                for slot in range(max(0, slot_count - lag))
+            )
+    pairs.extend((3 * slot, 3 * slot + 1) for slot in range(slot_count))
+    pairs.extend((3 * slot + 1, 3 * slot + 2) for slot in range(slot_count))
     score = 0.0
-    for index in range(len(actual) - 1):
-        observed = math.sqrt(abs(actual[index] - actual[index + 1]))
+    for left, right in pairs:
+        observed = math.sqrt(abs(actual[left] - actual[right]))
         expected = sum(
-            weight * math.sqrt(abs(vector[index] - vector[index + 1]))
+            weight * math.sqrt(abs(vector[left] - vector[right]))
             for vector, weight in zip(vectors, weights, strict=True)
         )
         score += (observed - expected) ** 2
-    return score / max(1, len(actual) - 1)
+    return score / max(1, len(pairs))
+
+
+def _mean_ci(values):
+    if not values:
+        return None, None, None
+    mean = sum(values) / len(values)
+    if len(values) == 1:
+        return mean, mean, mean
+    variance = sum((value - mean) ** 2 for value in values) / (len(values) - 1)
+    half_width = 1.96 * math.sqrt(variance / len(values))
+    return mean, mean - half_width, mean + half_width
 
 
 def _ev_shape(values, threshold):
@@ -548,11 +631,14 @@ def _serialized_action(slot) -> float:
 
 
 def _constrained_objective(optimizer, problem, serialized_slot) -> float:
-    capacity = float(problem.constraints.capacity_kwh)
-    required_end = float(serialized_slot[6]) * capacity / 100.0
+    if len(serialized_slot) < 9:
+        return float("inf")
+    required_charge = float(serialized_slot[7])
+    discharge_budget = float(serialized_slot[4])
     try:
         _plan, diagnostics = optimizer.optimize_with_diagnostics(
-            problem, required_first_end_kwh=required_end
+            problem,
+            required_first_policy=(required_charge, discharge_budget),
         )
         return diagnostics["expected_scenario_cost_eur"]
     except ValueError:

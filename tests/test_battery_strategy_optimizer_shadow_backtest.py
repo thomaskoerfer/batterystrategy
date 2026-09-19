@@ -17,7 +17,8 @@ spec.loader.exec_module(mod)
 def test_scenario_scores_report_crps_coverage_and_ev_brier():
     trace = {
         "generated_at_ms": 0,
-        "load": {"slots": [[900_000, 1_800_000]]},
+        "load": {"slots": [[900_000, 1_800_000, 0.2]]},
+        "pv": {"slots": [[900_000, 1_800_000, 0.2]]},
         "optimization_problem": {"ev_policy": {"ev_active_threshold_w": 300.0}},
         "scenarios": {
             "paths": [
@@ -47,7 +48,8 @@ def test_scenario_scores_report_crps_coverage_and_ev_brier():
 def test_ev_event_score_uses_trace_threshold():
     trace = {
         "generated_at_ms": 0,
-        "load": {"slots": [[900_000, 1_800_000]]},
+        "load": {"slots": [[900_000, 1_800_000, 0.1]]},
+        "pv": {"slots": [[900_000, 1_800_000, 0.1]]},
         "optimization_problem": {"ev_policy": {"ev_active_threshold_w": 1000.0}},
         "scenarios": {
             "paths": [{"probability": 1.0, "slots": [[900_000, 0.1, 0.1, 0.2]]}]

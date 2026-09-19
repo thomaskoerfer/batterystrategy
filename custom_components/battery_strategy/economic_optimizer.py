@@ -570,7 +570,7 @@ class DynamicProgrammingOptimizer:
 
 
 class StochasticDynamicProgrammingOptimizer:
-    """Choose a common first transition with scenario-specific optimal recourse."""
+    """Choose common executable permissions with scenario-specific recourse."""
 
     def optimize(self, problem: OptimizationProblem) -> BatteryPlan:
         plan, _diagnostics = self.optimize_with_diagnostics(problem)
@@ -580,7 +580,7 @@ class StochasticDynamicProgrammingOptimizer:
         self,
         problem: OptimizationProblem,
         *,
-        required_first_end_kwh: float | None = None,
+        required_first_policy: tuple[float, float] | None = None,
     ) -> tuple[BatteryPlan, dict[str, float]]:
         """Return the visible plan and its actual stochastic objective."""
         scenarios = problem.forecast.scenarios
@@ -601,12 +601,14 @@ class StochasticDynamicProgrammingOptimizer:
             (scenario.probability, _scenario_flows(scenario.slots, problem.ev_policy))
             for scenario in scenarios.scenarios
         )
-        first_end, expected_cost = self._common_first_end(
-            problem,
-            prices,
-            export_prices,
-            scenario_flows,
-            required_first_end_kwh=required_first_end_kwh,
+        required_charge, discharge_budget, expected_cost, expected_grid = (
+            self._common_first_policy(
+                problem,
+                prices,
+                export_prices,
+                scenario_flows,
+                required_first_policy=required_first_policy,
+            )
         )
         load = tuple(
             max(0.0, item.energy.p50_kwh) for item in problem.forecast.load.slots
@@ -623,64 +625,107 @@ class StochasticDynamicProgrammingOptimizer:
             problem.constraints.capacity_kwh * problem.constraints.min_soc_pct / 100.0,
             problem.constraints.capacity_kwh * problem.constraints.max_soc_pct / 100.0,
         )
-        fine_step = min(
-            ENERGY_STEP_KWH,
-            problem.constraints.capacity_kwh
-            * (problem.constraints.max_soc_pct - problem.constraints.min_soc_pct)
-            / 100.0,
+        eta = math.sqrt(problem.constraints.round_trip_efficiency)
+        max_charge = problem.constraints.max_charge_power_w / 1000.0 * SLOT_H
+        p50_pv_charge = p50_surplus[0] if problem.policy.pv_charging_allowed else 0.0
+        first_charge = min(max_charge, max(required_charge, p50_pv_charge))
+        first_discharge = (
+            0.0 if first_charge > 1e-9 else min(discharge_budget, p50_net[0])
         )
-        fine_grid = _energy_lattice(
+        first_end = _clamp(
+            start_energy + first_charge * eta - first_discharge / eta,
             problem.constraints.capacity_kwh * problem.constraints.min_soc_pct / 100.0,
             problem.constraints.capacity_kwh * problem.constraints.max_soc_pct / 100.0,
-            fine_step,
         )
-        start_energy = fine_grid[_nearest_energy_index(fine_grid, start_energy)]
-        eta = math.sqrt(problem.constraints.round_trip_efficiency)
-        first_charge = max(0.0, (first_end - start_energy) / eta)
-        first_discharge = max(0.0, (start_energy - first_end) * eta)
-        visible_net = list(p50_net)
-        visible_surplus = list(p50_surplus)
-        visible_limit = list(p50_net)
-        if visible_net:
-            # The first scenario action is executable intent. P50 is only the
-            # presentation recourse and must not reject that already-proven
-            # common action because its marginal happens to be lower.
-            visible_net[0] = max(visible_net[0], first_discharge)
-            visible_limit[0] = max(visible_limit[0], first_discharge)
-            expected_charge_surplus = sum(
-                probability * flows[1][0] for probability, flows in scenario_flows
-            )
-            visible_surplus[0] = max(
-                visible_surplus[0], min(first_charge, expected_charge_surplus)
-            )
-        plan = DynamicProgrammingOptimizer()._build_plan(
-            problem,
-            prices,
-            export_prices,
-            tuple(visible_net),
-            tuple(visible_surplus),
-            tuple(visible_limit),
-            required_first_end_kwh=first_end,
-            optimizer_version=STOCHASTIC_OPTIMIZER_VERSION,
-            first_budget_is_action=True,
+        planned_grid = min(first_charge, expected_grid)
+        if required_charge > 1e-9 and planned_grid <= 1e-9:
+            # A positive common commitment is redundant when every scenario can
+            # satisfy it from PV; the optimizer tie-break normally prevents this.
+            required_charge = 0.0
+        first_mode = PlanMode.IDLE
+        if first_charge > 1e-9:
+            first_mode = PlanMode.CHARGE
+        elif first_discharge > 1e-9:
+            first_mode = PlanMode.DISCHARGE
+        first = BatteryPlanSlot(
+            slot=problem.forecast.load.slots[0].slot,
+            mode=first_mode,
+            pv_charge_allowed=problem.policy.pv_charging_allowed,
+            grid_charge_allowed=problem.policy.grid_charging_allowed,
+            planned_charge_kwh=first_charge,
+            planned_discharge_kwh=first_discharge,
+            required_charge_kwh=required_charge,
+            discharge_budget_kwh=discharge_budget,
+            expected_soc_start_pct=100.0
+            * start_energy
+            / problem.constraints.capacity_kwh,
+            expected_soc_end_pct=100.0 * first_end / problem.constraints.capacity_kwh,
+            planned_pv_charge_kwh=first_charge - planned_grid,
+            planned_grid_charge_kwh=planned_grid,
         )
+        tail_slots = ()
+        tail_cost = 0.0
+        if len(problem.market) > 1:
+            tail_forecast = replace(
+                problem.forecast,
+                load=replace(
+                    problem.forecast.load, slots=problem.forecast.load.slots[1:]
+                ),
+                pv=replace(problem.forecast.pv, slots=problem.forecast.pv.slots[1:]),
+                scenarios=None,
+            )
+            tail_problem = replace(
+                problem,
+                problem_id=f"{problem.problem_id}:p50-recourse",
+                forecast=tail_forecast,
+                market=problem.market[1:],
+                battery=replace(
+                    problem.battery,
+                    soc_pct=100.0 * first_end / problem.constraints.capacity_kwh,
+                ),
+            )
+            tail = DynamicProgrammingOptimizer().optimize(tail_problem)
+            tail_slots = tail.slots
+            tail_cost = tail.optimized_cost_eur
         p50_baseline = sum(
             (net * price - pv_surplus * export_price) / 100.0
             for net, pv_surplus, price, export_price in zip(
                 p50_net, p50_surplus, prices, export_prices
             )
         )
-        plan = replace(plan, baseline_cost_eur=p50_baseline)
-        return plan, {"expected_scenario_cost_eur": expected_cost}
+        first_grid = max(0.0, p50_net[0] - first_discharge) + max(
+            0.0, first_charge - p50_surplus[0]
+        )
+        first_export = max(0.0, p50_surplus[0] - first_charge)
+        first_cost = (
+            first_grid * prices[0]
+            - first_export * export_prices[0]
+            + first_discharge * problem.policy.min_margin_ct_per_kwh
+        ) / 100.0
+        plan = BatteryPlan(
+            plan_id=f"{problem.problem_id}:{STOCHASTIC_OPTIMIZER_VERSION}",
+            problem_id=problem.problem_id,
+            generated_at_ms=problem.as_of_ms,
+            optimizer_version=STOCHASTIC_OPTIMIZER_VERSION,
+            constraints=problem.constraints,
+            slots=(first, *tail_slots),
+            baseline_cost_eur=p50_baseline,
+            optimized_cost_eur=first_cost + tail_cost,
+        )
+        return plan, {
+            "expected_scenario_cost_eur": expected_cost,
+            "first_required_charge_kwh": required_charge,
+            "first_discharge_budget_kwh": discharge_budget,
+        }
 
-    def _common_first_end(
+    def _common_first_policy(
         self,
         problem,
         prices,
         export_prices,
         scenario_flows,
         *,
-        required_first_end_kwh=None,
+        required_first_policy=None,
     ):
         constraints = problem.constraints
         eta = math.sqrt(constraints.round_trip_efficiency)
@@ -709,10 +754,7 @@ class StochasticDynamicProgrammingOptimizer:
             minimum,
             maximum,
         )
-        fine_step = min(ENERGY_STEP_KWH, maximum - minimum)
-        fine_energies = _energy_lattice(minimum, maximum, fine_step)
-        fine_start_index = _nearest_energy_index(fine_energies, start)
-        quantized_start = fine_energies[fine_start_index]
+        quantized_start = start
         recourse = tuple(
             (
                 probability,
@@ -733,30 +775,62 @@ class StochasticDynamicProgrammingOptimizer:
         best = None
         max_charge = constraints.max_charge_power_w / 1000.0 * SLOT_H
         max_discharge = constraints.max_discharge_power_w / 1000.0 * SLOT_H
-        low = max(minimum, start - max_discharge / eta)
-        high = min(maximum, start + max_charge * eta)
-        first_low_index = bisect_left(fine_energies, low - 1e-9)
-        first_high_index = bisect_right(fine_energies, high + 1e-9) - 1
-        for fine_next_index in range(first_low_index, first_high_index + 1):
-            next_energy = fine_energies[fine_next_index]
-            if required_first_end_kwh is not None and not math.isclose(
-                next_energy, required_first_end_kwh, abs_tol=1e-6
+        charge_values = (
+            _action_lattice(max_charge, ENERGY_STEP_KWH / eta)
+            if problem.policy.grid_charging_allowed
+            else (0.0,)
+        )
+        budget_values = (
+            _action_lattice(max_discharge, ENERGY_STEP_KWH * eta)
+            if problem.policy.discharge_allowed
+            else (0.0,)
+        )
+        policies = tuple((charge, 0.0) for charge in charge_values) + tuple(
+            (0.0, budget) for budget in budget_values[1:]
+        )
+        for required_charge, discharge_budget in policies:
+            if required_first_policy is not None and not (
+                math.isclose(required_charge, required_first_policy[0], abs_tol=1e-6)
+                and math.isclose(
+                    discharge_budget, required_first_policy[1], abs_tol=1e-6
+                )
             ):
                 continue
-            delta = next_energy - quantized_start
-            charge = max(0.0, delta / eta)
-            discharge = max(0.0, -delta * eta)
             expected = 0.0
             feasible = True
             grid_charge = 0.0
             for (probability, flows), (_, future_values) in zip(
                 scenario_flows, recourse, strict=True
             ):
+                automatic_pv = (
+                    flows[1][0] if problem.policy.pv_charging_allowed else 0.0
+                )
+                charge = min(max_charge, max(required_charge, automatic_pv))
+                discharge = (
+                    0.0
+                    if charge > 1e-9
+                    else min(discharge_budget, flows[3][0], max_discharge)
+                )
+                next_energy = _clamp(
+                    quantized_start + charge * eta - discharge / eta,
+                    minimum,
+                    maximum,
+                )
+                actual_charge = (
+                    max(0.0, (next_energy - quantized_start) / eta)
+                    if charge > 0.0
+                    else 0.0
+                )
+                actual_discharge = (
+                    max(0.0, (quantized_start - next_energy) * eta)
+                    if discharge > 0.0
+                    else 0.0
+                )
                 step_cost = _transition_cost(
                     problem,
                     0,
-                    charge,
-                    discharge,
+                    actual_charge,
+                    actual_discharge,
                     prices,
                     export_prices,
                     flows[0],
@@ -771,15 +845,20 @@ class StochasticDynamicProgrammingOptimizer:
                     step_cost
                     + _interpolate_energy_value(energies, future_values, next_energy)
                 )
-                grid_charge += probability * max(0.0, charge - flows[2][0])
+                grid_charge += probability * max(0.0, actual_charge - flows[2][0])
             if not feasible:
                 continue
-            candidate = (expected, grid_charge, fine_next_index)
+            candidate = (
+                expected,
+                grid_charge,
+                required_charge,
+                discharge_budget,
+            )
             if best is None or candidate < best:
                 best = candidate
         if best is None:
             raise ValueError("stochastic optimizer has no feasible first transition")
-        return fine_energies[best[2]], best[0]
+        return best[2], best[3], best[0], best[1]
 
 
 def _scenario_flows(slots, policy):
@@ -972,6 +1051,11 @@ def _energy_lattice(minimum: float, maximum: float, step: float) -> tuple[float,
     else:
         values[-1] = maximum
     return tuple(values)
+
+
+def _action_lattice(maximum: float, step: float) -> tuple[float, ...]:
+    """Return bounded action candidates including zero and the exact limit."""
+    return _energy_lattice(0.0, max(0.0, maximum), step)
 
 
 def _nearest_energy_index(energies: tuple[float, ...], value: float) -> int:
