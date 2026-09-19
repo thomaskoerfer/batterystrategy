@@ -601,7 +601,7 @@ class StochasticDynamicProgrammingOptimizer:
             (scenario.probability, _scenario_flows(scenario.slots, problem.ev_policy))
             for scenario in scenarios.scenarios
         )
-        required_charge, discharge_budget, expected_cost, expected_grid = (
+        required_charge, discharge_budget, expected_cost, _expected_grid_equivalent = (
             self._common_first_policy(
                 problem,
                 prices,
@@ -629,6 +629,13 @@ class StochasticDynamicProgrammingOptimizer:
         max_charge = problem.constraints.max_charge_power_w / 1000.0 * SLOT_H
         p50_pv_charge = p50_surplus[0] if problem.policy.pv_charging_allowed else 0.0
         first_charge = min(max_charge, max(required_charge, p50_pv_charge))
+        expected_pv_available = (
+            sum(probability * flows[1][0] for probability, flows in scenario_flows)
+            if problem.policy.pv_charging_allowed
+            else 0.0
+        )
+        if not problem.policy.grid_charging_allowed:
+            first_charge = min(first_charge, expected_pv_available)
         first_discharge = (
             0.0 if first_charge > 1e-9 else min(discharge_budget, p50_net[0])
         )
@@ -637,7 +644,12 @@ class StochasticDynamicProgrammingOptimizer:
             problem.constraints.capacity_kwh * problem.constraints.min_soc_pct / 100.0,
             problem.constraints.capacity_kwh * problem.constraints.max_soc_pct / 100.0,
         )
-        planned_grid = min(first_charge, expected_grid)
+        # Source attribution is physical, while expected_grid deliberately also
+        # prices PV diverted from an EV as induced grid import. Do not serialize
+        # that economic opportunity cost as battery grid charging.
+        expected_pv_charge = min(first_charge, expected_pv_available)
+        planned_pv = min(first_charge, expected_pv_charge)
+        planned_grid = max(0.0, first_charge - planned_pv)
         if required_charge > 1e-9 and planned_grid <= 1e-9:
             # A positive common commitment is redundant when every scenario can
             # satisfy it from PV; the optimizer tie-break normally prevents this.
@@ -660,7 +672,7 @@ class StochasticDynamicProgrammingOptimizer:
             * start_energy
             / problem.constraints.capacity_kwh,
             expected_soc_end_pct=100.0 * first_end / problem.constraints.capacity_kwh,
-            planned_pv_charge_kwh=first_charge - planned_grid,
+            planned_pv_charge_kwh=planned_pv,
             planned_grid_charge_kwh=planned_grid,
         )
         tail_slots = ()

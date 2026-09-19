@@ -21,7 +21,10 @@ from .economic_optimizer import (
 )
 
 STOCHASTIC_MAX_FINE_STATES = 1200
-STOCHASTIC_BOUNDARY_TOLERANCE_MS = 0
+# HA's ten-second coordinator cannot capture at exactly :00. Treat its first
+# completed cycle after a quarter-hour boundary as the boundary decision while
+# rejecting genuine mid-slot replans.
+STOCHASTIC_BOUNDARY_TOLERANCE_MS = 30_000
 
 
 def build_optimization_problem(
