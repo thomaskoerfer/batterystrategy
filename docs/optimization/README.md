@@ -108,8 +108,10 @@ range would require more than 1,200 first-action states at 0.025 kWh resolution,
 the deterministic P50 optimizer remains authoritative and diagnostics report
 `stochastic_complexity_guard`.
 
-The stochastic first-stage action is authoritative only for a planning vintage
-captured exactly at the current slot boundary. A later mid-slot
-replan uses the deterministic P50 optimizer and reports
+The stochastic first-stage action is authoritative only for the first planning
+capture within 30 seconds after the current slot boundary. HA polls every ten
+seconds, and compiler progress accounting removes battery energy already used
+during that scheduler latency. A later mid-slot replan uses the deterministic
+P50 optimizer and reports
 `stochastic_mid_slot_guard`; already-used energy and slot commitment remain the
 compiler's responsibility.
