@@ -2,6 +2,24 @@
 
 All notable changes to Battery Strategy are documented here.
 
+## [0.2.0-rc.27] - 2026-09-19
+
+### Added
+
+- Add coherent, weighted forecast scenarios for EV-free house load, PV and EV
+  charging and evaluate a stochastic optimizer against the unchanged
+  deterministic production optimizer.
+- Persist bounded schema-3 evidence for causal forecast and optimizer
+  evaluation without publishing shadow decisions to planning or live control.
+
+### Safety
+
+- Keep the deterministic optimizer as the sole authority. Scenario generation,
+  shadow optimization and trace persistence are isolated from plan compilation
+  and actuation and fail without delaying the production plan.
+- Retain `0.2.0-rc.26` as the immediate rollback release while the replacement
+  shadow completes its documented seven-day observation gate.
+
 ## [0.2.0-rc.26] - 2026-09-15
 
 ### Added
