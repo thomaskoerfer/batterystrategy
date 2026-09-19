@@ -370,7 +370,24 @@ def summarize(
         if (item.get("shadow_evaluation") or {}).get("runtime_ms") is not None
     ]
     paths = path_scores or []
-    regret_mean, regret_low, regret_high = _daily_block_bootstrap_summary(decisions)
+    vintages_per_day = Counter(
+        int(item["generated_at_ms"]) // DAY_MS
+        for item in traces
+        if item.get("generated_at_ms") is not None
+    )
+    minimum_daily_vintages = math.ceil(0.9 * DAY_MS / SLOT_MS)
+    complete_day_ids = {
+        day
+        for day, count in vintages_per_day.items()
+        if count >= minimum_daily_vintages
+    }
+    complete_observation_days = len(complete_day_ids)
+    eligible_decisions = [
+        item for item in decisions if item.block_day in complete_day_ids
+    ]
+    regret_mean, regret_low, regret_high = _daily_block_bootstrap_summary(
+        eligible_decisions
+    )
     ev_brier = (
         sum((item.event_probability - item.event_actual) ** 2 for item in ev) / len(ev)
         if ev
@@ -407,6 +424,7 @@ def summarize(
         "matured_ev_sessions": ev_sessions,
         "inactive_ev_slots": inactive_ev_slots,
         "perfect_foresight_vintages": len(decisions),
+        "eligible_perfect_foresight_vintages": len(eligible_decisions),
         "shadow_first_action_mae_kwh": (
             sum(item.shadow_error_kwh for item in decisions) / len(decisions)
             if decisions
@@ -484,19 +502,10 @@ def summarize(
         "shadow_runtime_max_ms": max(runtimes) if runtimes else None,
     }
     mature_cohorts = [value for value in cohorts.values() if value["samples"] >= 30]
-    vintages_per_day = Counter(
-        int(item["generated_at_ms"]) // DAY_MS
-        for item in traces
-        if item.get("generated_at_ms") is not None
-    )
-    minimum_daily_vintages = math.ceil(0.9 * DAY_MS / SLOT_MS)
-    complete_observation_days = sum(
-        count >= minimum_daily_vintages for count in vintages_per_day.values()
-    )
     finite_decisions = all(
         math.isfinite(item.shadow_regret_eur)
         and math.isfinite(item.authoritative_regret_eur)
-        for item in decisions
+        for item in eligible_decisions
     )
     all_cohorts_mature = bool(cohorts) and len(mature_cohorts) == len(cohorts)
     path_gate_ok = bool(paths) and (
@@ -505,19 +514,19 @@ def summarize(
         and report["ev_start_mae_slots"] <= report["inactive_ev_start_mae_slots"]
         and report["ev_duration_mae_slots"] <= report["inactive_ev_duration_mae_slots"]
     )
+    ev_evidence_enough = ev_sessions >= 3 and inactive_ev_slots >= 30
     ev_gate_ok = (
-        ev_sessions >= 3
-        and inactive_ev_slots >= 30
-        and ev_brier is not None
+        ev_brier is not None
         and ev_climatology_brier is not None
         and ev_brier <= ev_climatology_brier + 1e-12
     )
     enough = (
         complete_observation_days >= 7
-        and len(decisions) >= 100
+        and len(eligible_decisions) >= 100
         and len(paths) >= 20
         and all_cohorts_mature
         and regret_high is not None
+        and ev_evidence_enough
     )
     failed = (
         not finite_decisions

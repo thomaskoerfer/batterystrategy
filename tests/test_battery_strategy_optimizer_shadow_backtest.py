@@ -179,3 +179,28 @@ def test_release_gate_requires_complete_days_and_real_ev_sessions():
     assert report["release_gate"]["status"] == "insufficient_data"
     assert report["release_gate"]["complete_observation_days"] == 0
     assert report["matured_ev_sessions"] == 0
+
+
+def test_regret_gate_excludes_decisions_from_incomplete_utc_days():
+    traces = [
+        {
+            "generated_at_ms": slot * mod.SLOT_MS,
+            "shadow_evaluation": {"status": "completed", "runtime_ms": 1.0},
+        }
+        for slot in range(87)
+    ]
+    traces.append(
+        {
+            "generated_at_ms": mod.DAY_MS,
+            "shadow_evaluation": {"status": "completed", "runtime_ms": 1.0},
+        }
+    )
+    decisions = [
+        mod.DecisionScore(0, 0, True, True, 1.0, 0.0, block_day=0),
+        mod.DecisionScore(0, 0, True, True, 0.0, 100.0, block_day=1),
+    ]
+
+    report = mod.summarize(traces, [], decisions, [])
+
+    assert report["eligible_perfect_foresight_vintages"] == 1
+    assert report["paired_regret_delta_mean_eur"] == pytest.approx(1.0)
