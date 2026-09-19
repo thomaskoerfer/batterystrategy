@@ -644,16 +644,12 @@ class StochasticDynamicProgrammingOptimizer:
             problem.constraints.capacity_kwh * problem.constraints.min_soc_pct / 100.0,
             problem.constraints.capacity_kwh * problem.constraints.max_soc_pct / 100.0,
         )
-        # Source attribution is physical, while expected_grid deliberately also
-        # prices PV diverted from an EV as induced grid import. Do not serialize
-        # that economic opportunity cost as battery grid charging.
-        expected_pv_charge = min(first_charge, expected_pv_available)
-        planned_pv = min(first_charge, expected_pv_charge)
-        planned_grid = max(0.0, first_charge - planned_pv)
-        if required_charge > 1e-9 and planned_grid <= 1e-9:
-            # A positive common commitment is redundant when every scenario can
-            # satisfy it from PV; the optimizer tie-break normally prevents this.
-            required_charge = 0.0
+        # Only the common required charge is a physical grid commitment. Extra
+        # presentation charge follows forecast PV. Economic opportunity cost
+        # from diverting PV away from an EV stays inside the objective and must
+        # never be serialized as battery grid energy.
+        planned_grid = min(first_charge, required_charge)
+        planned_pv = first_charge - planned_grid
         first_mode = PlanMode.IDLE
         if first_charge > 1e-9:
             first_mode = PlanMode.CHARGE

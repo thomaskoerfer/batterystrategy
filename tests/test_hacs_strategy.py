@@ -1405,6 +1405,8 @@ class HacsStrategyTests(unittest.TestCase):
         order = []
 
         class Adapter:
+            pending = "plan-a"
+
             @staticmethod
             def needs_run(_options, force=False):
                 return True
@@ -1414,7 +1416,15 @@ class HacsStrategyTests(unittest.TestCase):
                 return None
 
             @staticmethod
-            def schedule_pending_forecast_trace():
+            def take_pending_forecast_trace():
+                order.append("take")
+                pending = Adapter.pending
+                Adapter.pending = None
+                return pending
+
+            @staticmethod
+            def schedule_forecast_trace(pending):
+                assert pending == "plan-a"
                 order.append("trace")
 
         class Hass:
@@ -1428,6 +1438,9 @@ class HacsStrategyTests(unittest.TestCase):
 
         async def refresh():
             order.append("publish")
+            # A boundary-forced run may complete while plan A is publishing.
+            # Its observation must remain queued instead of replacing trace A.
+            Adapter.pending = "plan-b"
             refreshed.set()
 
         async def scenario():
@@ -1437,7 +1450,8 @@ class HacsStrategyTests(unittest.TestCase):
             )
             await asyncio.wait_for(refreshed.wait(), timeout=1)
             await asyncio.sleep(0)
-            assert order == ["publish", "trace"]
+            assert order == ["take", "publish", "trace"]
+            assert Adapter.pending == "plan-b"
             assert not planner.running
             await planner.async_shutdown()
 
