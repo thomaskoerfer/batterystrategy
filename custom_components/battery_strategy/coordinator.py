@@ -150,7 +150,7 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         )
         self._planning_pipeline.hydrate_output(last_optimizer_output)
         self._planner = BackgroundPlanner(
-            hass, self._planning_pipeline, self.async_request_refresh
+            hass, self._planning_pipeline, self.async_refresh
         )
         self._optimizer_attrs: Mapping[str, object] = {}
         self.last_actuation = ActuationResult(

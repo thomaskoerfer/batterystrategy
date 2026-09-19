@@ -201,6 +201,35 @@ class PlanningStateStore:
                 return value, display
         return None, display
 
+    def invalidate_incompatible_publication(
+        self,
+        *,
+        execution_key: str,
+        expected_generation: str,
+        plan_key: str,
+    ) -> bool:
+        """Atomically remove executable intent from another optimizer generation."""
+        with _STATE_LOCK:
+            if self.lease_token is not None:
+                if _ACTIVE_LEASES.get(self.path) != self.lease_token:
+                    raise StalePlanningStateLease(
+                        "obsolete planning runtime cannot rewrite publication state"
+                    )
+            document = load_state_document(self.path)
+            if document is None:
+                return False
+            output = document.get("last_output")
+            if not isinstance(output, dict):
+                return False
+            if output.get(execution_key) == expected_generation:
+                return False
+            sanitized = dict(output)
+            sanitized[plan_key] = None
+            sanitized[execution_key] = expected_generation
+            document["last_output"] = sanitized
+            save_state_document(self.path, document)
+            return True
+
 
 def _clamp(value, lower, upper):
     return max(lower, min(upper, value))

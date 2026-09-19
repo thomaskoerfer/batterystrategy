@@ -6,6 +6,7 @@ import json
 import math
 from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from pathlib import Path
 
 from homeassistant.config_entries import ConfigEntry
@@ -28,6 +29,11 @@ from .coordinator import (
     FEATURE_STORE_FILE,
     OPTIMIZER_STATE_FILE,
     BatteryStrategyCoordinator,
+)
+from .planning_result import (
+    PERSISTED_EXECUTION_GENERATION,
+    PERSISTED_EXECUTION_KEY,
+    PERSISTED_PLAN_KEY,
 )
 from .planning_state import PlanningStateStore
 
@@ -52,6 +58,14 @@ async def async_setup_entry(
     await hass.async_add_executor_job(_migrate_runtime_files, hass.config.config_dir)
     planning_state_store = PlanningStateStore.claim(
         str(Path(hass.config.path(OPTIMIZER_STATE_FILE)))
+    )
+    await hass.async_add_executor_job(
+        partial(
+            planning_state_store.invalidate_incompatible_publication,
+            execution_key=PERSISTED_EXECUTION_KEY,
+            expected_generation=PERSISTED_EXECUTION_GENERATION,
+            plan_key=PERSISTED_PLAN_KEY,
+        )
     )
     last_known_soc_pct, last_optimizer_output = await hass.async_add_executor_job(
         planning_state_store.runtime_snapshot,

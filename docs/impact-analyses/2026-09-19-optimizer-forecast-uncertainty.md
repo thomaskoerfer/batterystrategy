@@ -103,8 +103,11 @@ cannot feed planning.
 
 - Shadow: disable/remove the optional scenario generation and shadow call;
   authoritative behavior is already RC26-equivalent.
-- Cutover: restore the shadow release or RC26. The optimizer-generation marker
-  invalidates stale executable plans in either direction.
+- Cutover: restore the replacement-shadow release first. Its startup migration
+  atomically removes executable intent from a different optimizer generation;
+  verify one successful deterministic plan publication, then RC26 may be
+  restored as the known-good code reference. Direct rollback to RC26 is unsafe
+  because RC26 predates optimizer-generation validation.
 
 ## Public-method basis
 

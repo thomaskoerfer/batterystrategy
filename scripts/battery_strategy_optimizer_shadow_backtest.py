@@ -34,7 +34,10 @@ from custom_components.battery_strategy.economic_optimizer import (
 from custom_components.battery_strategy.forecasting.uncertainty import lead_bucket
 
 SLOT_MS = 15 * 60 * 1000
-BOUNDARY_DECISION_TOLERANCE_MS = 0
+# HA updates every ten seconds. The first completed planning capture after a
+# quarter-hour boundary is the operational boundary decision, even though its
+# timestamp naturally includes scheduler latency.
+BOUNDARY_DECISION_TOLERANCE_MS = 30_000
 TRACE_SCHEMA = 2
 DEFAULT_TRACE_DIRECTORY = "/config/battery_strategy_forecast_trace"
 DEFAULT_FEATURE_STORE = "/config/battery_strategy_features.json.gz"

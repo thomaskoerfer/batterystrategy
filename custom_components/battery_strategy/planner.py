@@ -21,7 +21,7 @@ class BackgroundPlanner:
         self,
         hass,
         adapter: PlanningPipelineAdapter,
-        on_complete: Callable[[], Awaitable[None]] | None = None,
+        publish_refresh: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         self._hass = hass
         self._adapter = adapter
@@ -29,7 +29,7 @@ class BackgroundPlanner:
         self._closing = False
         self._pending_force = False
         self._last_error: str | None = None
-        self._on_complete = on_complete
+        self._publish_refresh = publish_refresh
 
     def current(
         self,
@@ -65,20 +65,24 @@ class BackgroundPlanner:
             True,
             runtime_context,
         )
-        if self._on_complete is not None:
+        if self._publish_refresh is not None:
             self._task.add_done_callback(self._request_completion_refresh)
         return True
 
     def _request_completion_refresh(self, _task: asyncio.Future) -> None:
         """Publish a completed background result without waiting for polling."""
-        if not self._closing and self._on_complete is not None:
+        if not self._closing and self._publish_refresh is not None:
             self._hass.async_create_task(self._publish_then_schedule_trace())
 
     async def _publish_then_schedule_trace(self) -> None:
         """Expose the plan to HA before starting best-effort observation."""
-        if self._on_complete is None:
+        if self._publish_refresh is None:
             return
-        await self._on_complete()
+        # DataUpdateCoordinator.async_refresh() completes only after the new
+        # coordinator data has been set and listeners have been notified. A
+        # debounced async_request_refresh() may return after merely queueing the
+        # refresh, which would let observational work race HA publication.
+        await self._publish_refresh()
         if not self._closing:
             schedule_trace = getattr(
                 self._adapter, "schedule_pending_forecast_trace", None
