@@ -224,6 +224,30 @@ def test_missing_ev_evidence_is_never_interpolated():
     assert ("invalid_ev_boundary", 2) in result.diagnostics.rejected_reasons
 
 
+def test_insufficient_evidence_retains_valid_candidate_diagnostics():
+    start = dt.datetime(2026, 9, 21, 18, 0, tzinfo=dt.UTC)
+    forecast = bundle(start, 1)
+    history = (
+        actual(
+            start - dt.timedelta(weeks=1),
+            load=0.4,
+            pv=0.2,
+            ev=0.0,
+        ),
+    )
+    result = ScenarioBuilder().build(
+        ScenarioBuildRequest(
+            forecast,
+            evidence(start, history, forecast),
+            ScenarioGenerationSettings(2, 12),
+        )
+    )
+
+    assert result.status is ScenarioBuildStatus.INSUFFICIENT_EVIDENCE
+    assert len(result.diagnostics.candidates) == 1
+    assert result.diagnostics.candidates[0].selected is True
+
+
 def test_active_ev_boundary_uses_normalized_energy_threshold():
     start = dt.datetime(2026, 9, 21, 18, 0, tzinfo=dt.UTC)
     forecast = bundle(start, 1, ev_active=True)
