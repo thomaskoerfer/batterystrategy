@@ -79,6 +79,20 @@ def test_forecast_evaluation_cannot_reach_execution_or_actuation():
     assert "non_authoritative" in source
 
 
+def test_forecast_trace_cannot_build_scenarios_or_run_optimizers():
+    source = (PACKAGE / "forecast_trace.py").read_text(encoding="utf-8")
+    forbidden = (
+        "ScenarioBuilder",
+        "DynamicProgrammingOptimizer",
+        "StochasticDynamicProgrammingOptimizer",
+        "scenario_request",
+        "shadow_plan",
+        "shadow_evaluation",
+        '"optimizer_plans"',
+    )
+    assert all(token not in source for token in forbidden)
+
+
 def test_planning_pipeline_uses_owned_application_boundaries_without_facades():
     source = (PACKAGE / "planning_pipeline.py").read_text(encoding="utf-8")
     forbidden_definitions = (
@@ -480,6 +494,7 @@ def test_forecast_trace_scheduler_is_single_bucket_and_config_entry_owned(tmp_pa
     bundle = SimpleNamespace(
         load=SimpleNamespace(generated_at_ms=1_800_000_000_000),
         pv=SimpleNamespace(generated_at_ms=1_800_000_000_000),
+        ev=SimpleNamespace(generated_at_ms=1_800_000_000_000),
     )
 
     first._forecast_trace_scheduler.schedule(first._entry, bundle)
@@ -628,11 +643,19 @@ def test_application_boundaries_do_not_cross_layer_ownership():
     )
     assert all(
         token not in market
-        for token in ("DynamicProgrammingOptimizer", "ForecastBundle", "BatteryPlan")
+        for token in (
+            "DynamicProgrammingOptimizer",
+            "ForecastDistributionBundle",
+            "BatteryPlan",
+        )
     )
     assert all(
         token not in savings
-        for token in ("DynamicProgrammingOptimizer", "ForecastBundle", "BatteryPlan")
+        for token in (
+            "DynamicProgrammingOptimizer",
+            "ForecastDistributionBundle",
+            "BatteryPlan",
+        )
     )
 
 

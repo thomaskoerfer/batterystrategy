@@ -4,16 +4,19 @@ from __future__ import annotations
 
 import datetime as dt
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from zoneinfo import ZoneInfo
 
 from .component_config import LoadComponentSpec
 from .contracts import (
-    ForecastBundle,
+    ForecastDistributionBundle,
     ForecastRequest,
     HistoricalFeatureSlot,
     LoadForecastContext,
     PvPlant,
+    ResidualCohort,
+    ScenarioBuildRequest,
+    ScenarioEvidenceSnapshot,
     SlotKey,
     WeatherSlot,
 )
@@ -23,9 +26,9 @@ from .forecasting import (
     FeatureStoreForecastNotReady,
     ForecastComposer,
     ForecastModelConfig,
-    build_empirical_scenarios,
     feature_store_forecast_readiness,
 )
+from .forecasting.ev import HistoricalEvForecaster
 from .forecasting.uncertainty import EMPTY_CALIBRATION, ForecastResidualCalibration
 
 SLOT_H = 0.25
@@ -128,8 +131,9 @@ class ProductionForecastConfig:
 class ProductionForecastResult:
     """Forecast output plus non-authoritative evaluation metadata."""
 
-    bundle: ForecastBundle
+    bundle: ForecastDistributionBundle
     diagnostics: dict[str, object]
+    scenario_request: ScenarioBuildRequest
 
 
 class ProductionForecastModule:
@@ -190,25 +194,32 @@ class ProductionForecastModule:
                 config.current_weather_factor,
                 config.uncertainty,
             ),
+            HistoricalEvForecaster(
+                max(0.0, float(config.current_ev_charge_w)),
+                max(0.0, float(config.ev_active_threshold_w)),
+            ),
         ).compose(request, eligible, context, weather, plant)
-        scenario_status = "unavailable"
-        try:
-            scenarios = build_empirical_scenarios(
-                bundle,
-                eligible,
+        training_cutoff_ms = max(
+            (item.slot.end_ms for item in eligible), default=request.as_of_ms
+        )
+        scenario_request = ScenarioBuildRequest(
+            bundle,
+            ScenarioEvidenceSnapshot(
+                evidence_id=f"evidence:{request.as_of_ms}:{training_cutoff_ms}",
+                captured_at_ms=request.as_of_ms,
+                training_cutoff_ms=min(request.as_of_ms, training_cutoff_ms),
                 timezone=request.timezone,
-                current_ev_charge_w=max(0.0, float(config.current_ev_charge_w)),
-                ev_active_threshold_w=max(0.0, float(config.ev_active_threshold_w)),
-                calibration=config.uncertainty,
+                history=eligible,
+                residual_cohorts=tuple(
+                    ResidualCohort(key, tuple(values))
+                    for key, values in sorted(config.uncertainty.cohorts.items())
+                ),
                 pv_slot_cap_kwh=max(0.0, plant.inverter_kw * SLOT_H),
-            )
-            scenario_status = "ready" if scenarios is not None else "unavailable"
-        except Exception:
-            # Scenario enrichment is optional; P50 remains a complete fallback.
-            scenarios = None
-            scenario_status = "failed_p50_fallback"
-        if scenarios is not None:
-            bundle = replace(bundle, scenarios=scenarios)
+                ev_active_threshold_kwh=(
+                    max(0.0, float(config.ev_active_threshold_w)) / 1000.0 * SLOT_H
+                ),
+            ),
+        )
         diagnostics = {
             "source": "feature_store",
             "slot_count": len(request.slots),
@@ -227,15 +238,11 @@ class ProductionForecastModule:
                     for component in bundle.load.components
                 },
             },
-            "scenario_count": (
-                len(bundle.scenarios.scenarios) if bundle.scenarios is not None else 0
-            ),
-            "scenario_model_version": (
-                bundle.scenarios.model_version if bundle.scenarios is not None else None
-            ),
-            "scenario_status": scenario_status,
+            "scenario_count": 0,
+            "scenario_model_version": None,
+            "scenario_status": "pending_build",
         }
-        return ProductionForecastResult(bundle, diagnostics)
+        return ProductionForecastResult(bundle, diagnostics, scenario_request)
 
 
 def _quantile_slot_count(slots) -> int:

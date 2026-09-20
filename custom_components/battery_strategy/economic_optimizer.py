@@ -583,7 +583,7 @@ class StochasticDynamicProgrammingOptimizer:
         required_first_policy: tuple[float, float] | None = None,
     ) -> tuple[BatteryPlan, dict[str, float]]:
         """Return the visible plan and its actual stochastic objective."""
-        scenarios = problem.forecast.scenarios
+        scenarios = problem.scenarios
         if scenarios is None:
             plan = DynamicProgrammingOptimizer().optimize(problem)
             return plan, {
@@ -629,13 +629,6 @@ class StochasticDynamicProgrammingOptimizer:
         max_charge = problem.constraints.max_charge_power_w / 1000.0 * SLOT_H
         p50_pv_charge = p50_surplus[0] if problem.policy.pv_charging_allowed else 0.0
         first_charge = min(max_charge, max(required_charge, p50_pv_charge))
-        expected_pv_available = (
-            sum(probability * flows[1][0] for probability, flows in scenario_flows)
-            if problem.policy.pv_charging_allowed
-            else 0.0
-        )
-        if not problem.policy.grid_charging_allowed:
-            first_charge = min(first_charge, expected_pv_available)
         first_discharge = (
             0.0 if first_charge > 1e-9 else min(discharge_budget, p50_net[0])
         )
@@ -680,12 +673,13 @@ class StochasticDynamicProgrammingOptimizer:
                     problem.forecast.load, slots=problem.forecast.load.slots[1:]
                 ),
                 pv=replace(problem.forecast.pv, slots=problem.forecast.pv.slots[1:]),
-                scenarios=None,
+                ev=replace(problem.forecast.ev, slots=problem.forecast.ev.slots[1:]),
             )
             tail_problem = replace(
                 problem,
                 problem_id=f"{problem.problem_id}:p50-recourse",
                 forecast=tail_forecast,
+                scenarios=None,
                 market=problem.market[1:],
                 battery=replace(
                     problem.battery,
@@ -880,7 +874,7 @@ def _scenario_flows(slots, policy):
     discharge_limit = []
     ev_active_kwh = policy.ev_active_threshold_w / 1000.0 * SLOT_H
     for item in slots:
-        house = max(0.0, item.load_no_ev_kwh)
+        house = max(0.0, item.house_load_kwh)
         pv = max(0.0, item.pv_generation_kwh)
         ev = max(0.0, item.ev_charge_kwh)
         slot_demand = max(0.0, house + ev - pv)

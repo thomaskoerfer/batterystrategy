@@ -2,10 +2,16 @@
 """Home Assistant-facing orchestration for one planning pipeline run."""
 
 import datetime as dt
+import logging
 import math
 from dataclasses import dataclass
 
-from .contracts import ForecastBundle, OptimizationProblem, PvPlant
+from .contracts import (
+    ForecastDistributionBundle,
+    OptimizationProblem,
+    PvPlant,
+    ScenarioBuildResult,
+)
 from .forecast_application import (
     ProductionForecastConfig,
     ProductionForecastModule,
@@ -51,6 +57,7 @@ from .runtime_measurements import (
     real_charge_follow_surplus_w,
 )
 from .savings import SavingsConfig, SavingsEntities, SavingsLedger
+from .scenario_generation import ScenarioBuilder
 
 SLOT_H = 0.25
 HISTORY_DAYS = 60
@@ -67,6 +74,7 @@ EEX_PROXY_MAX_BASE_RETAIL_MARKUP_CT = 28.0
 EEX_PROXY_MAX_PEAK_RETAIL_MARKUP_CT = 32.0
 EEX_PROXY_MIN_PRICE_CT = 12.0
 EEX_PROXY_MAX_PRICE_CT = 70.0
+LOGGER = logging.getLogger(__name__)
 
 
 class StalePlanningResult(RuntimeError):
@@ -80,9 +88,10 @@ class PlanningRunOutcome:
     result: PlanningResult
     owner_state: PlanningOwnerState
     persist_state: bool
-    forecast_bundle: ForecastBundle | None = None
-    evaluation_problem: OptimizationProblem | None = None
-    optimization_diagnostics: dict | None = None
+    forecast_bundle: ForecastDistributionBundle | None = None
+    optimization_problem: OptimizationProblem | None = None
+    scenario_result: ScenarioBuildResult | None = None
+    optimizer_evaluation: dict[str, object] | None = None
 
 
 # PV surplus anti-cycling thresholds
@@ -432,6 +441,30 @@ def run(
     forecast_bundle = forecast_result.bundle
     queue_predictions(forecast_state, forecast_bundle)
     forecast_diagnostics = forecast_result.diagnostics
+    scenario_result = None
+    try:
+        scenario_result = ScenarioBuilder().build(forecast_result.scenario_request)
+    except Exception as err:
+        LOGGER.warning("Scenario generation failed; using deterministic plan: %s", err)
+        forecast_diagnostics.update(
+            scenario_status="failed",
+            scenario_count=0,
+            scenario_model_version=None,
+        )
+    else:
+        forecast_diagnostics.update(
+            scenario_status=scenario_result.status.value,
+            scenario_count=(
+                len(scenario_result.scenarios.scenarios)
+                if scenario_result.scenarios is not None
+                else 0
+            ),
+            scenario_model_version=(
+                scenario_result.scenarios.model_version
+                if scenario_result.scenarios is not None
+                else None
+            ),
+        )
     publication = _planning_service(settings).plan(
         intervals=intervals,
         samples=forecast_state.samples,
@@ -439,6 +472,7 @@ def run(
         eex_days=eex_days,
         forecast_bundle=forecast_bundle,
         forecast_diagnostics=forecast_diagnostics,
+        scenario_result=scenario_result,
     )
     plan = publication.data
     forecast_diagnostics = plan.get("forecast_diagnostics", {})
@@ -768,8 +802,13 @@ def run(
         owner_state,
         True,
         forecast_bundle,
-        publication.evaluation_problem,
-        dict(publication.optimization_diagnostics or {}),
+        publication.optimization_problem,
+        scenario_result,
+        (
+            dict(publication.optimizer_evaluation)
+            if publication.optimizer_evaluation is not None
+            else None
+        ),
     )
 
 

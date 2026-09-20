@@ -22,6 +22,8 @@ command; only the Home Assistant coordinator calls the actuator.
 ```text
 HA measurements, recorder, weather ---> Data and feature store ---> Forecasting
                                                                           |
+                                                      Scenario generation -+
+                                                                          |
 Market providers --------------------> Market context ----------------------+
                                                                           v
 Battery state and configuration ------------------------------------> Optimization
@@ -63,6 +65,7 @@ measured savings, evaluation and diagnostics:
 
 - [data adapters and feature store](docs/data-feature-store/README.md);
 - [forecasting](docs/forecasting/README.md);
+- [scenario generation](docs/scenario-generation/README.md);
 - [market context](docs/market-context/README.md);
 - [optimization](docs/optimization/README.md);
 - [planning service](docs/planning-service/README.md);
@@ -105,26 +108,42 @@ Home Assistant object, entity ID, or storage path.
 generation and owns current plant limits, weather adjustment and learned slot
 bias. Historical plant changes belong to explicit backtest preparation, not the
 operational forecast contract. Both forecasters return point estimates,
-uncertainty and data-quality metadata in a shared `ForecastBundle`.
-The bundle may carry bounded coherent load/PV/EV scenarios. EV remains separate
-from EV-free house load; marginal quantiles are not scenario trajectories.
+uncertainty and data-quality metadata in a shared
+`ForecastDistributionBundle`. `EvForecaster` independently predicts EV energy
+and activity probability; EV remains separate from EV-free house load.
+The bundle contains marginals only. It never contains scenario trajectories.
 
 Forecasting does not know electricity prices, battery SoC, battery limits or a
 planned battery schedule. Net load is derived from load minus PV; it is not a
 third independently learned forecast.
+
+### Scenario generation
+
+`ScenarioBuilder` combines one immutable `ForecastDistributionBundle` with a
+causal `ScenarioEvidenceSnapshot`. It preserves historical temporal and
+cross-series dependence while mapping historical ranks onto current load, PV
+and EV marginals. It owns bounded path selection, evidence repair, weighting
+and diagnostics. It does not know prices, battery state, policy, Home Assistant
+or actuation.
+
+Scenario generation is a computational module inside the five-layer design,
+not a sixth control layer. If it cannot produce a valid `ScenarioBundle`, the
+deterministic forecast remains valid and optimization can explicitly fall back
+to P50.
 
 ### Optimization
 
 Optimization is a reproducible, side-effect-free function of:
 
 - time grid and market prices;
-- `ForecastBundle` or forecast scenarios;
+- `ForecastDistributionBundle` and an optional separate `ScenarioBundle`;
 - current battery state and physical constraints;
 - efficiency, feed-in value and commercial policy.
 
-Scenario optimization uses common first-slot executable permissions with weighted recourse. It is
-selected only for a valid coherent scenario set and otherwise falls back to the
-deterministic P50 optimizer, retaining the same `BatteryPlan` interface.
+Scenario optimization uses common first-slot executable permissions with
+weighted recourse. The planning application selects it only for a valid
+`ScenarioBundle`; scenario or stochastic-optimization failure is an explicit
+deterministic P50 fallback. Both paths retain the same `BatteryPlan` interface.
 
 It produces a `BatteryPlan` containing the intended energy trajectory, charge
 and discharge actions, commercial discharge budgets and plan diagnostics. It
@@ -197,6 +216,8 @@ live command into vendor controls and enforces write throttling and safe zeros.
 
 - Market context normalizes provider data and enriches commercial policy before
   optimization. It is an input adapter, not a sixth decision layer.
+- Scenario generation transforms forecast uncertainty into bounded joint paths.
+  It is a pure computational component, not a decision or control layer.
 - Planning service and planning runtime capture one immutable run and orchestrate
   calls across the five layers. They own no forecasting, economic or live rule.
 - Measured savings, evaluation, diagnostics and backtesting observe published

@@ -8,7 +8,7 @@ battery constraints, invokes the single pure optimizer once and adapts the
 typed `BatteryPlan` into stable operator metadata.
 
 ```text
-ForecastBundle + price horizon + battery snapshot + configuration
+ForecastDistributionBundle + price horizon + battery snapshot + configuration
     -> commercial policy -> OptimizationProblem -> optimizer -> published plan
 ```
 

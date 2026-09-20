@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from .const import COMMAND_IDLE, COMMAND_INPUT, COMMAND_OUTPUT
 from .contracts import (
@@ -11,12 +11,17 @@ from .contracts import (
     BatteryPlan,
     CommercialPolicy,
     EvInteractionPolicy,
-    ForecastBundle,
+    ForecastDistributionBundle,
     OptimizationProblem,
+    ScenarioBuildResult,
 )
-from .economic_optimizer import OPTIMIZER_VERSION
+from .economic_optimizer import (
+    OPTIMIZER_VERSION,
+    DynamicProgrammingOptimizer,
+    StochasticDynamicProgrammingOptimizer,
+)
 from .market_context import MarketContextService
-from .optimization_problem import optimize_snapshot
+from .optimization_problem import build_optimization_problem
 from .plan_models import DailyCost, PlanPoint
 from .runtime_market_data import TariffInterval
 
@@ -53,8 +58,8 @@ class PlanningPublication:
     data: Mapping[str, object]
     operator_points: tuple[PlanPoint, ...]
     operator_daily_costs: Mapping[str, DailyCost]
-    evaluation_problem: OptimizationProblem | None = None
-    optimization_diagnostics: Mapping[str, object] | None = None
+    optimization_problem: OptimizationProblem | None = None
+    optimizer_evaluation: Mapping[str, object] | None = None
 
 
 class PlanningService:
@@ -75,9 +80,10 @@ class PlanningService:
         intervals: list[TariffInterval],
         samples: list[dict],
         start_energy_kwh: float,
-        forecast_bundle: ForecastBundle,
+        forecast_bundle: ForecastDistributionBundle,
         eex_days: dict | None = None,
         forecast_diagnostics: dict | None = None,
+        scenario_result: ScenarioBuildResult | None = None,
     ) -> PlanningPublication:
         """Return canonical intent together with its presentation metadata."""
         metadata = self._market_context.build_plan_metadata(
@@ -125,12 +131,14 @@ class PlanningService:
                 None,
             )
 
-        problem, candidate, optimization_diagnostics = optimize_snapshot(
+        scenarios = scenario_result.scenarios if scenario_result is not None else None
+        problem = build_optimization_problem(
             intervals=intervals,
             forecast=forecast_bundle,
             start_energy_kwh=start_energy_kwh,
             constraints=constraints,
             policy=policy,
+            scenarios=scenarios,
             evaluated_at_ms=int(intervals[0].starts_at.timestamp() * 1000),
             ev_policy=EvInteractionPolicy(
                 pv_to_ev_first=self._settings.pv_to_ev_first,
@@ -141,37 +149,44 @@ class PlanningService:
                 ev_active_threshold_w=self._settings.ev_active_threshold_w,
             ),
         )
-        diagnostics = metadata.setdefault("forecast_diagnostics", {})
-        diagnostics["optimizer"] = {
-            "mode": (
-                "stochastic"
-                if candidate.optimizer_version.startswith("stochastic-")
-                else "deterministic_p50_fallback"
-            ),
-            "fallback_reason": (
-                "stochastic_optimizer_error"
-                if candidate.optimizer_version.endswith("-stochastic-fallback")
-                else (
-                    "stochastic_mid_slot_guard"
-                    if candidate.optimizer_version.endswith(
-                        "-stochastic-mid-slot-fallback"
-                    )
-                    else (
-                        "stochastic_complexity_guard"
-                        if candidate.optimizer_version.endswith(
-                            "-stochastic-complexity-fallback"
-                        )
-                        else None
+        optimizer_diagnostics: dict[str, object]
+        if scenarios is not None:
+            try:
+                candidate, stochastic = (
+                    StochasticDynamicProgrammingOptimizer().optimize_with_diagnostics(
+                        problem
                     )
                 )
-            ),
-            "scenario_count": (
-                len(problem.forecast.scenarios.scenarios)
-                if problem.forecast.scenarios is not None
-                else 0
-            ),
-            **optimization_diagnostics,
-        }
+                optimizer_diagnostics = {
+                    "ready": True,
+                    "status": "authoritative_stochastic",
+                    "scenario_count": len(scenarios.scenarios),
+                    **stochastic,
+                }
+            except Exception as err:
+                problem = replace(problem, scenarios=None)
+                candidate = DynamicProgrammingOptimizer().optimize(problem)
+                optimizer_diagnostics = {
+                    "ready": False,
+                    "status": "deterministic_fallback",
+                    "fallback_reason": "stochastic_optimizer_failed",
+                    "error_type": type(err).__name__,
+                    "scenario_count": len(scenarios.scenarios),
+                }
+        else:
+            candidate = DynamicProgrammingOptimizer().optimize(problem)
+            optimizer_diagnostics = {
+                "ready": False,
+                "status": "deterministic_fallback",
+                "fallback_reason": (
+                    scenario_result.status.value
+                    if scenario_result is not None
+                    else "scenario_builder_failed"
+                ),
+                "scenario_count": 0,
+            }
+        diagnostics = metadata.setdefault("forecast_diagnostics", {})
+        diagnostics["optimizer_selection"] = optimizer_diagnostics
         publication = self._publish(
             candidate,
             intervals,
@@ -184,14 +199,14 @@ class PlanningService:
             publication.operator_points,
             publication.operator_daily_costs,
             problem,
-            optimization_diagnostics,
+            optimizer_diagnostics,
         )
 
     def _publish(
         self,
         candidate: BatteryPlan,
         intervals: list[TariffInterval],
-        forecast_bundle: ForecastBundle,
+        forecast_bundle: ForecastDistributionBundle,
         publication_metadata: dict,
     ) -> PlanningPublication:
         if not (

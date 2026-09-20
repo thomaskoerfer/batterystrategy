@@ -15,11 +15,19 @@ import uuid
 from collections.abc import Callable
 from pathlib import Path
 
-from .contracts import BatteryPlan, ForecastBundle, ForecastSlot, OptimizationProblem
+from .contracts import (
+    BatteryPlan,
+    ForecastDistributionBundle,
+    ForecastSlot,
+    OptimizationProblem,
+    ScenarioBuildResult,
+    ScenarioBundle,
+)
 
 FORECAST_TRACE_DIRECTORY = "battery_strategy_forecast_trace"
-FORECAST_TRACE_SCHEMA_VERSION = 3
+FORECAST_TRACE_SCHEMA_VERSION = 5
 FORECAST_TRACE_RETENTION_DAYS = 21
+FORECAST_TRACE_MAX_BYTES = 64 * 1024 * 1024
 FORECAST_TRACE_MAX_SLOTS = 192
 FORECAST_TRACE_MAX_COMPONENTS = 32
 SLOT_MS = 15 * 60 * 1000
@@ -40,12 +48,13 @@ class ForecastTraceScheduler:
     def schedule(
         self,
         entry,
-        bundle: ForecastBundle,
+        bundle: ForecastDistributionBundle,
         is_active: Callable[[], bool] | None = None,
         *,
         authoritative_plan: BatteryPlan | None = None,
         optimization_problem: OptimizationProblem | None = None,
-        optimization_diagnostics: dict | None = None,
+        scenario_result: ScenarioBuildResult | None = None,
+        optimizer_evaluation: dict[str, object] | None = None,
     ) -> None:
         """Schedule one lifecycle-owned trace without blocking the caller."""
         if is_active is not None and not is_active():
@@ -67,7 +76,8 @@ class ForecastTraceScheduler:
                 bucket_ms,
                 authoritative_plan,
                 optimization_problem,
-                optimization_diagnostics,
+                scenario_result,
+                optimizer_evaluation,
             )
             try:
                 entry.async_create_background_task(
@@ -88,11 +98,12 @@ class ForecastTraceScheduler:
 
     async def _async_write(
         self,
-        bundle: ForecastBundle,
+        bundle: ForecastDistributionBundle,
         bucket_ms: int,
         authoritative_plan: BatteryPlan | None = None,
         optimization_problem: OptimizationProblem | None = None,
-        optimization_diagnostics: dict | None = None,
+        scenario_result: ScenarioBuildResult | None = None,
+        optimizer_evaluation: dict[str, object] | None = None,
     ) -> None:
         try:
             await self._hass.async_add_executor_job(
@@ -101,7 +112,8 @@ class ForecastTraceScheduler:
                 bucket_ms,
                 authoritative_plan,
                 optimization_problem,
-                optimization_diagnostics,
+                scenario_result,
+                optimizer_evaluation,
             )
         except Exception as err:
             self._forget(bucket_ms)
@@ -109,24 +121,47 @@ class ForecastTraceScheduler:
 
     def _write_if_available(
         self,
-        bundle: ForecastBundle,
+        bundle: ForecastDistributionBundle,
         bucket_ms: int,
         authoritative_plan: BatteryPlan | None = None,
         optimization_problem: OptimizationProblem | None = None,
-        optimization_diagnostics: dict | None = None,
+        scenario_result: ScenarioBuildResult | None = None,
+        optimizer_evaluation: dict[str, object] | None = None,
     ) -> None:
-        # A writer that survived reload owns this lock until its real file I/O
-        # returns. Later vintages are dropped instead of waiting in the executor.
+        # This instance lock handles overlap within one config-entry lifetime.
         if not self._write_lock.acquire(blocking=False):
             return
         try:
-            append_forecast_trace(
-                self._root,
-                bundle,
-                authoritative_plan=authoritative_plan,
-                optimization_problem=optimization_problem,
-                optimization_diagnostics=optimization_diagnostics,
-            )
+            self._root.mkdir(parents=True, exist_ok=True)
+            lock_path = self._root / ".write.lock"
+            with lock_path.open("a+b") as lock_handle:
+                try:
+                    # Cross-reload single-flight starts before expensive work.
+                    fcntl.flock(lock_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    return
+                try:
+                    _append_forecast_trace_locked(
+                        self._root,
+                        bundle,
+                        authoritative_plan,
+                        optimization_problem,
+                        (
+                            scenario_result.scenarios
+                            if scenario_result is not None
+                            else None
+                        ),
+                        {
+                            **(optimizer_evaluation or {}),
+                            "scenario_build": (
+                                _serialize_build_diagnostics(scenario_result)
+                                if scenario_result is not None
+                                else None
+                            ),
+                        },
+                    )
+                finally:
+                    fcntl.flock(lock_handle, fcntl.LOCK_UN)
         except Exception as err:
             self._forget(bucket_ms)
             self._warn(err)
@@ -148,11 +183,12 @@ class ForecastTraceScheduler:
 
 def append_forecast_trace(
     root: Path,
-    bundle: ForecastBundle,
+    bundle: ForecastDistributionBundle,
     *,
     authoritative_plan: BatteryPlan | None = None,
     optimization_problem: OptimizationProblem | None = None,
-    optimization_diagnostics: dict | None = None,
+    scenarios: ScenarioBundle | None = None,
+    optimizer_evaluation: dict[str, object] | None = None,
 ) -> Path | None:
     """Persist one vintage while dropping work behind a surviving writer."""
     root = Path(root)
@@ -169,7 +205,8 @@ def append_forecast_trace(
                 bundle,
                 authoritative_plan,
                 optimization_problem,
-                optimization_diagnostics,
+                scenarios,
+                optimizer_evaluation,
             )
         finally:
             fcntl.flock(lock_handle, fcntl.LOCK_UN)
@@ -177,13 +214,18 @@ def append_forecast_trace(
 
 def _append_forecast_trace_locked(
     root: Path,
-    bundle: ForecastBundle,
+    bundle: ForecastDistributionBundle,
     authoritative_plan: BatteryPlan | None,
     optimization_problem: OptimizationProblem | None,
-    optimization_diagnostics: dict | None,
+    scenarios: ScenarioBundle | None,
+    optimizer_evaluation: dict[str, object] | None,
 ) -> Path | None:
     """Persist at most one immutable forecast vintage per UTC quarter-hour."""
-    generated_at_ms = max(bundle.load.generated_at_ms, bundle.pv.generated_at_ms)
+    generated_at_ms = max(
+        bundle.load.generated_at_ms,
+        bundle.pv.generated_at_ms,
+        bundle.ev.generated_at_ms,
+    )
     bucket_ms = forecast_trace_bucket_ms(bundle)
     generated_at = dt.datetime.fromtimestamp(generated_at_ms / 1000.0, dt.UTC)
     day_dir = root / generated_at.date().isoformat()
@@ -193,6 +235,7 @@ def _append_forecast_trace_locked(
 
     load_slots = bundle.load.slots[:FORECAST_TRACE_MAX_SLOTS]
     pv_slots = bundle.pv.slots[:FORECAST_TRACE_MAX_SLOTS]
+    ev_slots = bundle.ev.slots[:FORECAST_TRACE_MAX_SLOTS]
     component_limit = bundle.load.components[:FORECAST_TRACE_MAX_COMPONENTS]
     payload = {
         "schema_version": FORECAST_TRACE_SCHEMA_VERSION,
@@ -225,15 +268,41 @@ def _append_forecast_trace_locked(
             "training_cutoff_ms": bundle.pv.training_cutoff_ms,
             "slots": [_serialize_slot(item) for item in pv_slots],
         },
-        "scenarios": _serialize_scenarios(bundle),
-        "optimizer_plans": {
-            "authoritative": _serialize_plan(authoritative_plan),
+        "ev": {
+            "forecast_id": bundle.ev.forecast_id,
+            "generated_at_ms": bundle.ev.generated_at_ms,
+            "model_version": bundle.ev.model_version,
+            "training_cutoff_ms": bundle.ev.training_cutoff_ms,
+            "slots": [
+                [
+                    item.slot.start_ms,
+                    item.slot.end_ms,
+                    item.energy.p50_kwh,
+                    item.energy.p10_kwh,
+                    item.energy.p90_kwh,
+                    item.energy.calibration_samples,
+                    item.active_probability,
+                    item.naive_active_probability,
+                    item.quality.coverage,
+                    [flag.value for flag in item.quality.flags],
+                ]
+                for item in ev_slots
+            ],
         },
+        "scenarios": _serialize_scenarios(
+            scenarios
+            if scenarios is not None
+            else optimization_problem.scenarios
+            if optimization_problem is not None
+            else None
+        ),
+        "optimizer_plan": _serialize_plan(authoritative_plan),
         "optimization_problem": _serialize_problem(optimization_problem),
-        "optimizer_diagnostics": optimization_diagnostics,
+        "optimizer_evaluation": optimizer_evaluation,
         "truncated": bool(
             len(bundle.load.slots) > FORECAST_TRACE_MAX_SLOTS
             or len(bundle.pv.slots) > FORECAST_TRACE_MAX_SLOTS
+            or len(bundle.ev.slots) > FORECAST_TRACE_MAX_SLOTS
             or len(bundle.load.components) > FORECAST_TRACE_MAX_COMPONENTS
         ),
     }
@@ -251,13 +320,20 @@ def _append_forecast_trace_locked(
     finally:
         temporary.unlink(missing_ok=True)
     _remove_expired_days(root, generated_at.date())
+    _enforce_size_limit(root)
     return target
 
 
-def forecast_trace_bucket_ms(bundle: ForecastBundle) -> int:
+def forecast_trace_bucket_ms(bundle: ForecastDistributionBundle) -> int:
     """Return the shared UTC vintage bucket used for scheduling and storage."""
     return (
-        max(bundle.load.generated_at_ms, bundle.pv.generated_at_ms) // SLOT_MS * SLOT_MS
+        max(
+            bundle.load.generated_at_ms,
+            bundle.pv.generated_at_ms,
+            bundle.ev.generated_at_ms,
+        )
+        // SLOT_MS
+        * SLOT_MS
     )
 
 
@@ -274,12 +350,14 @@ def _serialize_slot(item: ForecastSlot) -> list[object]:
     ]
 
 
-def _serialize_scenarios(bundle: ForecastBundle) -> dict[str, object] | None:
-    scenario_set = bundle.scenarios
+def _serialize_scenarios(
+    scenario_set: ScenarioBundle | None,
+) -> dict[str, object] | None:
     if scenario_set is None:
         return None
     return {
         "scenario_set_id": scenario_set.scenario_set_id,
+        "source_forecast_id": scenario_set.source_forecast_id,
         "model_version": scenario_set.model_version,
         "training_cutoff_ms": scenario_set.training_cutoff_ms,
         "paths": [
@@ -289,7 +367,7 @@ def _serialize_scenarios(bundle: ForecastBundle) -> dict[str, object] | None:
                 "slots": [
                     [
                         item.slot.start_ms,
-                        item.load_no_ev_kwh,
+                        item.house_load_kwh,
                         item.pv_generation_kwh,
                         item.ev_charge_kwh,
                     ]
@@ -298,6 +376,27 @@ def _serialize_scenarios(bundle: ForecastBundle) -> dict[str, object] | None:
             }
             for scenario in scenario_set.scenarios
         ],
+    }
+
+
+def _serialize_build_diagnostics(result) -> dict[str, object]:
+    diagnostics = result.diagnostics
+    return {
+        "status": result.status.value,
+        "eligible": diagnostics.eligible,
+        "candidate_paths": diagnostics.candidate_paths,
+        "accepted_paths": diagnostics.accepted_paths,
+        "repaired_slots": diagnostics.repaired_slots,
+        "fallback_marginal_slots": diagnostics.fallback_marginal_slots,
+        "marginal_sources": list(diagnostics.marginal_sources),
+        "ev_probability_max_error": diagnostics.ev_probability_max_error,
+        "excluded_component_values": diagnostics.excluded_component_values,
+        "rejected_reasons": list(diagnostics.rejected_reasons),
+        "evidence_id": diagnostics.evidence_id,
+        "training_cutoff_ms": diagnostics.training_cutoff_ms,
+        "seed": diagnostics.seed,
+        "input_fingerprint": diagnostics.input_fingerprint,
+        "model_version": diagnostics.model_version,
     }
 
 
@@ -388,3 +487,26 @@ def _remove_expired_days(root: Path, current_day: dt.date) -> None:
             continue
         if day < cutoff:
             shutil.rmtree(path)
+
+
+def _enforce_size_limit(root: Path) -> None:
+    day_dirs = []
+    for path in root.iterdir():
+        if not path.is_dir():
+            continue
+        try:
+            dt.date.fromisoformat(path.name)
+        except ValueError:
+            continue
+        day_dirs.append(path)
+    day_dirs.sort()
+    total = sum(
+        file.stat().st_size
+        for directory in day_dirs
+        for file in directory.glob("*.json.gz")
+    )
+    while total > FORECAST_TRACE_MAX_BYTES and day_dirs:
+        oldest = day_dirs.pop(0)
+        removed = sum(file.stat().st_size for file in oldest.glob("*.json.gz"))
+        shutil.rmtree(oldest)
+        total -= removed

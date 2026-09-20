@@ -10,25 +10,31 @@ import pytest
 from custom_components.battery_strategy import forecast_trace as trace_module
 from custom_components.battery_strategy.contracts import (
     DataQuality,
-    ForecastBundle,
+    EvForecast,
+    EvForecastSlot,
+    ForecastDistributionBundle,
     ForecastSlot,
     LoadForecast,
     LoadForecastComponent,
     PvForecast,
     QualityFlag,
     QuantileEnergy,
+    ScenarioBuildRequest,
+    ScenarioEvidenceSnapshot,
     SlotKey,
 )
 from custom_components.battery_strategy.forecast_trace import (
     FORECAST_TRACE_RETENTION_DAYS,
     SLOT_MS,
+    ForecastTraceScheduler,
     append_forecast_trace,
 )
+from custom_components.battery_strategy.scenario_generation import ScenarioBuilder
 
 
 def forecast_bundle(
     generated_at_ms: int, *, slot_count: int = 2, component_count: int = 1
-) -> ForecastBundle:
+) -> ForecastDistributionBundle:
     start_ms = (generated_at_ms // SLOT_MS + 1) * SLOT_MS
     slots = tuple(
         SlotKey(start_ms + index * SLOT_MS, start_ms + (index + 1) * SLOT_MS)
@@ -40,7 +46,7 @@ def forecast_bundle(
     pv_slots = tuple(
         ForecastSlot(slot, QuantileEnergy(0.2), DataQuality(1.0)) for slot in slots
     )
-    return ForecastBundle(
+    return ForecastDistributionBundle(
         load=LoadForecast(
             "load-id",
             generated_at_ms,
@@ -76,6 +82,31 @@ def forecast_bundle(
             "pv-v2",
             pv_slots,
         ),
+        ev=EvForecast(
+            "ev-id",
+            generated_at_ms,
+            generated_at_ms - SLOT_MS,
+            "ev-v1",
+            tuple(
+                EvForecastSlot(slot, QuantileEnergy(0.0), 0.0, 0.0) for slot in slots
+            ),
+        ),
+    )
+
+
+def scenario_request(bundle, *, timezone="UTC"):
+    return ScenarioBuildRequest(
+        bundle,
+        ScenarioEvidenceSnapshot(
+            "evidence",
+            max(bundle.load.generated_at_ms, bundle.pv.generated_at_ms),
+            max(bundle.load.generated_at_ms, bundle.pv.generated_at_ms),
+            timezone,
+            (),
+            (),
+            0.5,
+            0.075,
+        ),
     )
 
 
@@ -95,6 +126,7 @@ def test_trace_preserves_contract_metadata_quantiles_and_components(tmp_path):
     assert payload["load"]["components"][0]["component_key"] == "general_house"
     assert payload["load"]["components"][0]["slots"][0][7] == ["missing_weather"]
     assert payload["pv"]["model_version"] == "pv-v2"
+    assert payload["ev"]["model_version"] == "ev-v1"
 
 
 def test_trace_writes_only_one_vintage_per_quarter(tmp_path):
@@ -123,6 +155,24 @@ def test_trace_retention_removes_only_expired_date_directories(tmp_path):
     assert (tmp_path / retained.isoformat()).exists()
     assert (tmp_path / "operator-notes").exists()
     assert not list(Path(tmp_path).rglob("*.tmp"))
+
+
+def test_trace_size_limit_removes_only_oldest_date_directory(tmp_path, monkeypatch):
+    oldest = tmp_path / "2027-01-01"
+    newest = tmp_path / "2027-01-02"
+    notes = tmp_path / "operator-notes"
+    for directory in (oldest, newest, notes):
+        directory.mkdir()
+    (oldest / "trace.json.gz").write_bytes(b"x" * 8)
+    (newest / "trace.json.gz").write_bytes(b"x" * 8)
+    (notes / "keep.txt").write_text("keep", encoding="utf-8")
+    monkeypatch.setattr(trace_module, "FORECAST_TRACE_MAX_BYTES", 10)
+
+    trace_module._enforce_size_limit(tmp_path)
+
+    assert not oldest.exists()
+    assert newest.exists()
+    assert (notes / "keep.txt").read_text(encoding="utf-8") == "keep"
 
 
 def test_trace_caps_slots_and_components(tmp_path):
@@ -166,6 +216,19 @@ def test_trace_preserves_independent_load_and_pv_generation_times(tmp_path):
     assert payload["pv"]["generated_at_ms"] == 1_800_000_060_000
 
 
+def test_trace_vintage_includes_ev_generation_time(tmp_path):
+    bundle = forecast_bundle(1_800_000_000_000)
+    bundle = replace(
+        bundle,
+        ev=replace(bundle.ev, generated_at_ms=bundle.ev.generated_at_ms + 60_000),
+    )
+
+    path = append_forecast_trace(tmp_path, bundle)
+
+    payload = json.loads(gzip.decompress(path.read_bytes()))
+    assert payload["generated_at_ms"] == 1_800_000_060_000
+
+
 def test_concurrent_writers_publish_one_complete_first_vintage(tmp_path):
     bundle = forecast_bundle(1_800_000_000_000)
 
@@ -178,7 +241,7 @@ def test_concurrent_writers_publish_one_complete_first_vintage(tmp_path):
     files = list(tmp_path.rglob("*.json.gz"))
     assert len(files) == 1
     payload = json.loads(gzip.decompress(files[0].read_bytes()))
-    assert payload["schema_version"] == 3
+    assert payload["schema_version"] == 5
     assert payload["load"]["forecast_id"] == "load-id"
     assert not list(tmp_path.rglob("*.tmp"))
 
@@ -196,3 +259,50 @@ def test_trace_payload_has_no_installation_mapping_fields(tmp_path):
         "config_path",
     ):
         assert forbidden not in rendered
+
+
+def test_post_publication_scenario_failure_is_contained_and_traced(tmp_path):
+    bundle = forecast_bundle(1_800_000_000_000)
+    request = scenario_request(bundle, timezone="Invalid/Timezone")
+    result = ScenarioBuilder().build(request)
+
+    ForecastTraceScheduler(None, tmp_path)._write_if_available(
+        bundle,
+        trace_module.forecast_trace_bucket_ms(bundle),
+        scenario_result=result,
+        optimizer_evaluation={
+            "status": "deterministic_fallback",
+            "fallback_reason": "invalid_input",
+        },
+    )
+
+    path = next(tmp_path.rglob("*.json.gz"))
+    payload = json.loads(gzip.decompress(path.read_bytes()))
+    assert payload["optimizer_evaluation"]["status"] == "deterministic_fallback"
+    assert payload["optimizer_evaluation"]["fallback_reason"] == "invalid_input"
+    assert payload["optimizer_evaluation"]["scenario_build"]["rejected_reasons"] == [
+        ["invalid_timezone", 1]
+    ]
+    assert payload["optimizer_plan"] is None
+
+
+def test_reload_schedulers_share_single_flight_for_prebuilt_scenarios(tmp_path):
+    bundle = forecast_bundle(1_800_000_000_000)
+    result = ScenarioBuilder().build(scenario_request(bundle))
+    schedulers = (
+        ForecastTraceScheduler(None, tmp_path),
+        ForecastTraceScheduler(None, tmp_path),
+    )
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(
+            pool.map(
+                lambda scheduler: scheduler._write_if_available(
+                    bundle,
+                    trace_module.forecast_trace_bucket_ms(bundle),
+                    scenario_result=result,
+                ),
+                schedulers,
+            )
+        )
+
+    assert len(list(tmp_path.rglob("*.json.gz"))) == 1

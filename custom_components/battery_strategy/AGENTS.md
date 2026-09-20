@@ -9,11 +9,14 @@ documented impact analysis and explicit owner approval.
 - Data and feature store: `feature_store.py`, `weather.py`,
   `load_components.py`, `component_config.py` and configuration adapters.
 - Forecasting: the `forecasting` package and forecast composition runners.
+- Scenario generation: the `scenario_generation` package; it owns dependence,
+  bounded evidence repair and weighted paths, never marginals or decisions.
 - Market context: `market_context.py`; provider enrichment and commercial
   price context must not enter forecasting or the pure optimizer.
 - Optimization: `economic_optimizer.py` and `optimization_problem.py`.
-- Planning application: `planning_service.py`; publish exactly one authoritative
-  plan without constructing forecasts or running a second optimizer.
+- Planning application: `planning_service.py`; select stochastic optimization
+  only for a valid Scenario Builder result, otherwise publish one explicit
+  deterministic fallback. It publishes exactly one authoritative plan.
 - Measured savings: `savings.py`; actual accounting is observational and must
   not influence planning or live control.
 - Home Assistant planning boundary: `planning_adapter.py` captures normalized

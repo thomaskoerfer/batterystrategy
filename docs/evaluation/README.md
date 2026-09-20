@@ -12,8 +12,8 @@ Evaluation consumes immutable outputs and later matured actual slots. It may
 write bounded reports, forecast observations, backtest results and command
 traces. It cannot feed a live command, change a plan, retrain during a backtest
 window or obtain an actuator reference. No duplicate authoritative forecast,
-optimizer or compiler path remains at runtime. The former replacement shadow
-has been promoted in this prepared cutover; no runtime optimizer shadow remains.
+optimizer or compiler path remains at runtime. Scenario and optimizer traces
+observe the already selected authoritative plan and cannot invoke optimization.
 
 ## Metrics
 
@@ -35,14 +35,16 @@ Public diagnostics redact configured entities, locations, credentials, device
 identifiers and provider payloads.
 
 `forecast_trace.py` records at most one immutable forecast vintage per UTC
-quarter-hour in a compressed, 21-day sidecar below the Home Assistant config
+quarter-hour in a compressed, 21-day sidecar with an additional 64 MiB cap
+below the Home Assistant config
 directory. Each vintage contains the already-produced load and PV contract
 outputs, model versions, target slots, P50 and optional calibrated quantiles,
-quality metadata and named load-component forecasts. Schema 2 also stores the
-bounded coherent scenario set and authoritative plan. Traces collected by the
-preceding replacement-shadow release additionally contain its candidate plan,
-so identical historical vintages can be compared against actuals and perfect
-foresight.
+quality metadata and named load-component forecasts. Schema 5 stores the
+separate EV marginal forecast, bounded coherent scenario set, Scenario Builder
+diagnostics, optimizer selection/fallback diagnostics and the authoritative
+plan, so identical vintages can be compared against actuals and perfect
+foresight. Historical schema-4 shadow traces remain readable by the offline
+evaluator but are no longer produced.
 The same sidecar stores the redacted normalized market curve, battery state and
 constraints, commercial policy and EV interaction policy required to reproduce
 the optimization problem; it contains no entity or device identifiers.
@@ -76,20 +78,23 @@ These metrics are evidence for a later reviewed model change, not an online
 reinforcement loop. The existing online calibration remains owned by the
 forecast application and is unchanged by this trace or evaluator.
 
-The retained replacement-shadow evaluator reports load/PV scenario CRPS and
-central-80% coverage, EV-event Brier score, complete-path energy/variogram
-scores, EV start/duration error, runtime and first-policy monetary regret versus
-a hindsight-perfect replay. Only the first HA capture within 30 seconds after a
-slot boundary enters the decision comparison; later mid-slot replans are
-excluded. Compiler progress accounting removes battery energy already consumed
-during scheduler latency. The replay defaults to one vintage per hour to keep
-runtime bounded. Cutover traces without a shadow plan still contribute forecast
-scenario metrics. Realized live cost and
+The optimizer evaluator reports load/PV scenario CRPS and central-80% coverage,
+EV-event Brier score and first-policy monetary regret versus a hindsight-perfect
+replay. For pre-cutover traces it also compares the former shadow plan. Only the first
+HA capture within 30 seconds after a slot boundary enters the decision
+comparison; later mid-slot replans are excluded. Compiler progress accounting
+starts from the captured SoC, while perfect-foresight load/PV/EV actuals in the
+first slot are scaled to its remaining fraction after scheduler latency.
+Complete matured path suffixes additionally report an energy score, a local
+variogram score and EV start/duration error, so marginal calibration cannot hide
+implausible temporal or cross-series paths. The replay uses the first eligible
+boundary vintage in each UTC hour to keep runtime bounded and prevent post-hoc
+sample selection. Realized live cost and
 export remain owned by measured savings/command evaluation; a planning trace
 cannot reconstruct compiler and live-control intervention faithfully:
 
 ```sh
-python3 scripts/battery_strategy_optimizer_shadow_backtest.py \
+python3 scripts/battery_strategy_optimizer_backtest.py \
   --trace-dir PATH_TO_FORECAST_TRACE \
   --feature-store PATH_TO_FEATURE_STORE \
   --days 7
@@ -132,6 +137,8 @@ decision vintages, 20 complete
 matured path vintages and 30 samples in every observed lead/regime cohort;
 maximum shadow runtime 5 seconds; the upper 95% confidence bound from a paired
 UTC-day block bootstrap of monetary-regret delta must not exceed zero; and each
+Scenario Builder completion must cover at least 90% of eligible sampled
+vintages; each
 load/PV cohort must have central-80% coverage between 65% and 95% with scenario
 CRPS no worse than the P50 degenerate baseline. Joint energy and variogram
 scores must be no worse than the degenerate P50 path, and EV Brier/start/duration

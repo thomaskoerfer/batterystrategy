@@ -20,11 +20,6 @@ stochastic optimizer authoritative when valid scenarios are present and falls
 back to deterministic P50 when they are absent. Compiler, live-control and
 actuation contracts do not change.
 
-The cutover adapter also retains P50 for configurations whose 0.025 kWh
-first-action lattice would exceed 1,200 states. This explicit complexity guard
-prevents supported high-capacity settings from adding an unbounded stochastic
-delay; diagnostics expose the fallback reason.
-
 ## Contract impact
 
 `ForecastBundle` gains optional `scenarios`. Every scenario:

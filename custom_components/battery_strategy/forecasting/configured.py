@@ -8,7 +8,8 @@ from zoneinfo import ZoneInfo
 
 from ..component_config import LoadComponentSpec
 from ..contracts import (
-    ForecastBundle,
+    EvForecaster,
+    ForecastDistributionBundle,
     ForecastRequest,
     HistoricalFeatureSlot,
     LoadForecast,
@@ -103,6 +104,7 @@ class ForecastComposer:
 
     load_forecaster: LoadForecaster
     pv_forecaster: PvForecaster
+    ev_forecaster: EvForecaster
 
     def compose(
         self,
@@ -111,11 +113,12 @@ class ForecastComposer:
         context: LoadForecastContext,
         weather: tuple[WeatherSlot, ...],
         plant: PvPlant,
-    ) -> ForecastBundle:
+    ) -> ForecastDistributionBundle:
         """Combine forecasts without adding forecasting policy."""
-        return ForecastBundle(
+        return ForecastDistributionBundle(
             load=self.load_forecaster.forecast(request, history, context, weather),
             pv=self.pv_forecaster.forecast(request, history, weather, plant),
+            ev=self.ev_forecaster.forecast(request, history),
         )
 
 

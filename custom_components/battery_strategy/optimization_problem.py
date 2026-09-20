@@ -2,39 +2,29 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
-
 from .contracts import (
     BatteryConstraints,
     BatteryPlan,
     BatteryState,
     CommercialPolicy,
     EvInteractionPolicy,
-    ForecastBundle,
+    ForecastDistributionBundle,
     MarketSlot,
     OptimizationProblem,
+    ScenarioBundle,
 )
-from .economic_optimizer import (
-    ENERGY_STEP_KWH,
-    DynamicProgrammingOptimizer,
-    StochasticDynamicProgrammingOptimizer,
-)
-
-STOCHASTIC_MAX_FINE_STATES = 1200
-# HA's ten-second coordinator cannot capture at exactly :00. Treat its first
-# completed cycle after a quarter-hour boundary as the boundary decision while
-# rejecting genuine mid-slot replans.
-STOCHASTIC_BOUNDARY_TOLERANCE_MS = 30_000
+from .economic_optimizer import DynamicProgrammingOptimizer
 
 
 def build_optimization_problem(
     *,
     intervals,
-    forecast: ForecastBundle,
+    forecast: ForecastDistributionBundle,
     start_energy_kwh: float,
     constraints: BatteryConstraints,
     policy: CommercialPolicy,
     evaluated_at_ms: int,
+    scenarios: ScenarioBundle | None = None,
     ev_policy: EvInteractionPolicy = EvInteractionPolicy(),
 ) -> OptimizationProblem:
     """Return one immutable problem from normalized market and forecast data."""
@@ -42,6 +32,7 @@ def build_optimization_problem(
         evaluated_at_ms,
         forecast.load.generated_at_ms,
         forecast.pv.generated_at_ms,
+        forecast.ev.generated_at_ms,
     )
     return OptimizationProblem(
         problem_id=(
@@ -71,62 +62,12 @@ def build_optimization_problem(
         ),
         constraints=constraints,
         policy=policy,
+        scenarios=scenarios,
         ev_policy=ev_policy,
     )
 
 
-def optimize_snapshot(**kwargs) -> tuple[OptimizationProblem, BatteryPlan, dict]:
+def optimize_snapshot(**kwargs) -> tuple[OptimizationProblem, BatteryPlan]:
     """Optimize one captured snapshot and retain its auditable input contract."""
     problem = build_optimization_problem(**kwargs)
-    deterministic = DynamicProgrammingOptimizer()
-    if problem.forecast.scenarios is None:
-        return problem, deterministic.optimize(problem), {"mode": "deterministic_p50"}
-    if (
-        problem.as_of_ms - problem.forecast.load.slots[0].slot.start_ms
-        > STOCHASTIC_BOUNDARY_TOLERANCE_MS
-    ):
-        fallback = deterministic.optimize(problem)
-        version = f"{fallback.optimizer_version}-stochastic-mid-slot-fallback"
-        return (
-            problem,
-            replace(
-                fallback,
-                plan_id=f"{problem.problem_id}:{version}",
-                optimizer_version=version,
-            ),
-            {"fallback_reason": "stochastic_mid_slot_guard"},
-        )
-    usable_energy_kwh = (
-        problem.constraints.capacity_kwh
-        * (problem.constraints.max_soc_pct - problem.constraints.min_soc_pct)
-        / 100.0
-    )
-    if round(usable_energy_kwh / ENERGY_STEP_KWH) + 1 > STOCHASTIC_MAX_FINE_STATES:
-        fallback = deterministic.optimize(problem)
-        version = f"{fallback.optimizer_version}-stochastic-complexity-fallback"
-        return (
-            problem,
-            replace(
-                fallback,
-                plan_id=f"{problem.problem_id}:{version}",
-                optimizer_version=version,
-            ),
-            {"fallback_reason": "stochastic_complexity_guard"},
-        )
-    try:
-        plan, diagnostics = (
-            StochasticDynamicProgrammingOptimizer().optimize_with_diagnostics(problem)
-        )
-        return problem, plan, diagnostics
-    except Exception:
-        fallback = deterministic.optimize(problem)
-        version = f"{fallback.optimizer_version}-stochastic-fallback"
-        return (
-            problem,
-            replace(
-                fallback,
-                plan_id=f"{problem.problem_id}:{version}",
-                optimizer_version=version,
-            ),
-            {"fallback_reason": "stochastic_optimizer_error"},
-        )
+    return problem, DynamicProgrammingOptimizer().optimize(problem)

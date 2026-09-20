@@ -15,11 +15,10 @@ from custom_components.battery_strategy.contracts import (
     BatteryConstraints,
     BatteryState,
     CommercialPolicy,
+    EvForecast,
+    EvForecastSlot,
     EvInteractionPolicy,
-    ForecastBundle,
-    ForecastScenario,
-    ForecastScenarioSet,
-    ForecastScenarioSlot,
+    ForecastDistributionBundle,
     ForecastSlot,
     LoadForecast,
     MarketSlot,
@@ -27,6 +26,12 @@ from custom_components.battery_strategy.contracts import (
     PlanMode,
     PvForecast,
     QuantileEnergy,
+    ScenarioBuildDiagnostics,
+    ScenarioBuildResult,
+    ScenarioBuildStatus,
+    ScenarioBundle,
+    ScenarioPath,
+    ScenarioSlot,
     SlotKey,
 )
 from custom_components.battery_strategy.economic_optimizer import (
@@ -69,9 +74,18 @@ def problem(
         ForecastSlot(slot, QuantileEnergy(generation))
         for slot, generation in zip(slots, pv)
     )
-    forecast = ForecastBundle(
+    forecast = ForecastDistributionBundle(
         LoadForecast("load", start_ms, start_ms, "load-v1", load_slots),
         PvForecast("pv", start_ms, start_ms, "pv-v1", pv_slots),
+        EvForecast(
+            "ev",
+            start_ms,
+            start_ms,
+            "ev-v1",
+            tuple(
+                EvForecastSlot(slot, QuantileEnergy(0.0), 0.0, 0.0) for slot in slots
+            ),
+        ),
     )
     return OptimizationProblem(
         problem_id="test-problem",
@@ -120,33 +134,34 @@ def test_optimizer_is_deterministic_and_preserves_problem_identity():
 def test_stochastic_optimizer_uses_coherent_ev_paths_and_common_first_action():
     candidate = problem([10.0, 50.0], loads=[0.0, 0.0], soc=10.0)
     slots = tuple(item.slot for item in candidate.forecast.load.slots)
-    scenarios = ForecastScenarioSet(
+    scenarios = ScenarioBundle(
         "scenarios",
+        "source",
         candidate.as_of_ms,
         candidate.as_of_ms,
         "weekly-v1",
         (
-            ForecastScenario(
+            ScenarioPath(
                 "ev-later",
                 0.5,
                 (
-                    ForecastScenarioSlot(slots[0], 0.0, 0.0, 0.0),
-                    ForecastScenarioSlot(slots[1], 0.0, 0.0, 0.5),
+                    ScenarioSlot(slots[0], 0.0, 0.0, 0.0),
+                    ScenarioSlot(slots[1], 0.0, 0.0, 0.5),
                 ),
             ),
-            ForecastScenario(
+            ScenarioPath(
                 "house-later",
                 0.5,
                 (
-                    ForecastScenarioSlot(slots[0], 0.0, 0.0, 0.0),
-                    ForecastScenarioSlot(slots[1], 0.5, 0.0, 0.0),
+                    ScenarioSlot(slots[0], 0.0, 0.0, 0.0),
+                    ScenarioSlot(slots[1], 0.5, 0.0, 0.0),
                 ),
             ),
         ),
     )
     candidate = replace(
         candidate,
-        forecast=replace(candidate.forecast, scenarios=scenarios),
+        scenarios=scenarios,
         ev_policy=EvInteractionPolicy(battery_may_feed_ev=True),
     )
 
@@ -161,33 +176,34 @@ def test_stochastic_optimizer_uses_coherent_ev_paths_and_common_first_action():
 def test_stochastic_required_charge_remains_executable_when_pv_is_uncertain():
     candidate = problem([10.0, 50.0], loads=[0.0, 0.0], soc=10.0)
     slots = tuple(item.slot for item in candidate.forecast.load.slots)
-    scenarios = ForecastScenarioSet(
+    scenarios = ScenarioBundle(
         "mixed-pv",
+        "source",
         candidate.as_of_ms,
         candidate.as_of_ms,
         "weekly-v1",
         (
-            ForecastScenario(
+            ScenarioPath(
                 "sun",
                 0.5,
                 (
-                    ForecastScenarioSlot(slots[0], 0.0, 0.6, 0.0),
-                    ForecastScenarioSlot(slots[1], 0.5, 0.0, 0.0),
+                    ScenarioSlot(slots[0], 0.0, 0.6, 0.0),
+                    ScenarioSlot(slots[1], 0.5, 0.0, 0.0),
                 ),
             ),
-            ForecastScenario(
+            ScenarioPath(
                 "cloud",
                 0.5,
                 (
-                    ForecastScenarioSlot(slots[0], 0.0, 0.0, 0.0),
-                    ForecastScenarioSlot(slots[1], 0.5, 0.0, 0.0),
+                    ScenarioSlot(slots[0], 0.0, 0.0, 0.0),
+                    ScenarioSlot(slots[1], 0.5, 0.0, 0.0),
                 ),
             ),
         ),
     )
 
     plan = StochasticDynamicProgrammingOptimizer().optimize(
-        replace(candidate, forecast=replace(candidate.forecast, scenarios=scenarios))
+        replace(candidate, scenarios=scenarios)
     )
 
     assert plan.slots[0].required_charge_kwh > 0.0
@@ -204,18 +220,19 @@ def test_stochastic_optimizer_falls_back_exactly_without_scenarios():
 def test_stochastic_first_budget_is_common_permission_not_p50_target():
     candidate = problem([50.0, 10.0], loads=[0.4, 0.0], soc=80.0)
     slots = tuple(item.slot for item in candidate.forecast.load.slots)
-    scenarios = ForecastScenarioSet(
+    scenarios = ScenarioBundle(
         "paths",
+        "source",
         candidate.as_of_ms,
         candidate.as_of_ms,
         "weekly-v1",
         tuple(
-            ForecastScenario(
+            ScenarioPath(
                 str(index),
                 0.5,
                 (
-                    ForecastScenarioSlot(slots[0], load, 0.0, 0.0),
-                    ForecastScenarioSlot(slots[1], 0.0, 0.0, 0.0),
+                    ScenarioSlot(slots[0], load, 0.0, 0.0),
+                    ScenarioSlot(slots[1], 0.0, 0.0, 0.0),
                 ),
             )
             for index, load in enumerate((0.2, 0.5))
@@ -223,7 +240,7 @@ def test_stochastic_first_budget_is_common_permission_not_p50_target():
     )
 
     plan = StochasticDynamicProgrammingOptimizer().optimize(
-        replace(candidate, forecast=replace(candidate.forecast, scenarios=scenarios))
+        replace(candidate, scenarios=scenarios)
     )
 
     assert plan.slots[0].planned_discharge_kwh <= plan.slots[0].discharge_budget_kwh
@@ -233,25 +250,24 @@ def test_stochastic_first_budget_is_common_permission_not_p50_target():
 def test_stochastic_policy_replay_accepts_continuous_executable_budget():
     candidate = problem([50.0, 10.0], loads=[0.4, 0.0], soc=80.0)
     slots = tuple(item.slot for item in candidate.forecast.load.slots)
-    scenarios = ForecastScenarioSet(
+    scenarios = ScenarioBundle(
         "paths",
+        "source",
         candidate.as_of_ms,
         candidate.as_of_ms,
         "weekly-v1",
         (
-            ForecastScenario(
+            ScenarioPath(
                 "path",
                 1.0,
                 (
-                    ForecastScenarioSlot(slots[0], 0.4, 0.0, 0.0),
-                    ForecastScenarioSlot(slots[1], 0.0, 0.0, 0.0),
+                    ScenarioSlot(slots[0], 0.4, 0.0, 0.0),
+                    ScenarioSlot(slots[1], 0.0, 0.0, 0.0),
                 ),
             ),
         ),
     )
-    candidate = replace(
-        candidate, forecast=replace(candidate.forecast, scenarios=scenarios)
-    )
+    candidate = replace(candidate, scenarios=scenarios)
 
     plan, diagnostics = (
         StochasticDynamicProgrammingOptimizer().optimize_with_diagnostics(
@@ -266,25 +282,26 @@ def test_stochastic_policy_replay_accepts_continuous_executable_budget():
 def test_stochastic_first_action_respects_sub_lattice_power_limit():
     candidate = problem([10.0, 50.0], loads=[0.0, 0.0], soc=10.0)
     slots = tuple(item.slot for item in candidate.forecast.load.slots)
-    scenarios = ForecastScenarioSet(
+    scenarios = ScenarioBundle(
         "paths",
+        "source",
         candidate.as_of_ms,
         candidate.as_of_ms,
         "weekly-v1",
         (
-            ForecastScenario(
+            ScenarioPath(
                 "future-load",
                 1.0,
                 (
-                    ForecastScenarioSlot(slots[0], 0.0, 0.0, 0.0),
-                    ForecastScenarioSlot(slots[1], 0.5, 0.0, 0.0),
+                    ScenarioSlot(slots[0], 0.0, 0.0, 0.0),
+                    ScenarioSlot(slots[1], 0.5, 0.0, 0.0),
                 ),
             ),
         ),
     )
     candidate = replace(
         candidate,
-        forecast=replace(candidate.forecast, scenarios=scenarios),
+        scenarios=scenarios,
         constraints=replace(candidate.constraints, max_charge_power_w=180.0),
     )
 
@@ -296,18 +313,19 @@ def test_stochastic_first_action_respects_sub_lattice_power_limit():
 def test_stochastic_common_budget_survives_zero_p50_load():
     candidate = problem([50.0, 10.0], loads=[0.0, 0.0], soc=50.0)
     slots = tuple(item.slot for item in candidate.forecast.load.slots)
-    scenarios = ForecastScenarioSet(
+    scenarios = ScenarioBundle(
         "paths",
+        "source",
         candidate.as_of_ms,
         candidate.as_of_ms,
         "weekly-v1",
         tuple(
-            ForecastScenario(
+            ScenarioPath(
                 f"load-{load}",
                 0.5,
                 (
-                    ForecastScenarioSlot(slots[0], load, 0.0, 0.0),
-                    ForecastScenarioSlot(slots[1], 0.0, 0.0, 0.0),
+                    ScenarioSlot(slots[0], load, 0.0, 0.0),
+                    ScenarioSlot(slots[1], 0.0, 0.0, 0.0),
                 ),
             )
             for load in (0.4, 0.5)
@@ -315,7 +333,7 @@ def test_stochastic_common_budget_survives_zero_p50_load():
     )
 
     plan = StochasticDynamicProgrammingOptimizer().optimize(
-        replace(candidate, forecast=replace(candidate.forecast, scenarios=scenarios))
+        replace(candidate, scenarios=scenarios)
     )
 
     assert plan.slots[0].planned_discharge_kwh == 0.0
@@ -358,7 +376,7 @@ def test_required_first_transition_is_not_shifted_by_source_canonicalization():
 def test_scenario_ev_discharge_limit_matches_live_no_ev_residual():
     slot = SlotKey(0, 900_000)
     demand, charge_surplus, physical_surplus, limit = _scenario_flows(
-        (ForecastScenarioSlot(slot, 0.5, 0.8, 0.8),),
+        (ScenarioSlot(slot, 0.5, 0.8, 0.8),),
         EvInteractionPolicy(
             pv_to_ev_first=True,
             discharge_during_ev_charging=True,
@@ -375,7 +393,7 @@ def test_scenario_ev_discharge_limit_matches_live_no_ev_residual():
 def test_scenario_battery_priority_prices_pv_diverted_from_ev_as_grid_energy():
     slot = SlotKey(0, 900_000)
     demand, charge_surplus, physical_surplus, limit = _scenario_flows(
-        (ForecastScenarioSlot(slot, 0.5, 0.8, 0.8),),
+        (ScenarioSlot(slot, 0.5, 0.8, 0.8),),
         EvInteractionPolicy(
             pv_to_ev_first=False,
             discharge_during_ev_charging=True,
@@ -399,25 +417,26 @@ def test_battery_priority_does_not_serialize_diverted_pv_as_grid_charge():
         grid=False,
     )
     slots = tuple(item.slot for item in candidate.forecast.load.slots)
-    scenarios = ForecastScenarioSet(
+    scenarios = ScenarioBundle(
         "ev-pv",
+        "source",
         candidate.as_of_ms,
         candidate.as_of_ms,
         "weekly-v1",
         (
-            ForecastScenario(
+            ScenarioPath(
                 "path",
                 1.0,
                 (
-                    ForecastScenarioSlot(slots[0], 0.5, 0.8, 0.8),
-                    ForecastScenarioSlot(slots[1], 0.5, 0.0, 0.0),
+                    ScenarioSlot(slots[0], 0.5, 0.8, 0.8),
+                    ScenarioSlot(slots[1], 0.5, 0.0, 0.0),
                 ),
             ),
         ),
     )
     candidate = replace(
         candidate,
-        forecast=replace(candidate.forecast, scenarios=scenarios),
+        scenarios=scenarios,
         ev_policy=EvInteractionPolicy(
             pv_to_ev_first=False,
             battery_may_feed_ev=False,
@@ -436,7 +455,7 @@ def test_battery_priority_does_not_serialize_diverted_pv_as_grid_charge():
 def test_scenario_ev_below_threshold_is_not_treated_as_active():
     slot = SlotKey(0, 900_000)
     _demand, _charge_surplus, _physical_surplus, limit = _scenario_flows(
-        (ForecastScenarioSlot(slot, 0.5, 0.0, 0.05),),
+        (ScenarioSlot(slot, 0.5, 0.0, 0.05),),
         EvInteractionPolicy(
             discharge_during_ev_charging=False,
             battery_may_feed_ev=False,
@@ -445,6 +464,168 @@ def test_scenario_ev_below_threshold_is_not_treated_as_active():
     )
 
     assert limit == pytest.approx((0.55,))
+
+
+def test_planning_service_selects_stochastic_optimizer_for_valid_scenarios():
+    start = dt.datetime(2026, 9, 19, tzinfo=dt.UTC)
+    base = problem(
+        [10.0, 50.0],
+        loads=[0.0, 0.0],
+        soc=10.0,
+        start_ms=int(start.timestamp() * 1000),
+    )
+    settings = settings_from_values(
+        battery_capacity_kwh=6.0,
+        min_soc_pct=10.0,
+        max_soc_pct=100.0,
+        max_charge_power_w=2400.0,
+        max_discharge_power_w=2400.0,
+        round_trip_efficiency=0.8,
+        min_margin_ct_per_kwh=2.0,
+        pv_charging="on",
+        grid_charging="price_sensitive",
+        discharge="price_sensitive",
+    )
+    intervals = [
+        TariffInterval(start + dt.timedelta(minutes=15 * index), price / 100.0)
+        for index, price in enumerate((10.0, 50.0))
+    ]
+    service = planning_pipeline._planning_service(settings)
+
+    scenarios = ScenarioBundle(
+        "scenario-set",
+        "source",
+        base.as_of_ms,
+        base.as_of_ms,
+        "scenario-v1",
+        (
+            ScenarioPath(
+                "path",
+                1.0,
+                tuple(
+                    ScenarioSlot(slot.slot, 0.4, 0.0, 0.0)
+                    for slot in base.forecast.load.slots
+                ),
+            ),
+        ),
+    )
+    scenario_result = ScenarioBuildResult(
+        scenarios,
+        ScenarioBuildStatus.COMPLETED,
+        ScenarioBuildDiagnostics(
+            True,
+            1,
+            1,
+            0,
+            0,
+            (),
+            0.0,
+            0,
+            (),
+            "evidence",
+            base.as_of_ms,
+            0,
+            "input",
+            "v1",
+        ),
+    )
+    publication = service.plan(
+        intervals=intervals,
+        samples=[],
+        start_energy_kwh=0.6,
+        forecast_bundle=base.forecast,
+        scenario_result=scenario_result,
+    )
+
+    assert publication.battery_plan.optimizer_version == "stochastic-two-stage-dp-v1"
+    selection = publication.data["forecast_diagnostics"]["optimizer_selection"]
+    assert selection["status"] == "authoritative_stochastic"
+    assert selection["scenario_count"] == 1
+
+
+def test_planning_service_falls_back_to_deterministic_without_scenarios():
+    start = dt.datetime(2026, 9, 19, tzinfo=dt.UTC)
+    base = problem([10.0, 50.0], start_ms=int(start.timestamp() * 1000))
+    settings = settings_from_values()
+    intervals = [
+        TariffInterval(start + dt.timedelta(minutes=15 * index), price / 100.0)
+        for index, price in enumerate((10.0, 50.0))
+    ]
+
+    publication = planning_pipeline._planning_service(settings).plan(
+        intervals=intervals,
+        samples=[],
+        start_energy_kwh=0.6,
+        forecast_bundle=base.forecast,
+    )
+
+    assert publication.battery_plan.optimizer_version == "economic-dp-v2"
+    selection = publication.data["forecast_diagnostics"]["optimizer_selection"]
+    assert selection["status"] == "deterministic_fallback"
+
+
+def test_planning_service_contains_stochastic_failure(monkeypatch):
+    start = dt.datetime(2026, 9, 19, tzinfo=dt.UTC)
+    base = problem([10.0, 50.0], start_ms=int(start.timestamp() * 1000))
+    scenarios = ScenarioBundle(
+        "scenario-set",
+        "source",
+        base.as_of_ms,
+        base.as_of_ms,
+        "scenario-v1",
+        (
+            ScenarioPath(
+                "path",
+                1.0,
+                tuple(
+                    ScenarioSlot(slot.slot, 0.4, 0.0, 0.0)
+                    for slot in base.forecast.load.slots
+                ),
+            ),
+        ),
+    )
+    result = ScenarioBuildResult(
+        scenarios,
+        ScenarioBuildStatus.COMPLETED,
+        ScenarioBuildDiagnostics(
+            True,
+            1,
+            1,
+            0,
+            0,
+            (),
+            0.0,
+            0,
+            (),
+            "evidence",
+            base.as_of_ms,
+            0,
+            "input",
+            "v1",
+        ),
+    )
+    monkeypatch.setattr(
+        StochasticDynamicProgrammingOptimizer,
+        "optimize_with_diagnostics",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+    intervals = [
+        TariffInterval(start + dt.timedelta(minutes=15 * index), price / 100.0)
+        for index, price in enumerate((10.0, 50.0))
+    ]
+
+    publication = planning_pipeline._planning_service(settings_from_values()).plan(
+        intervals=intervals,
+        samples=[],
+        start_energy_kwh=0.6,
+        forecast_bundle=base.forecast,
+        scenario_result=result,
+    )
+
+    assert publication.battery_plan.optimizer_version == "economic-dp-v2"
+    assert publication.optimization_problem.scenarios is None
+    selection = publication.data["forecast_diagnostics"]["optimizer_selection"]
+    assert selection["fallback_reason"] == "stochastic_optimizer_failed"
 
 
 def test_profitable_grid_charge_is_used_for_later_expensive_load():
@@ -649,192 +830,3 @@ def test_pure_optimizer_matches_current_economic_kernel(prices, loads, pv, soc):
         sum(item["with_bat_eur"] for item in current["daily_costs"].values()),
         abs=5e-4,
     )
-
-
-def test_cutover_uses_stochastic_plan_when_scenarios_are_available():
-    start = dt.datetime(2026, 9, 19, tzinfo=dt.UTC)
-    base = problem(
-        [10.0, 50.0],
-        loads=[0.0, 0.0],
-        soc=10.0,
-        start_ms=int(start.timestamp() * 1000),
-    )
-    slots = tuple(item.slot for item in base.forecast.load.slots)
-    scenarios = ForecastScenarioSet(
-        "shadow",
-        base.as_of_ms,
-        base.as_of_ms,
-        "weekly-v1",
-        (
-            ForecastScenario(
-                "path",
-                1.0,
-                (
-                    ForecastScenarioSlot(slots[0], 0.0, 0.0, 0.0),
-                    ForecastScenarioSlot(slots[1], 0.5, 0.0, 0.0),
-                ),
-            ),
-        ),
-    )
-    settings = settings_from_values(
-        battery_capacity_kwh=6.0,
-        min_soc_pct=10.0,
-        max_soc_pct=100.0,
-        max_charge_power_w=2400.0,
-        max_discharge_power_w=2400.0,
-        round_trip_efficiency=0.8,
-        min_margin_ct_per_kwh=2.0,
-        pv_charging="on",
-        grid_charging="price_sensitive",
-        discharge="price_sensitive",
-    )
-    intervals = [
-        TariffInterval(start + dt.timedelta(minutes=15 * index), price / 100.0)
-        for index, price in enumerate((10.0, 50.0))
-    ]
-    service = planning_pipeline._planning_service(settings)
-
-    without = service.plan(
-        intervals=intervals,
-        samples=[],
-        start_energy_kwh=0.6,
-        forecast_bundle=base.forecast,
-    )
-    with_shadow = service.plan(
-        intervals=intervals,
-        samples=[],
-        start_energy_kwh=0.6,
-        forecast_bundle=replace(base.forecast, scenarios=scenarios),
-    )
-
-    assert with_shadow.battery_plan != without.battery_plan
-    assert with_shadow.battery_plan.optimizer_version == "stochastic-two-stage-dp-v1"
-
-
-def test_cutover_complexity_guard_falls_back_to_p50():
-    start = dt.datetime(2026, 9, 19, tzinfo=dt.UTC)
-    base = problem(
-        [10.0, 50.0],
-        loads=[0.0, 0.0],
-        soc=10.0,
-        start_ms=int(start.timestamp() * 1000),
-    )
-    slots = tuple(item.slot for item in base.forecast.load.slots)
-    scenarios = ForecastScenarioSet(
-        "paths",
-        base.as_of_ms,
-        base.as_of_ms,
-        "weekly-v1",
-        (
-            ForecastScenario(
-                "path",
-                1.0,
-                tuple(ForecastScenarioSlot(slot, 0.2, 0.0, 0.0) for slot in slots),
-            ),
-        ),
-    )
-    settings = settings_from_values(
-        battery_capacity_kwh=100.0,
-        min_soc_pct=10.0,
-        max_soc_pct=100.0,
-        max_charge_power_w=2400.0,
-        max_discharge_power_w=2400.0,
-        round_trip_efficiency=0.8,
-        min_margin_ct_per_kwh=2.0,
-        pv_charging="on",
-        grid_charging="price_sensitive",
-        discharge="price_sensitive",
-    )
-    intervals = [
-        TariffInterval(start + dt.timedelta(minutes=15 * index), price / 100.0)
-        for index, price in enumerate((10.0, 50.0))
-    ]
-
-    result = planning_pipeline._planning_service(settings).plan(
-        intervals=intervals,
-        samples=[],
-        start_energy_kwh=10.0,
-        forecast_bundle=replace(base.forecast, scenarios=scenarios),
-    )
-
-    assert result.battery_plan.optimizer_version.endswith(
-        "-stochastic-complexity-fallback"
-    )
-    assert (
-        result.data["forecast_diagnostics"]["optimizer"]["fallback_reason"]
-        == "stochastic_complexity_guard"
-    )
-
-
-@pytest.mark.parametrize(
-    ("delay_ms", "expects_fallback"),
-    ((20_000, False), (120_000, True)),
-)
-def test_cutover_only_uses_stochastic_optimizer_in_first_boundary_cycle(
-    delay_ms, expects_fallback
-):
-    start = dt.datetime(2026, 9, 19, tzinfo=dt.UTC)
-    base = problem(
-        [10.0, 50.0],
-        loads=[0.0, 0.0],
-        soc=10.0,
-        start_ms=int(start.timestamp() * 1000),
-    )
-    late_ms = base.as_of_ms + delay_ms
-    slots = tuple(item.slot for item in base.forecast.load.slots)
-    scenarios = ForecastScenarioSet(
-        "late-paths",
-        late_ms,
-        late_ms,
-        "weekly-v1",
-        (
-            ForecastScenario(
-                "path",
-                1.0,
-                tuple(ForecastScenarioSlot(slot, 0.4, 0.0, 0.0) for slot in slots),
-            ),
-        ),
-    )
-    late_bundle = replace(
-        base.forecast,
-        load=replace(base.forecast.load, generated_at_ms=late_ms),
-        pv=replace(base.forecast.pv, generated_at_ms=late_ms),
-        scenarios=scenarios,
-    )
-    settings = settings_from_values(
-        battery_capacity_kwh=6.0,
-        min_soc_pct=10.0,
-        max_soc_pct=100.0,
-        max_charge_power_w=2400.0,
-        max_discharge_power_w=2400.0,
-        round_trip_efficiency=0.8,
-        min_margin_ct_per_kwh=2.0,
-        pv_charging="on",
-        grid_charging="price_sensitive",
-        discharge="price_sensitive",
-    )
-    intervals = [
-        TariffInterval(start + dt.timedelta(minutes=15 * index), price / 100.0)
-        for index, price in enumerate((10.0, 50.0))
-    ]
-
-    result = planning_pipeline._planning_service(settings).plan(
-        intervals=intervals,
-        samples=[],
-        start_energy_kwh=0.6,
-        forecast_bundle=late_bundle,
-    )
-
-    if expects_fallback:
-        assert result.battery_plan.optimizer_version.endswith(
-            "-stochastic-mid-slot-fallback"
-        )
-        assert (
-            result.data["forecast_diagnostics"]["optimizer"]["fallback_reason"]
-            == "stochastic_mid_slot_guard"
-        )
-    else:
-        assert result.battery_plan.optimizer_version.startswith("stochastic-")
-        assert (
-            result.data["forecast_diagnostics"]["optimizer"]["fallback_reason"] is None
-        )

@@ -8,7 +8,7 @@ describing how coding agents must work in that boundary.
 | Production layer | Components |
 | --- | --- |
 | Data and feature store | Data adapters, normalized observations and feature store |
-| Forecasting | Load, PV and component forecasting |
+| Forecasting | Load, PV and component forecasting; pure scenario generation |
 | Optimization | Pure economic optimizer |
 | Execution control | Plan compiler and live control |
 | Actuation | Hardware command adapter |
@@ -22,6 +22,7 @@ production layers.
 | --- | --- |
 | Data adapters and feature store | [README](data-feature-store/README.md) |
 | Forecasting | [README](forecasting/README.md) |
+| Scenario generation | [README](scenario-generation/README.md) |
 | Market context | [README](market-context/README.md) |
 | Optimization | [README](optimization/README.md) |
 | Planning service | [README](planning-service/README.md) |

@@ -21,7 +21,7 @@ from .plan_models import DailyCost, PlanPoint, StrategyPlan
 PERSISTED_PLAN_KEY = "_canonical_battery_plan_v1"
 PERSISTED_POLICY_KEY = "_execution_policy_v1"
 PERSISTED_EXECUTION_KEY = "_optimizer_execution_generation"
-PERSISTED_EXECUTION_GENERATION = "stochastic-v1"
+PERSISTED_EXECUTION_GENERATION = "deterministic-v2"
 SLOT_MS = 15 * 60 * 1000
 
 

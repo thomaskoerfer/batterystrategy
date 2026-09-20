@@ -6,7 +6,7 @@ import datetime as dt
 import hashlib
 from zoneinfo import ZoneInfo
 
-from .contracts import ForecastBundle, HistoricalFeatureSlot, QualityFlag
+from .contracts import ForecastDistributionBundle, HistoricalFeatureSlot, QualityFlag
 from .forecasting.uncertainty import (
     PV_SERIES,
     TOTAL_LOAD_SERIES,
@@ -107,7 +107,7 @@ def mature_predictions(
     state.quantile_pending = pending[-MAX_PENDING:]
 
 
-def queue_predictions(state, bundle: ForecastBundle) -> None:
+def queue_predictions(state, bundle: ForecastDistributionBundle) -> None:
     """Freeze one production P50 per target and lead class without duplication."""
     existing = {
         (
@@ -165,7 +165,7 @@ def queue_predictions(state, bundle: ForecastBundle) -> None:
     state.quantile_pending = state.quantile_pending[-MAX_PENDING:]
 
 
-def _model_signature(bundle: ForecastBundle, components: dict) -> str:
+def _model_signature(bundle: ForecastDistributionBundle, components: dict) -> str:
     versions = [
         f"{TOTAL_LOAD_SERIES}:{base_model_version(bundle.load.model_version)}",
         f"{PV_SERIES}:{base_model_version(bundle.pv.model_version)}",

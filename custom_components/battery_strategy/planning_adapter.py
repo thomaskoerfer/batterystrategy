@@ -296,8 +296,9 @@ class PlanningPipelineAdapter:
             (
                 outcome.forecast_bundle,
                 outcome.result.battery_plan,
-                outcome.evaluation_problem,
-                outcome.optimization_diagnostics,
+                outcome.optimization_problem,
+                outcome.scenario_result,
+                outcome.optimizer_evaluation,
             )
             if outcome.forecast_bundle is not None
             else None
@@ -314,16 +315,21 @@ class PlanningPipelineAdapter:
         """Schedule detached observation only after HA published its plan."""
         if pending is None or self._forecast_trace_scheduler is None or self._revoked:
             return
-        bundle, authoritative_plan, optimization_problem, optimization_diagnostics = (
-            pending
-        )
+        (
+            bundle,
+            authoritative_plan,
+            optimization_problem,
+            scenario_result,
+            optimizer_evaluation,
+        ) = pending
         self._forecast_trace_scheduler.schedule(
             self._entry,
             bundle,
             lambda: not self._revoked,
             authoritative_plan=authoritative_plan,
             optimization_problem=optimization_problem,
-            optimization_diagnostics=optimization_diagnostics,
+            scenario_result=scenario_result,
+            optimizer_evaluation=optimizer_evaluation,
         )
 
     def runtime_context(

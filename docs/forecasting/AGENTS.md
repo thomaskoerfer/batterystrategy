@@ -5,17 +5,17 @@ rules before working on this layer.
 
 ## Allowed
 
-Own deterministic load and PV prediction, uncertainty, model quality and named
+Own deterministic load, PV and EV prediction, uncertainty, model quality and named
 load-component composition from normalized feature and weather inputs. Keep
 concrete `LoadForecaster` and `PvForecaster` implementations independent; their
-composer may only invoke them and construct `ForecastBundle`.
+composer may only invoke them and construct `ForecastDistributionBundle`.
 
 ## Forbidden
 
 Do not read entities, recorder storage, files or networks. Do not use prices,
 battery SoC, battery policy or optimizer state. Keep load and PV models and
-their learned state independent. A component change must not alter unrelated
-components.
+their learned state independent. Do not generate joint scenario paths; that is
+owned by Scenario Builder. A component change must not alter unrelated components.
 
 ## Required checks
 

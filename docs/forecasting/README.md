@@ -2,18 +2,21 @@
 
 ## Purpose
 
-Forecasting predicts future EV-free household load and PV generation on one
+Forecasting predicts future EV-free household load, PV generation and EV
+charging on one
 shared quarter-hour grid. It is deterministic and side-effect free once its
 history, weather, current context and request have been assembled.
 
 ## Independent models
 
-`LoadForecaster` and `PvForecaster` are independent boundaries:
+`LoadForecaster`, `PvForecaster` and `EvForecaster` are independent boundaries:
 
 - load forecasting may use historical household load, named load components,
   time/calendar features, weather and current device context;
 - PV forecasting may use historical PV generation, plant limits, time/solar
   shape, weather and learned PV bias;
+- EV forecasting may use normalized historical EV sessions and current active
+  state, but never optimizer EV policy;
 - neither model may read the other's configuration, features or learned state;
 - net load is derived from load minus PV and is not a third learned forecast.
 
@@ -41,25 +44,23 @@ The derived `general_house_load` residual component remains point-only:
 uncertainty is calibrated for total EV-free load and separately metered physical
 components rather than persisting an unbounded component-membership snapshot.
 
-The combined `ForecastBundle` is constructed before optimization. Forecasting
+The combined marginal-only `ForecastDistributionBundle` is constructed before
+scenario generation or optimization. Forecasting
 does not know prices, battery SoC, battery constraints, terminal value or a
 battery plan.
 
 Production uses concrete configured implementations of both forecast
 contracts. The application supplies immutable run-local model configuration,
 then a policy-free composer invokes the load and PV owners independently and
-only combines their results into `ForecastBundle`. Current calibration inputs
+only combines their results into `ForecastDistributionBundle`. Current calibration inputs
 remain application configuration because the approved contracts do not expose
 them; moving them into contract data requires a separate impact analysis and
 owner approval.
 
-The bundle may also contain bounded calibrated weekly-copula paths. A matching
-historical week supplies the joint temporal rank template for load, PV and EV;
-those ranks select values from the current lead-time residual distributions
-around P50. PV is capped by inverter power. Current EV active/inactive state
-selects compatible session paths, and EV remains separate from house load.
-Incomplete history or immature residual calibration produces no scenario set
-and leaves the point forecast unchanged.
+The bundle never contains coherent paths. Scenario generation is a separate
+pure module with its own contract and documentation. This prevents dependence
+model changes from modifying marginal forecast ownership or letting forecasting
+learn prices and battery policy.
 
 Issued vintages and matured residual cohorts are bounded forecast-owned learning
 state. They are distinct from non-authoritative evaluation traces: evaluation

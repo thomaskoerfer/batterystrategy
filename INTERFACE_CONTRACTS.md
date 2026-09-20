@@ -112,15 +112,35 @@ backtests.
 
 P50 is the required point forecast. P10 and P90 are added as a pair only after
 they can be calibrated from matured forecast residuals; missing quantiles mean
-"not calibrated", not zero uncertainty. A `ForecastBundle` is valid only when
-load and PV use the identical slot grid.
+"not calibrated", not zero uncertainty. A `ForecastDistributionBundle` is
+valid only when load, PV and EV use the identical slot grid. It contains
+marginals only and never owns joint trajectories.
 
-`ForecastBundle.scenarios` is optional. When present it is a bounded weighted
-set of at most 12 complete, coherent paths on that same grid. Every path carries EV-free
-house-load, PV-generation and EV-charge energy separately. Probabilities are
-positive and sum to one; generation time, causal training cutoff and model
+`EvForecast` carries slot energy quantiles plus forecast and causal-naive active
+probabilities. EV remains separate from EV-free house load. Raw EV device state
+belongs to the forecaster input; normalized historical EV energy and session
+shapes may reach scenario generation only through its evidence snapshot.
+
+`ScenarioBuilder.build(ScenarioBuildRequest)` returns a structured
+`ScenarioBuildResult`. The request contains one marginal bundle, a deeply
+immutable causal `ScenarioEvidenceSnapshot` and bounded settings. A successful
+result contains a separate `ScenarioBundle` of at most 12 complete coherent
+paths on the same grid. Every path carries EV-free house-load, PV-generation and
+EV-charge energy separately. Probabilities are positive and sum to one;
+generation time, source forecast identity, causal training cutoff and model
 version are explicit. Marginal P10/P50/P90 values are not scenarios and must
 not be combined into synthetic all-low or all-high trajectories.
+
+The evidence snapshot carries the EV forecaster's normalized slot-energy
+activity threshold so historical session boundaries use the same semantics as
+the emitted EV marginal. This is forecast evidence, not optimizer EV policy.
+
+The builder may repair only isolated aggregate load/PV history gaps within its
+versioned limit. It never interpolates EV or changes current forecast values.
+Marginal mapping prefers calibrated residual cohorts, then emitted forecast
+quantiles, then a centered causal empirical distribution. Every fallback and
+repair is diagnostic evidence for the release gate. Missing component-level
+history does not invalidate a quality-valid aggregate path.
 
 The optimizer input carries EV interaction policy explicitly, including the
 configured active-power threshold shared with live control. Forecasting does
@@ -152,9 +172,12 @@ they are never silently treated as measured zero.
 
 ### Forecasting and market data to optimization
 
-`OptimizationProblem` is a complete deterministic optimizer input. Market and
-forecast grids must match exactly. Battery state cannot be newer than the
-problem's `as_of_ms`.
+`OptimizationProblem` is a complete optimizer input. Its
+`ForecastDistributionBundle` and optional `ScenarioBundle` are separate typed
+fields. Market, forecast and scenario grids must match exactly. Battery state
+cannot be newer than the problem's `as_of_ms`. The optimizer may consume a
+valid scenario bundle but may not read history, calibrate marginals, repair
+evidence or manufacture scenarios.
 
 `CommercialPolicy` includes explicit fields for export opportunity,
 the optional discharge feasibility floor, independent PV/grid/discharge
