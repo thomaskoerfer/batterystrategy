@@ -480,6 +480,7 @@ def test_forecast_trace_scheduler_is_single_bucket_and_config_entry_owned(tmp_pa
     bundle = SimpleNamespace(
         load=SimpleNamespace(generated_at_ms=1_800_000_000_000),
         pv=SimpleNamespace(generated_at_ms=1_800_000_000_000),
+        ev=SimpleNamespace(generated_at_ms=1_800_000_000_000),
     )
 
     first._forecast_trace_scheduler.schedule(first._entry, bundle)
@@ -628,11 +629,19 @@ def test_application_boundaries_do_not_cross_layer_ownership():
     )
     assert all(
         token not in market
-        for token in ("DynamicProgrammingOptimizer", "ForecastBundle", "BatteryPlan")
+        for token in (
+            "DynamicProgrammingOptimizer",
+            "ForecastDistributionBundle",
+            "BatteryPlan",
+        )
     )
     assert all(
         token not in savings
-        for token in ("DynamicProgrammingOptimizer", "ForecastBundle", "BatteryPlan")
+        for token in (
+            "DynamicProgrammingOptimizer",
+            "ForecastDistributionBundle",
+            "BatteryPlan",
+        )
     )
 
 

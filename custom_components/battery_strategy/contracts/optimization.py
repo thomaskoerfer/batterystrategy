@@ -13,7 +13,8 @@ from .common import (
     require_percentage,
     require_slots_sorted_unique,
 )
-from .forecasting import ForecastBundle
+from .forecasting import ForecastDistributionBundle
+from .scenarios import ScenarioBundle
 
 
 class PlanMode(StrEnum):
@@ -129,11 +130,12 @@ class OptimizationProblem:
 
     problem_id: str
     as_of_ms: int
-    forecast: ForecastBundle
+    forecast: ForecastDistributionBundle
     market: tuple[MarketSlot, ...]
     battery: BatteryState
     constraints: BatteryConstraints
     policy: CommercialPolicy
+    scenarios: ScenarioBundle | None = None
     ev_policy: EvInteractionPolicy = EvInteractionPolicy()
 
     def __post_init__(self) -> None:
@@ -142,9 +144,10 @@ class OptimizationProblem:
         if (
             self.forecast.load.generated_at_ms > self.as_of_ms
             or self.forecast.pv.generated_at_ms > self.as_of_ms
+            or self.forecast.ev.generated_at_ms > self.as_of_ms
             or (
-                self.forecast.scenarios is not None
-                and self.forecast.scenarios.generated_at_ms > self.as_of_ms
+                self.scenarios is not None
+                and self.scenarios.generated_at_ms > self.as_of_ms
             )
         ):
             raise ValueError("forecasts cannot be newer than optimization as_of_ms")
@@ -152,6 +155,12 @@ class OptimizationProblem:
         market_slots = tuple(item.slot for item in self.market)
         if forecast_slots != market_slots:
             raise ValueError("market and forecast must use the same slot grid")
+        if self.scenarios is not None:
+            scenario_slots = tuple(
+                item.slot for item in self.scenarios.scenarios[0].slots
+            )
+            if scenario_slots != forecast_slots:
+                raise ValueError("scenario and forecast grids must match")
         if self.battery.captured_at_ms > self.as_of_ms:
             raise ValueError("battery state cannot be newer than optimization as_of_ms")
 

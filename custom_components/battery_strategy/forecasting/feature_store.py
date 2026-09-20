@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from ..component_config import LoadComponentSpec
 from ..contracts import (
-    ForecastBundle,
+    ForecastDistributionBundle,
     ForecastRequest,
     HistoricalFeatureSlot,
     LoadForecast,
@@ -17,6 +17,7 @@ from ..contracts import (
 )
 from .baseline import ForecastModelConfig
 from .components import build_component_load_forecast
+from .ev import HistoricalEvForecaster
 from .history import ForecastHistorySample, ForecastTargetInput
 from .load import build_load_forecast
 from .pv import build_pv_forecast
@@ -62,7 +63,9 @@ def build_feature_store_forecast(
     weather: tuple[WeatherSlot, ...] = (),
     component_specs: tuple[LoadComponentSpec, ...] = (),
     require_ready: bool = True,
-) -> ForecastBundle:
+    current_ev_charge_w: float = 0.0,
+    ev_active_threshold_w: float = 300.0,
+) -> ForecastDistributionBundle:
     """Build the sole production forecast from finalized feature slots."""
     eligible = eligible_feature_history(history, request.as_of_ms)
     readiness = feature_store_forecast_readiness(
@@ -71,18 +74,23 @@ def build_feature_store_forecast(
     if require_ready and not readiness.ready:
         raise FeatureStoreForecastNotReady(readiness.reason or "not_ready")
     samples = feature_samples(eligible)
-    return ForecastBundle(
-        load=build_feature_store_load_forecast(
-            request,
-            eligible,
-            samples,
-            targets,
-            context,
-            config,
-            weather=weather,
-            component_specs=component_specs,
-        ),
+    load = build_feature_store_load_forecast(
+        request,
+        eligible,
+        samples,
+        targets,
+        context,
+        config,
+        weather=weather,
+        component_specs=component_specs,
+    )
+    return ForecastDistributionBundle(
+        load=load,
         pv=build_feature_store_pv_forecast(request, samples, targets, config),
+        ev=HistoricalEvForecaster(
+            current_ev_charge_w,
+            ev_active_threshold_w,
+        ).forecast(request, eligible),
     )
 
 

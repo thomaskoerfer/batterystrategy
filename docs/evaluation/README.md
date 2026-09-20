@@ -37,11 +37,13 @@ Public diagnostics redact configured entities, locations, credentials, device
 identifiers and provider payloads.
 
 `forecast_trace.py` records at most one immutable forecast vintage per UTC
-quarter-hour in a compressed, 21-day sidecar below the Home Assistant config
+quarter-hour in a compressed, 21-day sidecar with an additional 64 MiB cap
+below the Home Assistant config
 directory. Each vintage contains the already-produced load and PV contract
 outputs, model versions, target slots, P50 and optional calibrated quantiles,
-quality metadata and named load-component forecasts. Schema 2 also stores the
-bounded coherent scenario set plus authoritative and stochastic-shadow plans,
+quality metadata and named load-component forecasts. Schema 4 also stores the
+separate EV marginal forecast, bounded coherent scenario set, Scenario Builder
+diagnostics and authoritative and stochastic-shadow plans,
 so identical vintages can be compared against actuals and perfect foresight.
 The same sidecar stores the redacted normalized market curve, battery state and
 constraints, commercial policy and EV interaction policy required to reproduce
@@ -81,11 +83,13 @@ scenario CRPS and central-80% coverage, EV-event Brier score, shadow runtime and
 first-policy monetary regret versus a hindsight-perfect replay. Only the first
 HA capture within 30 seconds after a slot boundary enters the decision
 comparison; later mid-slot replans are excluded. Compiler progress accounting
-removes battery energy already consumed during scheduler latency.
+starts from the captured SoC, while perfect-foresight load/PV/EV actuals in the
+first slot are scaled to its remaining fraction after scheduler latency.
 Complete matured path suffixes additionally report an energy score, a local
 variogram score and EV start/duration error, so marginal calibration cannot hide
-implausible temporal or cross-series paths. The replay defaults to one vintage
-per hour to keep runtime bounded. Realized live cost and
+implausible temporal or cross-series paths. The replay uses the first eligible
+boundary vintage in each UTC hour to keep runtime bounded and prevent post-hoc
+sample selection. Realized live cost and
 export remain owned by measured savings/command evaluation; a planning trace
 cannot reconstruct compiler and live-control intervention faithfully:
 
@@ -133,6 +137,8 @@ decision vintages, 20 complete
 matured path vintages and 30 samples in every observed lead/regime cohort;
 maximum shadow runtime 5 seconds; the upper 95% confidence bound from a paired
 UTC-day block bootstrap of monetary-regret delta must not exceed zero; and each
+Scenario Builder completion must cover at least 90% of eligible sampled
+vintages; each
 load/PV cohort must have central-80% coverage between 65% and 95% with scenario
 CRPS no worse than the P50 degenerate baseline. Joint energy and variogram
 scores must be no worse than the degenerate P50 path, and EV Brier/start/duration

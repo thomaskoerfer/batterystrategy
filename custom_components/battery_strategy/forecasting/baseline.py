@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ..contracts import ForecastBundle, ForecastRequest, LoadForecastContext
+from ..contracts import ForecastDistributionBundle, ForecastRequest, LoadForecastContext
+from .ev import empty_ev_forecast
 from .history import ForecastHistorySample, ForecastTargetInput
 from .load import LoadForecastModelConfig, build_load_forecast
 from .pv import PvForecastModelConfig, build_pv_forecast
@@ -53,11 +54,13 @@ def build_forecast_bundle(
     targets: tuple[ForecastTargetInput, ...],
     load_context: LoadForecastContext,
     config: ForecastModelConfig,
-) -> ForecastBundle:
+) -> ForecastDistributionBundle:
     """Compose independent load and PV results for the optimizer boundary."""
-    return ForecastBundle(
-        load=build_load_forecast(
-            request, samples, targets, load_context, config.load_config()
-        ),
+    load = build_load_forecast(
+        request, samples, targets, load_context, config.load_config()
+    )
+    return ForecastDistributionBundle(
+        load=load,
         pv=build_pv_forecast(request, samples, targets, config.pv_config()),
+        ev=empty_ev_forecast(request, load.training_cutoff_ms),
     )

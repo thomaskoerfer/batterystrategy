@@ -11,7 +11,7 @@ from .contracts import (
     BatteryPlan,
     CommercialPolicy,
     EvInteractionPolicy,
-    ForecastBundle,
+    ForecastDistributionBundle,
     OptimizationProblem,
 )
 from .economic_optimizer import OPTIMIZER_VERSION
@@ -74,7 +74,7 @@ class PlanningService:
         intervals: list[TariffInterval],
         samples: list[dict],
         start_energy_kwh: float,
-        forecast_bundle: ForecastBundle,
+        forecast_bundle: ForecastDistributionBundle,
         eex_days: dict | None = None,
         forecast_diagnostics: dict | None = None,
     ) -> PlanningPublication:
@@ -164,7 +164,7 @@ class PlanningService:
         self,
         candidate: BatteryPlan,
         intervals: list[TariffInterval],
-        forecast_bundle: ForecastBundle,
+        forecast_bundle: ForecastDistributionBundle,
         publication_metadata: dict,
     ) -> PlanningPublication:
         if not (

@@ -9,6 +9,8 @@ Own the pure economic objective, physical battery constraints, terminal value,
 PV headroom, source allocation, forecast EV interaction and commercial
 discharge permission. Scenario optimization enforces one common first action
 with probability-weighted recourse; marginal quantile curves are not scenarios.
+Consume scenarios only through `OptimizationProblem.scenarios`. Never read
+scenario evidence or recreate dependence, calibration or repair rules.
 
 ## Forbidden
 

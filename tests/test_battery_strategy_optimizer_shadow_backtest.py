@@ -89,6 +89,38 @@ def test_shadow_summary_compares_actions_with_perfect_foresight():
     assert summary["shadow_runtime_max_ms"] == 12.0
 
 
+def test_scenario_success_rate_uses_pre_registered_evaluation_vintages():
+    completed = {
+        "generated_at_ms": 0,
+        "shadow_evaluation": {
+            "status": "completed",
+            "runtime_ms": 1.0,
+            "scenario_build": {"eligible": True, "status": "completed"},
+        },
+    }
+    failed_but_not_sampled = {
+        "generated_at_ms": mod.SLOT_MS,
+        "shadow_evaluation": {
+            "status": "insufficient_evidence",
+            "runtime_ms": 1.0,
+            "scenario_build": {
+                "eligible": True,
+                "status": "insufficient_evidence",
+            },
+        },
+    }
+
+    report = mod.summarize(
+        [completed, failed_but_not_sampled],
+        [],
+        [],
+        evaluation_traces=[completed],
+    )
+
+    assert report["eligible_scenario_vintages"] == 1
+    assert report["scenario_generation_success_pct"] == 100.0
+
+
 def test_complete_path_scores_joint_shape_and_ev_timing():
     trace = {
         "generated_at_ms": 0,
@@ -147,6 +179,76 @@ def test_decision_scores_ignore_mid_slot_vintages():
     }
 
     assert mod.score_decisions([trace], {}, as_of_ms=900_000) == []
+
+
+def test_hourly_boundary_sampling_keeps_first_vintage_with_scheduler_latency():
+    def trace(generated_at_ms, slot_start_ms):
+        return {
+            "generated_at_ms": generated_at_ms,
+            "load": {"slots": [[slot_start_ms, slot_start_ms + mod.SLOT_MS]]},
+        }
+
+    traces = [
+        trace(10_000, 0),
+        trace(mod.SLOT_MS + 8_000, mod.SLOT_MS),
+        trace(4 * mod.SLOT_MS + 30_000, 4 * mod.SLOT_MS),
+        trace(8 * mod.SLOT_MS + 30_001, 8 * mod.SLOT_MS),
+    ]
+
+    selected = mod.hourly_boundary_vintages(traces)
+
+    assert [item["generated_at_ms"] for item in selected] == [
+        10_000,
+        4 * mod.SLOT_MS + 30_000,
+    ]
+
+
+def test_perfect_foresight_removes_elapsed_first_slot_energy():
+    trace = {
+        "generated_at_ms": 30_000,
+        "load": {
+            "generated_at_ms": 30_000,
+            "slots": [[0, mod.SLOT_MS, 0.0]],
+        },
+        "pv": {
+            "generated_at_ms": 30_000,
+            "slots": [[0, mod.SLOT_MS, 0.0]],
+        },
+        "optimization_problem": {
+            "problem_id": "problem",
+            "as_of_ms": 30_000,
+            "battery": {"captured_at_ms": 30_000, "soc_pct": 50.0},
+            "constraints": {
+                "capacity_kwh": 6.0,
+                "min_soc_pct": 5.0,
+                "max_soc_pct": 100.0,
+                "max_charge_power_w": 2400.0,
+                "max_discharge_power_w": 2400.0,
+                "round_trip_efficiency": 0.8,
+            },
+            "commercial_policy": {"min_margin_ct_per_kwh": 2.0},
+            "ev_policy": {},
+            "market": [[0, 30.0, 0.0, "captured"]],
+        },
+    }
+    actuals = {
+        0: {
+            "coverage": 1.0,
+            "flags": [],
+            "house_load_no_ev_kwh": 0.9,
+            "pv_generation_kwh": 0.45,
+            "ev_charge_kwh": 0.18,
+        }
+    }
+
+    problem = mod._perfect_foresight_problem(trace, actuals, as_of_ms=mod.SLOT_MS)
+
+    assert problem is not None
+    remaining = (mod.SLOT_MS - 30_000) / mod.SLOT_MS
+    path = problem.scenarios.scenarios[0]
+    assert path.slots[0].house_load_kwh == pytest.approx(0.9 * remaining)
+    assert path.slots[0].pv_generation_kwh == pytest.approx(0.45 * remaining)
+    assert path.slots[0].ev_charge_kwh == pytest.approx(0.18 * remaining)
 
 
 def test_daily_bootstrap_point_estimate_uses_same_day_weighting_as_ci():

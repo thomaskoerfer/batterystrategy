@@ -17,12 +17,11 @@ from custom_components.battery_strategy.contracts import (
     CommandMode,
     CommercialPolicy,
     DataQuality,
+    EvForecast,
+    EvForecastSlot,
     EvInteractionPolicy,
-    ForecastBundle,
+    ForecastDistributionBundle,
     ForecastRequest,
-    ForecastScenario,
-    ForecastScenarioSet,
-    ForecastScenarioSlot,
     ForecastSlot,
     LivePolicy,
     LoadDriverSnapshot,
@@ -39,6 +38,9 @@ from custom_components.battery_strategy.contracts import (
     PvForecast,
     QualityFlag,
     QuantileEnergy,
+    ScenarioBundle,
+    ScenarioPath,
+    ScenarioSlot,
     SlotKey,
 )
 
@@ -51,7 +53,9 @@ def slot(index: int) -> SlotKey:
     return SlotKey(start, start + SLOT_MS)
 
 
-def forecast_bundle(*slots: SlotKey, generated_at_ms: int = 0) -> ForecastBundle:
+def forecast_bundle(
+    *slots: SlotKey, generated_at_ms: int = 0
+) -> ForecastDistributionBundle:
     """Return aligned deterministic load and PV forecasts."""
     load_slots = tuple(
         ForecastSlot(item, QuantileEnergy(0.2, 0.1, 0.3, 20)) for item in slots
@@ -59,11 +63,20 @@ def forecast_bundle(*slots: SlotKey, generated_at_ms: int = 0) -> ForecastBundle
     pv_slots = tuple(
         ForecastSlot(item, QuantileEnergy(0.1, 0.0, 0.2, 20)) for item in slots
     )
-    return ForecastBundle(
+    return ForecastDistributionBundle(
         load=LoadForecast(
             "load-1", generated_at_ms, generated_at_ms, "load-v1", load_slots
         ),
         pv=PvForecast("pv-1", generated_at_ms, generated_at_ms, "pv-v1", pv_slots),
+        ev=EvForecast(
+            "ev-1",
+            generated_at_ms,
+            generated_at_ms,
+            "ev-v1",
+            tuple(
+                EvForecastSlot(item, QuantileEnergy(0.0), 0.0, 0.0) for item in slots
+            ),
+        ),
     )
 
 
@@ -212,53 +225,77 @@ class ContractTests(unittest.TestCase):
             (ForecastSlot(slot(1), QuantileEnergy(0.1)),),
         )
         with self.assertRaisesRegex(ValueError, "same slot grid"):
-            ForecastBundle(load, pv)
+            ForecastDistributionBundle(
+                load,
+                pv,
+                EvForecast(
+                    "ev",
+                    0,
+                    0,
+                    "v1",
+                    (EvForecastSlot(slot(0), QuantileEnergy(0.0), 0.0, 0.0),),
+                ),
+            )
 
-    def test_forecast_bundle_accepts_weighted_coherent_load_pv_ev_paths(self):
+    def test_scenario_bundle_accepts_weighted_coherent_load_pv_ev_paths(self):
         slots = (slot(0), slot(1))
-        scenarios = ForecastScenarioSet(
+        scenarios = ScenarioBundle(
             "weekly-paths-1",
+            "forecast-1",
             0,
             0,
             "empirical-weekly-path-v1",
             (
-                ForecastScenario(
+                ScenarioPath(
                     "week-1",
                     0.5,
-                    tuple(ForecastScenarioSlot(item, 0.2, 0.1, 0.0) for item in slots),
+                    tuple(ScenarioSlot(item, 0.2, 0.1, 0.0) for item in slots),
                 ),
-                ForecastScenario(
+                ScenarioPath(
                     "week-2",
                     0.5,
-                    tuple(ForecastScenarioSlot(item, 0.4, 0.0, 0.3) for item in slots),
+                    tuple(ScenarioSlot(item, 0.4, 0.0, 0.3) for item in slots),
                 ),
             ),
         )
 
-        bundle = replace(forecast_bundle(*slots), scenarios=scenarios)
-
-        self.assertEqual(bundle.scenarios.scenarios[1].slots[0].ev_charge_kwh, 0.3)
+        self.assertEqual(scenarios.scenarios[1].slots[0].ev_charge_kwh, 0.3)
 
     def test_forecast_scenarios_require_bundle_grid_and_normalized_probabilities(self):
         slots = (slot(0), slot(1))
-        path = tuple(ForecastScenarioSlot(item, 0.2, 0.1, 0.0) for item in slots)
+        path = tuple(ScenarioSlot(item, 0.2, 0.1, 0.0) for item in slots)
         with self.assertRaisesRegex(ValueError, "sum to one"):
-            ForecastScenarioSet(
+            ScenarioBundle(
                 "bad-weights",
+                "forecast-1",
                 0,
                 0,
                 "v1",
-                (ForecastScenario("only", 0.8, path),),
+                (ScenarioPath("only", 0.8, path),),
             )
-        misaligned = ForecastScenarioSet(
+        misaligned = ScenarioBundle(
             "misaligned",
+            "forecast-1",
             0,
             0,
             "v1",
-            (ForecastScenario("only", 1.0, (path[1],)),),
+            (ScenarioPath("only", 1.0, (path[1],)),),
         )
-        with self.assertRaisesRegex(ValueError, "same slot grid"):
-            replace(forecast_bundle(*slots), scenarios=misaligned)
+        with self.assertRaisesRegex(
+            ValueError, "scenario and forecast grids must match"
+        ):
+            replace(
+                OptimizationProblem(
+                    "problem",
+                    0,
+                    forecast_bundle(*slots),
+                    tuple(MarketSlot(item, 30.0) for item in slots),
+                    BatteryState(0, 50.0),
+                    BatteryConstraints(6.0, 5.0, 100.0, 2400, 2400, 0.8),
+                    CommercialPolicy(2.0),
+                ),
+                scenarios=misaligned,
+            )
 
     def test_ev_interaction_policy_defaults_to_house_only(self):
         policy = EvInteractionPolicy()
@@ -273,6 +310,20 @@ class ContractTests(unittest.TestCase):
                 as_of_ms=0,
                 forecast=bundle,
                 market=(MarketSlot(slot(1), 30.0),),
+                battery=BatteryState(0, 50.0),
+                constraints=BatteryConstraints(6.0, 5.0, 100.0, 2400, 2400, 0.8),
+                policy=CommercialPolicy(2.0),
+            )
+
+    def test_optimization_problem_rejects_future_ev_forecast(self):
+        bundle = forecast_bundle(slot(0))
+        bundle = replace(bundle, ev=replace(bundle.ev, generated_at_ms=1))
+        with self.assertRaisesRegex(ValueError, "forecasts cannot be newer"):
+            OptimizationProblem(
+                problem_id="problem-1",
+                as_of_ms=0,
+                forecast=bundle,
+                market=(MarketSlot(slot(0), 30.0),),
                 battery=BatteryState(0, 50.0),
                 constraints=BatteryConstraints(6.0, 5.0, 100.0, 2400, 2400, 0.8),
                 policy=CommercialPolicy(2.0),

@@ -2,7 +2,8 @@
 
 ## Purpose
 
-Optimization converts prices, a `ForecastBundle`, current battery state,
+Optimization converts prices, a `ForecastDistributionBundle`, an optional
+separate `ScenarioBundle`, current battery state,
 physical constraints and commercial policy into an economic `BatteryPlan`.
 It decides future energy allocation; it does not control instantaneous power.
 
@@ -18,7 +19,7 @@ The function is deterministic and side-effect free. It must not access Home
 Assistant, entities, recorder history, files, network resources or the wall
 clock. Every decision input is explicit in `OptimizationProblem`.
 
-With coherent scenarios, `StochasticDynamicProgrammingOptimizer` uses a
+With a coherent `ScenarioBundle`, `StochasticDynamicProgrammingOptimizer` uses a
 probability-weighted two-stage receding horizon: all paths share the first
 battery control permissions (required charge and discharge budget) and have
 independent realized PV/load response plus optimal recourse afterwards. EV demand
@@ -33,8 +34,8 @@ the presentation plan's P50 energy bill; stochastic objective values are not
 reported as accounting costs.
 
 The replacement shadow keeps `DynamicProgrammingOptimizer` authoritative. Only
-after that plan has been persisted does the evaluation sidecar generate
-scenarios and store the stochastic plan. Cutover changes optimizer selection,
+after that plan has been persisted does the evaluation sidecar invoke Scenario
+Builder and store the stochastic plan. Cutover changes optimizer selection,
 not the `BatteryPlan`, compiler, live-control or actuation contracts.
 
 ## Economic model
@@ -96,7 +97,8 @@ replays assess economic quality but never participate in live actuation.
 
 ## Production status
 
-The pure deterministic optimizer remains authoritative. Market-policy metadata
+The pure deterministic optimizer remains authoritative during the approved
+shadow. Market-policy metadata
 is computed once and one explicit `OptimizationProblem` produces executable
 intent. During the approved replacement-shadow window only, evaluation reuses
 that immutable problem after publication to calculate one non-authoritative

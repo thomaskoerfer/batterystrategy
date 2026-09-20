@@ -8,7 +8,7 @@ from .contracts import (
     BatteryState,
     CommercialPolicy,
     EvInteractionPolicy,
-    ForecastBundle,
+    ForecastDistributionBundle,
     MarketSlot,
     OptimizationProblem,
 )
@@ -18,7 +18,7 @@ from .economic_optimizer import DynamicProgrammingOptimizer
 def build_optimization_problem(
     *,
     intervals,
-    forecast: ForecastBundle,
+    forecast: ForecastDistributionBundle,
     start_energy_kwh: float,
     constraints: BatteryConstraints,
     policy: CommercialPolicy,
@@ -30,6 +30,7 @@ def build_optimization_problem(
         evaluated_at_ms,
         forecast.load.generated_at_ms,
         forecast.pv.generated_at_ms,
+        forecast.ev.generated_at_ms,
     )
     return OptimizationProblem(
         problem_id=(

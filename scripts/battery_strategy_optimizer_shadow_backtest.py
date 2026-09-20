@@ -17,17 +17,19 @@ from custom_components.battery_strategy.contracts import (
     BatteryConstraints,
     BatteryState,
     CommercialPolicy,
+    EvForecast,
+    EvForecastSlot,
     EvInteractionPolicy,
-    ForecastBundle,
-    ForecastScenario,
-    ForecastScenarioSet,
-    ForecastScenarioSlot,
+    ForecastDistributionBundle,
     ForecastSlot,
     LoadForecast,
     MarketSlot,
     OptimizationProblem,
     PvForecast,
     QuantileEnergy,
+    ScenarioBundle,
+    ScenarioPath,
+    ScenarioSlot,
     SlotKey,
 )
 from custom_components.battery_strategy.economic_optimizer import (
@@ -40,7 +42,7 @@ SLOT_MS = 15 * 60 * 1000
 # quarter-hour boundary is the operational boundary decision, even though its
 # timestamp naturally includes scheduler latency.
 BOUNDARY_DECISION_TOLERANCE_MS = 30_000
-TRACE_SCHEMA = 3
+TRACE_SCHEMA = 4
 DAY_MS = 24 * 60 * 60 * 1000
 DEFAULT_TRACE_DIRECTORY = "/config/battery_strategy_forecast_trace"
 DEFAULT_FEATURE_STORE = "/config/battery_strategy_features.json.gz"
@@ -68,6 +70,7 @@ class ScenarioScore:
     regime: str = "all"
     p50_abs_error_kwh: float = 0.0
     event_probability: float | None = None
+    naive_event_probability: float | None = None
     event_actual: float | None = None
     target_start_ms: int = 0
 
@@ -146,6 +149,9 @@ def score_scenarios(
         )
         load_rows = trace.get("load", {}).get("slots", ())
         pv_rows = trace.get("pv", {}).get("slots", ())
+        ev_rows = trace.get("ev", {}).get("slots", ())
+        if len(ev_rows) != len(load_rows):
+            ev_rows = tuple((row[0], row[1], 0.0) for row in load_rows)
         for index, (slot, pv_row) in enumerate(zip(load_rows, pv_rows, strict=True)):
             start_ms, end_ms = int(slot[0]), int(slot[1])
             if (
@@ -177,6 +183,21 @@ def score_scenarios(
                         abs(p50 - target),
                     )
                 )
+            if len(ev_rows[index]) > 4:
+                ev_values = [float(path["slots"][index][3]) for path in paths]
+                ev_target = float(actual.get("ev_charge_kwh", 0.0))
+                scores.append(
+                    ScenarioScore(
+                        "ev",
+                        _weighted_crps(ev_values, probabilities, ev_target),
+                        _weighted_quantile(ev_values, probabilities, 0.1)
+                        <= ev_target
+                        <= _weighted_quantile(ev_values, probabilities, 0.9),
+                        bucket,
+                        "active" if float(ev_rows[index][2]) > 1e-9 else "inactive",
+                        abs(float(ev_rows[index][2]) - ev_target),
+                    )
+                )
             ev_probability = sum(
                 probability
                 for probability, path in zip(probabilities, paths, strict=True)
@@ -191,6 +212,11 @@ def score_scenarios(
                     bucket,
                     "active" if ev_probability >= 0.5 else "inactive",
                     event_probability=ev_probability,
+                    naive_event_probability=(
+                        float(ev_rows[index][7])
+                        if len(ev_rows) > index and len(ev_rows[index]) > 7
+                        else 0.0
+                    ),
                     event_actual=ev_actual,
                     target_start_ms=start_ms,
                 )
@@ -203,7 +229,7 @@ def score_decisions(
     actuals: dict[int, dict],
     *,
     as_of_ms: int,
-    stride: int = 4,
+    stride: int = 1,
 ) -> list[DecisionScore]:
     """Compare sampled first actions with full-horizon perfect foresight."""
     scores = []
@@ -245,6 +271,21 @@ def score_decisions(
     return scores
 
 
+def hourly_boundary_vintages(traces: list[dict]) -> list[dict]:
+    """Select the first operational boundary vintage in each UTC hour."""
+    selected: dict[int, dict] = {}
+    for trace in sorted(traces, key=lambda item: int(item["generated_at_ms"])):
+        rows = (trace.get("load") or {}).get("slots") or ()
+        if not rows:
+            continue
+        generated_at_ms = int(trace["generated_at_ms"])
+        elapsed_ms = generated_at_ms - int(rows[0][0])
+        if not 0 <= elapsed_ms <= BOUNDARY_DECISION_TOLERANCE_MS:
+            continue
+        selected.setdefault(generated_at_ms // (4 * SLOT_MS), trace)
+    return list(selected.values())
+
+
 def score_paths(
     traces: list[dict], actuals: dict[int, dict], *, as_of_ms: int
 ) -> list[PathScore]:
@@ -281,10 +322,15 @@ def score_paths(
             _scenario_path_vector(path["slots"][first:]) for path in paths
         ]
         pv_rows = trace.get("pv", {}).get("slots", ())
+        ev_rows = trace.get("ev", {}).get("slots", ())
+        if len(ev_rows) != len(rows):
+            ev_rows = tuple((row[0], row[1], 0.0) for row in rows)
         p50_vector = tuple(
             value
-            for load_row, pv_row in zip(rows[first:], pv_rows[first:], strict=True)
-            for value in (float(load_row[2]), float(pv_row[2]), 0.0)
+            for load_row, pv_row, ev_row in zip(
+                rows[first:], pv_rows[first:], ev_rows[first:], strict=True
+            )
+            for value in (float(load_row[2]), float(pv_row[2]), float(ev_row[2]))
         )
         ev_policy = (trace.get("optimization_problem") or {}).get("ev_policy") or {}
         threshold = float(ev_policy.get("ev_active_threshold_w", 300.0)) / 4000.0
@@ -319,10 +365,13 @@ def summarize(
     scenario_scores: list[ScenarioScore],
     decisions: list[DecisionScore],
     path_scores: list[PathScore] | None = None,
+    *,
+    evaluation_traces: list[dict] | None = None,
 ) -> dict[str, object]:
     """Return the release-gate metrics without asserting policy thresholds."""
+    gate_traces = traces if evaluation_traces is None else evaluation_traces
     scenario_metrics = {}
-    for series in ("load", "pv"):
+    for series in ("load", "pv", "ev"):
         selected = [item for item in scenario_scores if item.series == series]
         scenario_metrics[series] = {
             "samples": len(selected),
@@ -366,9 +415,22 @@ def summarize(
     ev = [item for item in scenario_scores if item.series == "ev_event"]
     runtimes = [
         float(item["shadow_evaluation"]["runtime_ms"])
-        for item in traces
+        for item in gate_traces
         if (item.get("shadow_evaluation") or {}).get("runtime_ms") is not None
     ]
+    eligible_builds = [
+        (item.get("shadow_evaluation") or {}).get("scenario_build") or {}
+        for item in gate_traces
+        if ((item.get("shadow_evaluation") or {}).get("scenario_build") or {}).get(
+            "eligible"
+        )
+    ]
+    completed_builds = sum(
+        item.get("status") == "completed" for item in eligible_builds
+    )
+    scenario_success_pct = (
+        100.0 * completed_builds / len(eligible_builds) if eligible_builds else None
+    )
     paths = path_scores or []
     vintages_per_day = Counter(
         int(item["generated_at_ms"]) // DAY_MS
@@ -393,9 +455,14 @@ def summarize(
         if ev
         else None
     )
-    ev_prevalence = sum(item.event_actual for item in ev) / len(ev) if ev else None
     ev_climatology_brier = (
-        ev_prevalence * (1.0 - ev_prevalence) if ev_prevalence is not None else None
+        sum(
+            ((item.naive_event_probability or 0.0) - item.event_actual) ** 2
+            for item in ev
+        )
+        / len(ev)
+        if ev
+        else None
     )
     ev_actual_by_slot = {
         item.target_start_ms: bool(item.event_actual)
@@ -416,6 +483,8 @@ def summarize(
             (item.get("shadow_evaluation") or {}).get("status") == "completed"
             for item in traces
         ),
+        "eligible_scenario_vintages": len(eligible_builds),
+        "scenario_generation_success_pct": scenario_success_pct,
         "scenario_metrics": scenario_metrics,
         "scenario_cohorts": cohorts,
         "ev_event_samples": len(ev),
@@ -524,6 +593,7 @@ def summarize(
         complete_observation_days >= 7
         and len(eligible_decisions) >= 100
         and len(paths) >= 20
+        and len(eligible_builds) >= 100
         and all_cohorts_mature
         and regret_high is not None
         and ev_evidence_enough
@@ -532,6 +602,7 @@ def summarize(
         not finite_decisions
         or (runtimes and max(runtimes) > 5000.0)
         or (regret_high is not None and regret_high > 0.0)
+        or (scenario_success_pct is not None and scenario_success_pct < 90.0)
         or not path_gate_ok
         or not ev_gate_ok
         or any(
@@ -549,6 +620,7 @@ def summarize(
         "status": status,
         "minimum_decision_vintages": 100,
         "minimum_complete_path_vintages": 20,
+        "minimum_scenario_success_pct": 90.0,
         "minimum_cohort_samples": 30,
         "minimum_observation_days": 7,
         "complete_observation_days": complete_observation_days,
@@ -565,11 +637,14 @@ def _perfect_foresight_problem(
 ) -> OptimizationProblem | None:
     problem = trace["optimization_problem"]
     load_meta, pv_meta = trace["load"], trace["pv"]
+    generated = int(trace["generated_at_ms"])
     slots = []
     actual_path = []
     load_slots = []
     pv_slots = []
-    for load_row, pv_row in zip(load_meta["slots"], pv_meta["slots"], strict=True):
+    for index, (load_row, pv_row) in enumerate(
+        zip(load_meta["slots"], pv_meta["slots"], strict=True)
+    ):
         slot = SlotKey(int(load_row[0]), int(load_row[1]))
         actual = _usable_actual(actuals.get(slot.start_ms), slot.end_ms, as_of_ms)
         if actual is None:
@@ -577,19 +652,27 @@ def _perfect_foresight_problem(
         load = float(actual["house_load_no_ev_kwh"])
         pv = float(actual["pv_generation_kwh"])
         ev = float(actual.get("ev_charge_kwh", 0.0))
+        if index == 0:
+            remaining_fraction = max(
+                0.0,
+                min(1.0, (slot.end_ms - generated) / (slot.end_ms - slot.start_ms)),
+            )
+            load *= remaining_fraction
+            pv *= remaining_fraction
+            ev *= remaining_fraction
         slots.append(slot)
         load_slots.append(ForecastSlot(slot, QuantileEnergy(load)))
         pv_slots.append(ForecastSlot(slot, QuantileEnergy(pv)))
-        actual_path.append(ForecastScenarioSlot(slot, load, pv, ev))
-    generated = max(int(load_meta["generated_at_ms"]), int(pv_meta["generated_at_ms"]))
-    scenario_set = ForecastScenarioSet(
+        actual_path.append(ScenarioSlot(slot, load, pv, ev))
+    scenario_set = ScenarioBundle(
         f"perfect:{generated}",
+        f"perfect-forecast:{generated}",
         generated,
         generated,
         "perfect-foresight-v1",
-        (ForecastScenario("actual", 1.0, tuple(actual_path)),),
+        (ScenarioPath("actual", 1.0, tuple(actual_path)),),
     )
-    bundle = ForecastBundle(
+    bundle = ForecastDistributionBundle(
         LoadForecast(
             "perfect-load",
             generated,
@@ -604,7 +687,21 @@ def _perfect_foresight_problem(
             "perfect-v1",
             tuple(pv_slots),
         ),
-        scenario_set,
+        EvForecast(
+            "perfect-ev",
+            generated,
+            generated,
+            "perfect-v1",
+            tuple(
+                EvForecastSlot(
+                    slot,
+                    QuantileEnergy(actual.ev_charge_kwh),
+                    float(actual.ev_charge_kwh > 0.0),
+                    float(actual.ev_charge_kwh > 0.0),
+                )
+                for slot, actual in zip(slots, actual_path, strict=True)
+            ),
+        ),
     )
     constraints = problem["constraints"]
     policy = problem["commercial_policy"]
@@ -624,7 +721,8 @@ def _perfect_foresight_problem(
         ),
         BatteryConstraints(**constraints),
         CommercialPolicy(**policy),
-        EvInteractionPolicy(**ev_policy),
+        scenarios=scenario_set,
+        ev_policy=EvInteractionPolicy(**ev_policy),
     )
 
 
@@ -800,26 +898,26 @@ def main() -> int:
     parser.add_argument("--trace-dir", default=DEFAULT_TRACE_DIRECTORY)
     parser.add_argument("--feature-store", default=DEFAULT_FEATURE_STORE)
     parser.add_argument("--days", type=int, default=7)
-    parser.add_argument("--decision-stride", type=int, default=4)
     parser.add_argument("--as-of")
     parser.add_argument("--json-out")
     args = parser.parse_args()
-    if args.days < 1 or args.decision_stride < 1:
-        parser.error("--days and --decision-stride must be positive")
+    if args.days < 1:
+        parser.error("--days must be positive")
     as_of_ms = _parse_as_of(args.as_of)
     start_ms = as_of_ms - int(timedelta(days=args.days).total_seconds() * 1000)
     traces = load_traces(args.trace_dir, start_ms, as_of_ms)
+    evaluation_vintages = hourly_boundary_vintages(traces)
     actuals = load_actuals(args.feature_store)
     report = summarize(
         traces,
-        score_scenarios(traces, actuals, as_of_ms=as_of_ms),
+        score_scenarios(evaluation_vintages, actuals, as_of_ms=as_of_ms),
         score_decisions(
-            traces,
+            evaluation_vintages,
             actuals,
             as_of_ms=as_of_ms,
-            stride=args.decision_stride,
         ),
-        score_paths(traces, actuals, as_of_ms=as_of_ms),
+        score_paths(evaluation_vintages, actuals, as_of_ms=as_of_ms),
+        evaluation_traces=evaluation_vintages,
     )
     report.update({"as_of_ms": as_of_ms, "window_days": args.days})
     rendered = json.dumps(report, indent=2, sort_keys=True)

@@ -13,8 +13,6 @@ from .common import (
     require_slots_sorted_unique,
 )
 
-MAX_FORECAST_SCENARIOS = 12
-
 
 @dataclass(frozen=True, slots=True)
 class LoadFeatureValue:
@@ -250,94 +248,58 @@ class PvForecast:
 
 
 @dataclass(frozen=True, slots=True)
-class ForecastScenarioSlot:
-    """One jointly sampled future slot; house load deliberately excludes EV."""
+class EvForecastSlot:
+    """EV energy and occurrence forecast for one slot."""
 
     slot: SlotKey
-    load_no_ev_kwh: float
-    pv_generation_kwh: float
-    ev_charge_kwh: float
+    energy: QuantileEnergy
+    active_probability: float
+    naive_active_probability: float
+    quality: DataQuality = field(default_factory=DataQuality)
 
     def __post_init__(self) -> None:
-        require_nonnegative("load_no_ev_kwh", self.load_no_ev_kwh)
-        require_nonnegative("pv_generation_kwh", self.pv_generation_kwh)
-        require_nonnegative("ev_charge_kwh", self.ev_charge_kwh)
+        for name in ("active_probability", "naive_active_probability"):
+            value = getattr(self, name)
+            if not 0.0 <= value <= 1.0:
+                raise ValueError(f"{name} must be in [0, 1]")
 
 
 @dataclass(frozen=True, slots=True)
-class ForecastScenario:
-    """One coherent load/PV/EV path with an explicit probability."""
+class EvForecast:
+    """EV charging forecast kept separate from house load and policy."""
 
-    scenario_id: str
-    probability: float
-    slots: tuple[ForecastScenarioSlot, ...]
+    forecast_id: str
+    generated_at_ms: int
+    training_cutoff_ms: int
+    model_version: str
+    slots: tuple[EvForecastSlot, ...]
 
     def __post_init__(self) -> None:
-        if not self.scenario_id:
-            raise ValueError("scenario_id is required")
-        if not 0.0 < self.probability <= 1.0:
-            raise ValueError("scenario probability must be in (0, 1]")
+        if not self.forecast_id or not self.model_version:
+            raise ValueError("EV forecast identity is required")
+        if self.generated_at_ms < 0 or self.training_cutoff_ms < 0:
+            raise ValueError("EV forecast timestamps must be non-negative")
+        if self.training_cutoff_ms > self.generated_at_ms:
+            raise ValueError("EV training cutoff cannot be in the future")
         require_slots_sorted_unique(tuple(item.slot for item in self.slots))
 
 
 @dataclass(frozen=True, slots=True)
-class ForecastScenarioSet:
-    """Bounded weighted paths preserving temporal and cross-series dependence."""
-
-    scenario_set_id: str
-    generated_at_ms: int
-    training_cutoff_ms: int
-    model_version: str
-    scenarios: tuple[ForecastScenario, ...]
-
-    def __post_init__(self) -> None:
-        if not self.scenario_set_id or not self.model_version:
-            raise ValueError("scenario-set identity is required")
-        if self.generated_at_ms < 0 or self.training_cutoff_ms < 0:
-            raise ValueError("scenario-set timestamps must be non-negative")
-        if self.training_cutoff_ms > self.generated_at_ms:
-            raise ValueError("scenario training cutoff cannot be in the future")
-        if not self.scenarios:
-            raise ValueError("scenario set requires at least one path")
-        if len(self.scenarios) > MAX_FORECAST_SCENARIOS:
-            raise ValueError(
-                f"scenario set exceeds the {MAX_FORECAST_SCENARIOS}-path limit"
-            )
-        if len({item.scenario_id for item in self.scenarios}) != len(self.scenarios):
-            raise ValueError("scenario ids must be unique")
-        if abs(sum(item.probability for item in self.scenarios) - 1.0) > 1e-9:
-            raise ValueError("scenario probabilities must sum to one")
-        grid = tuple(item.slot for item in self.scenarios[0].slots)
-        if any(
-            tuple(item.slot for item in scenario.slots) != grid
-            for scenario in self.scenarios
-        ):
-            raise ValueError("all scenarios must use the same slot grid")
-
-
-@dataclass(frozen=True, slots=True)
-class ForecastBundle:
-    """Aligned load and PV forecasts consumed by optimization."""
+class ForecastDistributionBundle:
+    """Aligned marginal load, PV and EV forecasts."""
 
     load: LoadForecast
     pv: PvForecast
-    scenarios: ForecastScenarioSet | None = None
+    ev: EvForecast
 
     def __post_init__(self) -> None:
-        if tuple(item.slot for item in self.load.slots) != tuple(
-            item.slot for item in self.pv.slots
-        ):
-            raise ValueError("load and PV forecasts must use the same slot grid")
-        if self.scenarios is not None:
-            if self.scenarios.generated_at_ms != max(
-                self.load.generated_at_ms, self.pv.generated_at_ms
-            ):
-                raise ValueError("forecast scenarios must match the bundle vintage")
-            scenario_grid = tuple(
-                item.slot for item in self.scenarios.scenarios[0].slots
-            )
-            if scenario_grid != tuple(item.slot for item in self.load.slots):
-                raise ValueError("forecast scenarios must use the same slot grid")
+        grids = (
+            tuple(item.slot for item in self.load.slots),
+            tuple(item.slot for item in self.pv.slots),
+            tuple(item.slot for item in self.ev.slots),
+        )
+        if grids[0] != grids[1] or grids[0] != grids[2]:
+            raise ValueError("load, PV and EV forecasts must use the same slot grid")
 
 
 @dataclass(frozen=True, slots=True)
@@ -374,6 +336,16 @@ class PvForecaster(Protocol):
         weather: tuple[WeatherSlot, ...],
         plant: PvPlant,
     ) -> PvForecast: ...
+
+
+class EvForecaster(Protocol):
+    """Pure EV-forecast seam; charging remains outside house load."""
+
+    def forecast(
+        self,
+        request: ForecastRequest,
+        history: tuple[HistoricalFeatureSlot, ...],
+    ) -> EvForecast: ...
 
 
 def _validate_forecast_series(series: LoadForecast | PvForecast) -> None:

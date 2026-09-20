@@ -2,6 +2,26 @@
 
 All notable changes to Battery Strategy are documented here.
 
+## [0.2.0-rc.28] - 2026-09-20
+
+### Changed
+
+- Separate marginal forecasting, dependence-aware Scenario Builder and
+  stochastic optimization through explicit immutable contracts.
+- Add a causal EV marginal forecast and preserve EV separately from EV-free
+  house load throughout scenario generation and optimization.
+- Replace the incomplete RC27 shadow evidence with schema-4 traces that record
+  scenario provenance, repair/fallback diagnostics and hourly pre-registered
+  perfect-foresight samples.
+
+### Safety
+
+- Keep deterministic optimization as the sole plan authority. Scenario
+  generation and stochastic optimization run only after authoritative plan
+  publication and cannot reach compilation, live control or actuation.
+- Bound observational traces to 21 days and 64 MiB. Scenario failures remain
+  explicit diagnostics and never invalidate the production plan.
+
 ## [0.2.0-rc.27] - 2026-09-19
 
 ### Added

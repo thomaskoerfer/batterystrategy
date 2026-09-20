@@ -9,11 +9,14 @@ from zoneinfo import ZoneInfo
 
 from .component_config import LoadComponentSpec
 from .contracts import (
-    ForecastBundle,
+    ForecastDistributionBundle,
     ForecastRequest,
     HistoricalFeatureSlot,
     LoadForecastContext,
     PvPlant,
+    ResidualCohort,
+    ScenarioBuildRequest,
+    ScenarioEvidenceSnapshot,
     SlotKey,
     WeatherSlot,
 )
@@ -25,7 +28,7 @@ from .forecasting import (
     ForecastModelConfig,
     feature_store_forecast_readiness,
 )
-from .forecasting.scenarios import ScenarioGenerationInput
+from .forecasting.ev import HistoricalEvForecaster
 from .forecasting.uncertainty import EMPTY_CALIBRATION, ForecastResidualCalibration
 
 SLOT_H = 0.25
@@ -128,9 +131,9 @@ class ProductionForecastConfig:
 class ProductionForecastResult:
     """Forecast output plus non-authoritative evaluation metadata."""
 
-    bundle: ForecastBundle
+    bundle: ForecastDistributionBundle
     diagnostics: dict[str, object]
-    scenario_input: ScenarioGenerationInput
+    scenario_request: ScenarioBuildRequest
 
 
 class ProductionForecastModule:
@@ -191,14 +194,31 @@ class ProductionForecastModule:
                 config.current_weather_factor,
                 config.uncertainty,
             ),
+            HistoricalEvForecaster(
+                max(0.0, float(config.current_ev_charge_w)),
+                max(0.0, float(config.ev_active_threshold_w)),
+            ),
         ).compose(request, eligible, context, weather, plant)
-        scenario_input = ScenarioGenerationInput(
-            history=eligible,
-            timezone=request.timezone,
-            current_ev_charge_w=max(0.0, float(config.current_ev_charge_w)),
-            ev_active_threshold_w=max(0.0, float(config.ev_active_threshold_w)),
-            calibration=config.uncertainty,
-            pv_slot_cap_kwh=max(0.0, plant.inverter_kw * SLOT_H),
+        training_cutoff_ms = max(
+            (item.slot.end_ms for item in eligible), default=request.as_of_ms
+        )
+        scenario_request = ScenarioBuildRequest(
+            bundle,
+            ScenarioEvidenceSnapshot(
+                evidence_id=f"evidence:{request.as_of_ms}:{training_cutoff_ms}",
+                captured_at_ms=request.as_of_ms,
+                training_cutoff_ms=min(request.as_of_ms, training_cutoff_ms),
+                timezone=request.timezone,
+                history=eligible,
+                residual_cohorts=tuple(
+                    ResidualCohort(key, tuple(values))
+                    for key, values in sorted(config.uncertainty.cohorts.items())
+                ),
+                pv_slot_cap_kwh=max(0.0, plant.inverter_kw * SLOT_H),
+                ev_active_threshold_kwh=(
+                    max(0.0, float(config.ev_active_threshold_w)) / 1000.0 * SLOT_H
+                ),
+            ),
         )
         diagnostics = {
             "source": "feature_store",
@@ -222,7 +242,7 @@ class ProductionForecastModule:
             "scenario_model_version": None,
             "scenario_status": "post_publication_scheduled",
         }
-        return ProductionForecastResult(bundle, diagnostics, scenario_input)
+        return ProductionForecastResult(bundle, diagnostics, scenario_request)
 
 
 def _quantile_slot_count(slots) -> int:

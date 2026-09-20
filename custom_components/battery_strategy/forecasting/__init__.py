@@ -12,6 +12,7 @@ from .configured import (
     ForecastComposer,
     weather_targets,
 )
+from .ev import HistoricalEvForecaster, empty_ev_forecast
 from .feature_store import (
     FeatureStoreForecastNotReady,
     FeatureStoreForecastReadiness,
@@ -20,7 +21,6 @@ from .feature_store import (
 )
 from .load import LoadForecastModelConfig, build_load_forecast
 from .pv import PvForecastModelConfig, build_pv_forecast
-from .scenarios import build_empirical_scenarios
 
 __all__ = [
     "ConfiguredLoadForecaster",
@@ -31,13 +31,14 @@ __all__ = [
     "ForecastHistorySample",
     "ForecastModelConfig",
     "ForecastTargetInput",
+    "HistoricalEvForecaster",
     "LoadForecastModelConfig",
     "PvForecastModelConfig",
-    "build_empirical_scenarios",
     "build_feature_store_forecast",
     "build_forecast_bundle",
     "build_load_forecast",
     "build_pv_forecast",
+    "empty_ev_forecast",
     "feature_store_forecast_readiness",
     "weather_targets",
 ]

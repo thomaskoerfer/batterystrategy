@@ -15,7 +15,8 @@ evaluation window; do not acquire an actuator reference. Never store unbounded
 attributes or expose private configuration in diagnostics.
 
 Forecast-vintage capture may serialize only an already-produced immutable
-`ForecastBundle`. Keep it outside Recorder, bounded by time and frequency, and
+`ForecastDistributionBundle`, a post-publication `ScenarioBuildResult` and
+their optimizer results. Keep it outside Recorder, bounded by time, size and frequency, and
 failure-contained after authoritative plan persistence. Evaluation results must
 never be read by forecasting, optimization, compilation, live control or
 actuation. A later learning or model-selection loop is a separate behavioral

@@ -5,7 +5,12 @@ import datetime as dt
 import math
 from dataclasses import dataclass
 
-from .contracts import ForecastBundle, OptimizationProblem, PvPlant
+from .contracts import (
+    ForecastDistributionBundle,
+    OptimizationProblem,
+    PvPlant,
+    ScenarioBuildRequest,
+)
 from .forecast_application import (
     ProductionForecastConfig,
     ProductionForecastModule,
@@ -20,7 +25,6 @@ from .forecast_calibration import (
 )
 from .forecast_evaluation import update_forecast_evaluation
 from .forecasting import FeatureStoreForecastNotReady
-from .forecasting.scenarios import ScenarioGenerationInput
 from .market_context import MarketContextConfig, MarketContextService
 from .models import StrategyOptions
 from .plan_presentation import (
@@ -81,9 +85,9 @@ class PlanningRunOutcome:
     result: PlanningResult
     owner_state: PlanningOwnerState
     persist_state: bool
-    forecast_bundle: ForecastBundle | None = None
+    forecast_bundle: ForecastDistributionBundle | None = None
     optimization_problem: OptimizationProblem | None = None
-    scenario_input: ScenarioGenerationInput | None = None
+    scenario_request: ScenarioBuildRequest | None = None
 
 
 # PV surplus anti-cycling thresholds
@@ -770,7 +774,7 @@ def run(
         True,
         forecast_bundle,
         publication.optimization_problem,
-        forecast_result.scenario_input,
+        forecast_result.scenario_request,
     )
 
 
