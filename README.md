@@ -99,7 +99,7 @@ provided by the same release.
 The current actual-savings metric is intentionally a gross battery metric: measured charge energy is split into PV and grid energy, while every measured discharge-counter delta is credited at the applicable import price. Battery export and EV consumption are not yet removed from the discharge credit.
 
 The integration also maintains `battery_strategy_features.json.gz`: the compact,
-atomic 15-minute production feature store with 180-day retention. Forecasting
+atomic 15-minute production feature store with 400-day retention. Forecasting
 reads this store through the typed feature boundary; optimization and live
 control never access its persistence format. Store health and growth are
 included in integration diagnostics, while raw feature records are intentionally

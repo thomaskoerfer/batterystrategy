@@ -263,6 +263,8 @@ class OptimizationDecision:
             raise ValueError("decision identity and optimizer_version are required")
         if self.generated_at_ms < 0:
             raise ValueError("generated_at_ms must be non-negative")
+        if not self.slot.slot.start_ms <= self.generated_at_ms < self.slot.slot.end_ms:
+            raise ValueError("decision must describe the current slot")
 
 
 @dataclass(frozen=True, slots=True)

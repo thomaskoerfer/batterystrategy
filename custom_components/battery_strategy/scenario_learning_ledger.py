@@ -23,7 +23,7 @@ def append_scenario_learning_vintage(
     *,
     build_result: ScenarioBuildResult,
     optimization_problem: OptimizationProblem,
-    optimization_result: OptimizationResult,
+    optimization_result: OptimizationResult | None,
 ) -> Path | None:
     """Write one hourly vintage plus EV-state boundaries, never read by planning."""
     generated_at_ms = optimization_problem.as_of_ms
@@ -129,6 +129,7 @@ def _payload(build_result, problem, result) -> dict[str, object]:
             if scenarios is not None
             else []
         ),
+        "optimization_status": "completed" if result is not None else "failed",
         "decision": (
             {
                 "slot_start_ms": result.decision.slot.slot.start_ms,
@@ -136,18 +137,22 @@ def _payload(build_result, problem, result) -> dict[str, object]:
                 "discharge_budget_kwh": result.decision.slot.discharge_budget_kwh,
                 "mode": result.decision.slot.mode.value,
             }
-            if result.decision is not None
+            if result is not None and result.decision is not None
             else None
         ),
-        "projection": [
+        "projection": (
             [
-                slot.slot.start_ms,
-                slot.planned_charge_kwh,
-                slot.planned_discharge_kwh,
-                slot.expected_soc_end_pct,
+                [
+                    slot.slot.start_ms,
+                    slot.planned_charge_kwh,
+                    slot.planned_discharge_kwh,
+                    slot.expected_soc_end_pct,
+                ]
+                for slot in result.projection.slots
             ]
-            for slot in result.projection.slots
-        ],
+            if result is not None
+            else []
+        ),
     }
 
 

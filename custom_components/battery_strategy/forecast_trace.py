@@ -152,14 +152,20 @@ class ForecastTraceScheduler:
                     if scenario_request is not None:
                         try:
                             build_result = ScenarioBuilder().build(scenario_request)
-                            if build_result.scenarios is None:
-                                shadow_status = build_result.status.value
-                            elif optimization_problem is None:
-                                shadow_status = "optimization_problem_unavailable"
+                            if optimization_problem is None:
+                                shadow_status = (
+                                    build_result.status.value
+                                    if build_result.scenarios is None
+                                    else "optimization_problem_unavailable"
+                                )
                             else:
-                                shadow_problem = replace(
-                                    optimization_problem,
-                                    scenarios=build_result.scenarios,
+                                shadow_problem = (
+                                    replace(
+                                        optimization_problem,
+                                        scenarios=build_result.scenarios,
+                                    )
+                                    if build_result.scenarios is not None
+                                    else optimization_problem
                                 )
                                 optimizer = UnifiedScenarioOptimizer()
                                 unified_result = optimizer.optimize(shadow_problem)
@@ -182,7 +188,11 @@ class ForecastTraceScheduler:
                                         unified_result.decision
                                     ),
                                 }
-                                shadow_status = "completed"
+                                shadow_status = (
+                                    "completed"
+                                    if build_result.scenarios is not None
+                                    else "completed_p50_fallback"
+                                )
                         except Exception as err:
                             shadow_status = "failed"
                             self._warn(err)
@@ -206,16 +216,12 @@ class ForecastTraceScheduler:
                             ),
                             **(
                                 optimizer_diagnostics
-                                if shadow_status == "completed"
+                                if shadow_status.startswith("completed")
                                 else {}
                             ),
                         },
                     )
-                    if (
-                        build_result is not None
-                        and shadow_problem is not None
-                        and unified_result is not None
-                    ):
+                    if build_result is not None and shadow_problem is not None:
                         append_scenario_learning_vintage(
                             self._root.parent / "battery_strategy_scenario_learning",
                             build_result=build_result,

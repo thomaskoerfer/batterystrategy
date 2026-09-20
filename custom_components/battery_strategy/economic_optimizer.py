@@ -1222,6 +1222,8 @@ def _unified_p50_projection(
                 raise ValueError("P50 projection has no feasible transition")
             _, _, _, current, charge, discharge = best
 
+        charge = 0.0 if charge <= 1e-9 else charge
+        discharge = 0.0 if discharge <= 1e-9 else discharge
         grid_charge = max(0.0, charge - physical_surplus[index])
         transition_cost = _transition_cost(
             problem,

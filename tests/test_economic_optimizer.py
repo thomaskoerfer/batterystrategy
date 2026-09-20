@@ -152,6 +152,17 @@ def test_unified_optimizer_uses_p50_as_probability_one_scenario():
     assert direct.decision.slot.required_charge_kwh > 0.0
 
 
+def test_optimization_decision_must_cover_generation_time():
+    result = UnifiedScenarioOptimizer().optimize(problem([20.0], loads=[0.2], soc=50.0))
+    assert result.decision is not None
+
+    with pytest.raises(ValueError, match="current slot"):
+        replace(
+            result.decision,
+            generated_at_ms=result.decision.slot.slot.end_ms,
+        )
+
+
 def test_unified_optimizer_does_not_apply_legacy_discharge_floor():
     candidate = problem([35.0, 10.0], loads=[0.5, 0.0], soc=100.0, floor=99.0)
 
@@ -159,6 +170,67 @@ def test_unified_optimizer_does_not_apply_legacy_discharge_floor():
 
     assert result.decision is not None
     assert result.decision.slot.discharge_budget_kwh > 0.0
+
+
+def test_unified_optimizer_handles_realistic_48h_horizon():
+    count = 48 * 4
+    prices = [
+        -5.0
+        if index % 96 in range(40, 48)
+        else 55.0
+        if index % 96 in range(72, 84)
+        else 28.0
+        for index in range(count)
+    ]
+    loads = [
+        0.08 + (0.2 if index % 96 in range(68, 88) else 0.0) for index in range(count)
+    ]
+    pv = [max(0.0, 0.45 - abs((index % 96) - 52) * 0.035) for index in range(count)]
+
+    result = UnifiedScenarioOptimizer().optimize(
+        problem(prices, loads=loads, pv=pv, soc=45.0, terminal=20.0)
+    )
+
+    assert result.decision is not None
+    assert len(result.projection.slots) == count
+    assert all(
+        not (slot.planned_charge_kwh > 0.0 and slot.planned_discharge_kwh > 0.0)
+        for slot in result.projection.slots
+    )
+
+
+def test_unified_optimizer_uses_scenario_recourse_for_first_decision():
+    candidate = problem([10.0, 60.0], loads=[0.0, 0.0], soc=10.0)
+    slots = tuple(item.slot for item in candidate.forecast.load.slots)
+    scenarios = ScenarioBundle(
+        "uncertain-load",
+        "source",
+        candidate.as_of_ms,
+        candidate.as_of_ms,
+        "test-v1",
+        (
+            ScenarioPath(
+                "low",
+                0.5,
+                tuple(ScenarioSlot(slot, 0.0, 0.0, 0.0) for slot in slots),
+            ),
+            ScenarioPath(
+                "high",
+                0.5,
+                (
+                    ScenarioSlot(slots[0], 0.0, 0.0, 0.0),
+                    ScenarioSlot(slots[1], 0.6, 0.0, 0.0),
+                ),
+            ),
+        ),
+    )
+
+    result = UnifiedScenarioOptimizer().optimize(
+        replace(candidate, scenarios=scenarios)
+    )
+
+    assert result.decision is not None
+    assert result.decision.slot.required_charge_kwh > 0.0
 
 
 def test_stochastic_optimizer_uses_coherent_ev_paths_and_common_first_action():

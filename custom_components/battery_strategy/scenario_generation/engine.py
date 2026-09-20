@@ -148,6 +148,38 @@ class ScenarioBuilder:
         candidates.sort(key=lambda item: (item.component_distance, item.weeks_ago))
         all_candidates = tuple(candidates)
         candidates = candidates[: request.settings.maximum_paths]
+        raw_weights = [
+            max(1e-9, 1.0 - item.repaired_slots / max(1, len(item.slots)))
+            / (1.0 + item.component_distance)
+            for item in candidates
+        ]
+        total_weight = sum(raw_weights)
+        probabilities = (
+            tuple(weight / total_weight for weight in raw_weights)
+            if total_weight > 0.0
+            else ()
+        )
+        selected_weeks = {item.weeks_ago for item in candidates}
+        probability_by_week = {
+            item.weeks_ago: probabilities[index]
+            for index, item in enumerate(candidates)
+        }
+        candidate_diagnostics = tuple(
+            ScenarioCandidateDiagnostic(
+                item.weeks_ago,
+                item.component_distance,
+                item.repaired_slots,
+                item.excluded_components,
+                max(
+                    1e-9,
+                    1.0 - item.repaired_slots / max(1, len(item.slots)),
+                )
+                / (1.0 + item.component_distance),
+                probability_by_week.get(item.weeks_ago, 0.0),
+                item.weeks_ago in selected_weeks,
+            )
+            for item in all_candidates
+        )
         if len(candidates) < request.settings.minimum_paths:
             reasons["too_few_paths"] += 1
             return ScenarioBuildResult(
@@ -192,34 +224,6 @@ class ScenarioBuilder:
             fallback_slots += int(load_mode != "calibrated_residual")
             fallback_slots += int(pv_mode != "calibrated_residual")
             marginal_evidence.append((load_residuals, pv_residuals, load_mode, pv_mode))
-        raw_weights = [
-            max(1e-9, 1.0 - item.repaired_slots / max(1, len(item.slots)))
-            / (1.0 + item.component_distance)
-            for item in candidates
-        ]
-        total_weight = sum(raw_weights)
-        probabilities = tuple(weight / total_weight for weight in raw_weights)
-        selected_weeks = {item.weeks_ago for item in candidates}
-        probability_by_week = {
-            item.weeks_ago: probabilities[index]
-            for index, item in enumerate(candidates)
-        }
-        candidate_diagnostics = tuple(
-            ScenarioCandidateDiagnostic(
-                item.weeks_ago,
-                item.component_distance,
-                item.repaired_slots,
-                item.excluded_components,
-                max(
-                    1e-9,
-                    1.0 - item.repaired_slots / max(1, len(item.slots)),
-                )
-                / (1.0 + item.component_distance),
-                probability_by_week.get(item.weeks_ago, 0.0),
-                item.weeks_ago in selected_weeks,
-            )
-            for item in all_candidates
-        )
         ev_active_paths = []
         for slot_index, ev_slot in enumerate(forecast.ev.slots):
             historical_values = tuple(
