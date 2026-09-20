@@ -43,6 +43,11 @@ Available quality-valid house-load components rank and weight otherwise valid
 weekly analogues by normalized profile distance. Missing component values are
 excluded from that distance rather than interpreted as zero.
 
+Diagnostics expose every quality-valid analogue's age, component distance,
+repair count, raw weight, normalized probability and final selection. These
+facts are evaluation evidence only; scenario generation does not read its
+historical evaluation ledger or alter weights online.
+
 EV occurrence is assigned to the highest historical session ranks so each
 slot's weighted event frequency tracks the `EvForecast` active probability to
 the finite ensemble's weight resolution. Conditional active energy then maps

@@ -34,6 +34,7 @@ from custom_components.battery_strategy.contracts import (
 from custom_components.battery_strategy.economic_optimizer import (
     DynamicProgrammingOptimizer,
     StochasticDynamicProgrammingOptimizer,
+    UnifiedScenarioOptimizer,
     _energy_lattice,
     _scenario_flows,
 )
@@ -126,6 +127,38 @@ def test_optimizer_is_deterministic_and_preserves_problem_identity():
     assert first == second
     assert first.problem_id == candidate.problem_id
     assert first.generated_at_ms == candidate.as_of_ms
+
+
+def test_unified_optimizer_separates_current_decision_from_projection():
+    candidate = problem([10.0, 45.0], loads=[0.0, 0.5], soc=10.0)
+
+    result = UnifiedScenarioOptimizer().optimize(candidate)
+
+    assert result.decision is not None
+    assert result.decision.slot.slot == candidate.market[0].slot
+    assert result.projection.slots[0].slot == result.decision.slot.slot
+    assert len(result.projection.slots) == 2
+    assert result.projection.optimizer_version == "scenario-dp-v2"
+
+
+def test_unified_optimizer_uses_p50_as_probability_one_scenario():
+    candidate = problem([10.0, 45.0], loads=[0.0, 0.5], soc=10.0)
+
+    direct = UnifiedScenarioOptimizer().optimize(candidate)
+    repeated = UnifiedScenarioOptimizer().optimize(candidate)
+
+    assert direct == repeated
+    assert direct.decision is not None
+    assert direct.decision.slot.required_charge_kwh > 0.0
+
+
+def test_unified_optimizer_does_not_apply_legacy_discharge_floor():
+    candidate = problem([35.0, 10.0], loads=[0.5, 0.0], soc=100.0, floor=99.0)
+
+    result = UnifiedScenarioOptimizer().optimize(candidate)
+
+    assert result.decision is not None
+    assert result.decision.slot.discharge_budget_kwh > 0.0
 
 
 def test_stochastic_optimizer_uses_coherent_ev_paths_and_common_first_action():

@@ -32,8 +32,9 @@ hardware command.
 
 ## Persistence
 
-The feature store keeps one compressed record per finalized slot with bounded
-retention. Recorder access is limited to bootstrap, repair and backfill through
+The feature store keeps one compressed record per finalized slot for 400 days,
+covering a complete annual analogue cycle with bounded growth. Recorder access
+is limited to bootstrap, repair and backfill through
 an adapter. Forecasting and optimization must behave identically whether the
 Home Assistant recorder uses SQLite, MariaDB, PostgreSQL or another supported
 backend.

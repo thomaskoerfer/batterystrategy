@@ -2,6 +2,28 @@
 
 All notable changes to Battery Strategy are documented here.
 
+## [0.2.0-rc.30] - 2026-09-20
+
+### Added
+
+- Add the unified scenario optimizer shadow with separated current
+  `OptimizationDecision` and non-authoritative `PlanProjection` contracts.
+- Record a compact observational scenario-learning ledger for 400 days,
+  including analogue selection evidence, scenarios, decisions and projections.
+
+### Changed
+
+- Route unavailable scenario ensembles through a probability-one P50 scenario
+  in the same optimization core.
+- Extend feature retention to 400 days so the Scenario Builder can evaluate a
+  complete annual analogue cycle.
+
+### Safety
+
+- Keep the RC28 production optimizer authoritative. The unified optimizer and
+  learning ledger run only after publication and have no compiler or actuator
+  reference.
+
 ## [0.2.0-rc.28] - 2026-09-20
 
 ### Changed

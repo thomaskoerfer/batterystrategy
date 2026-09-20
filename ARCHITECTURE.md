@@ -140,13 +140,15 @@ Optimization is a reproducible, side-effect-free function of:
 - current battery state and physical constraints;
 - efficiency, feed-in value and commercial policy.
 
-Scenario optimization uses common first-slot executable permissions with weighted recourse. The
-replacement shadow executes only after the authoritative deterministic plan and
-is evaluation-only; its failure cannot affect publication. Cutover changes the
-optimizer adapter while retaining the same `BatteryPlan` interface.
+Scenario optimization uses one common first-slot executable decision with
+probability-weighted recourse. A point forecast is represented by one P50
+scenario and uses the same implementation. The approved rollout initially runs
+this optimizer after authoritative publication as evaluation-only work; its
+failure cannot affect publication.
 
-It produces a `BatteryPlan` containing the intended energy trajectory, charge
-and discharge actions, commercial discharge budgets and plan diagnostics. It
+It produces an `OptimizationResult` containing a binding current-slot
+`OptimizationDecision` and a separate non-binding `PlanProjection`. The latter
+contains the expected energy trajectory and cost diagnostics. It
 does not read Home Assistant, history, weather, files, network resources or the
 wall clock.
 
@@ -164,7 +166,8 @@ Neither responsibility may duplicate optimization or hardware translation.
 
 #### Plan compiler
 
-The plan compiler converts the economic `BatteryPlan` into explicit slot-bound
+After cutover, the plan compiler converts the economic `OptimizationDecision`
+into explicit slot-bound
 `PlanLiveDirective` values: PV charge permission, required charge, grid-charge
 permission, discharge budget, SoC bounds and validity timestamps. The live
 controller must not infer commercial intent or charge sources from planned power,
@@ -226,8 +229,8 @@ live command into vendor controls and enforces write throttling and safe zeros.
 ## Persistence and recorder independence
 
 The target feature store contains one quality-scored record per 15-minute slot,
-not raw 10-second states. A 180-day retention window is sufficient for weekday
-and seasonal learning while remaining small when compressed. Forecasts, plans
+not raw 10-second states. A 400-day retention window preserves a complete
+annual analogue cycle while remaining small when compressed. Forecasts, plans
 and their later actuals must be retained in compact form so forecast accuracy
 and strategy value can be backtested without reconstructing what the system
 would have known at the time.
@@ -268,13 +271,17 @@ slot while live PV-follow remains available. The coordinator retains HA
 lifecycle, scheduling and the single actuator call; this extraction does not
 change the compiler or live-control contracts.
 
-Planning state schema 11 stores the canonical `BatteryPlan` beside operator
+The shadow release still stores the established canonical `BatteryPlan` beside operator
 data. `PlanningStateStore` owns one atomic document while exposing typed,
 domain-owned forecast, simulation, market, savings and publication state to the
 planning application. Older or malformed display snapshots remain readable but
 fail closed for control until a fresh optimizer result exists.
 `planning_result.py` owns the canonical-plan codec and keeps fresh typed
 projection separate from the display-only restore parser.
+
+At unified-optimizer cutover this persisted executable payload changes to the
+current `OptimizationDecision`; `PlanProjection` is stored independently and
+cannot be deserialized as compiler permission.
 
 Every planning refresh has exactly one adapter-captured `captured_at_ms`.
 Planning, history cutoffs, price selection, forecast generation and persistence

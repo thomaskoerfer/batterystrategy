@@ -9,8 +9,14 @@ from dataclasses import dataclass, replace
 from .contracts import (
     BatteryPlan,
     BatteryPlanSlot,
+    OptimizationDecision,
     OptimizationProblem,
+    OptimizationResult,
     PlanMode,
+    PlanProjection,
+    ScenarioBundle,
+    ScenarioPath,
+    ScenarioSlot,
 )
 
 SLOT_H = 0.25
@@ -22,6 +28,7 @@ PV_RECOVERY_LOOKAHEAD_H = 18.0
 SCARCE_VALUE_TIE_CT = 0.5
 OPTIMIZER_VERSION = "economic-dp-v2"
 STOCHASTIC_OPTIMIZER_VERSION = "stochastic-two-stage-dp-v1"
+UNIFIED_OPTIMIZER_VERSION = "scenario-dp-v2"
 
 
 @dataclass(slots=True)
@@ -36,6 +43,22 @@ class _Action:
     grid_charge_kwh: float = 0.0
     grid_import_kwh: float = 0.0
     grid_export_kwh: float = 0.0
+
+
+@dataclass(frozen=True, slots=True)
+class _Objective:
+    """Lexicographic economic objective used throughout scenario recourse."""
+
+    cost_eur: float = 0.0
+    pv_export_kwh: float = 0.0
+    throughput_kwh: float = 0.0
+
+    def plus(self, other: _Objective, weight: float = 1.0) -> _Objective:
+        return _Objective(
+            self.cost_eur + weight * other.cost_eur,
+            self.pv_export_kwh + weight * other.pv_export_kwh,
+            self.throughput_kwh + weight * other.throughput_kwh,
+        )
 
 
 class DynamicProgrammingOptimizer:
@@ -802,7 +825,7 @@ class StochasticDynamicProgrammingOptimizer:
                 raise ValueError("required first policy is outside executable bounds")
             policies = ((required_charge, discharge_budget),)
         for required_charge, discharge_budget in policies:
-            expected = 0.0
+            expected = _Objective()
             feasible = True
             grid_charge = 0.0
             for (probability, flows), (_, future_values) in zip(
@@ -832,7 +855,7 @@ class StochasticDynamicProgrammingOptimizer:
                     if discharge > 0.0
                     else 0.0
                 )
-                step_cost = _transition_cost(
+                step_objective = _transition_objective(
                     problem,
                     0,
                     actual_charge,
@@ -844,27 +867,167 @@ class StochasticDynamicProgrammingOptimizer:
                     flows[2],
                     flows[3],
                 )
-                if step_cost is None:
+                if step_objective is None:
                     feasible = False
                     break
-                expected += probability * (
-                    step_cost
-                    + _interpolate_energy_value(energies, future_values, next_energy)
+                expected = expected.plus(
+                    step_objective.plus(
+                        _interpolate_energy_value(energies, future_values, next_energy)
+                    ),
+                    probability,
                 )
                 grid_charge += probability * max(0.0, actual_charge - flows[2][0])
             if not feasible:
                 continue
-            candidate = (
-                expected,
-                grid_charge,
-                required_charge,
-                discharge_budget,
-            )
-            if best is None or candidate < best:
+            candidate = (expected, required_charge, discharge_budget, grid_charge)
+            if (
+                best is None
+                or _objective_is_better(candidate[0], best[0])
+                or (
+                    not _objective_is_better(best[0], candidate[0])
+                    and (candidate[1], candidate[2]) < (best[1], best[2])
+                )
+            ):
                 best = candidate
         if best is None:
             raise ValueError("stochastic optimizer has no feasible first transition")
-        return best[2], best[3], best[0], best[1]
+        return best[1], best[2], best[0].cost_eur, best[3]
+
+
+class UnifiedScenarioOptimizer:
+    """One scenario optimizer for uncertain and probability-one P50 input.
+
+    The class is evaluation-only during the shadow release. It intentionally
+    returns the separated contracts that become authoritative at cutover.
+    """
+
+    def optimize(self, problem: OptimizationProblem) -> OptimizationResult:
+        if not problem.market:
+            return OptimizationResult(
+                None,
+                PlanProjection(
+                    f"{problem.problem_id}:{UNIFIED_OPTIMIZER_VERSION}:projection",
+                    problem.problem_id,
+                    problem.as_of_ms,
+                    UNIFIED_OPTIMIZER_VERSION,
+                    problem.constraints,
+                    (),
+                    0.0,
+                    0.0,
+                ),
+            )
+        scenario_problem = (
+            problem
+            if problem.scenarios is not None
+            else replace(problem, scenarios=_p50_scenario_bundle(problem))
+        )
+        prices = tuple(
+            float(item.import_price_ct_per_kwh) for item in scenario_problem.market
+        )
+        export_prices = tuple(
+            max(
+                float(item.export_price_ct_per_kwh),
+                float(scenario_problem.policy.export_opportunity_ct_per_kwh),
+            )
+            for item in scenario_problem.market
+        )
+        scenario_flows = tuple(
+            (
+                scenario.probability,
+                _scenario_flows(scenario.slots, scenario_problem.ev_policy),
+            )
+            for scenario in scenario_problem.scenarios.scenarios
+        )
+        required_charge, discharge_budget, expected_cost, expected_grid = (
+            StochasticDynamicProgrammingOptimizer()._common_first_policy(
+                scenario_problem, prices, export_prices, scenario_flows
+            )
+        )
+        first_policy = _first_policy_projection_slot(
+            scenario_problem, required_charge, discharge_budget
+        )
+        slots, projected_cost = _unified_p50_projection(
+            scenario_problem,
+            first_policy,
+        )
+        p50_path = _p50_scenario_bundle(problem).scenarios[0]
+        p50_flows = _scenario_flows(p50_path.slots, problem.ev_policy)
+        baseline_cost = sum(
+            (net * price - surplus * export_price) / 100.0
+            for net, surplus, price, export_price in zip(
+                p50_flows[0], p50_flows[2], prices, export_prices, strict=True
+            )
+        )
+        projection = PlanProjection(
+            projection_id=f"{problem.problem_id}:{UNIFIED_OPTIMIZER_VERSION}:projection",
+            problem_id=problem.problem_id,
+            generated_at_ms=problem.as_of_ms,
+            optimizer_version=UNIFIED_OPTIMIZER_VERSION,
+            constraints=problem.constraints,
+            slots=slots,
+            baseline_cost_eur=baseline_cost,
+            optimized_cost_eur=projected_cost,
+        )
+        decision = None
+        if slots:
+            # The common scenario policy is executable; the P50 projection is not.
+            executable_slot = replace(
+                slots[0],
+                required_charge_kwh=required_charge,
+                discharge_budget_kwh=discharge_budget,
+            )
+            decision = OptimizationDecision(
+                decision_id=f"{problem.problem_id}:{UNIFIED_OPTIMIZER_VERSION}:decision",
+                problem_id=problem.problem_id,
+                generated_at_ms=problem.as_of_ms,
+                optimizer_version=UNIFIED_OPTIMIZER_VERSION,
+                constraints=problem.constraints,
+                slot=executable_slot,
+            )
+        self.last_diagnostics = {
+            "expected_scenario_cost_eur": expected_cost,
+            "expected_first_grid_charge_kwh": expected_grid,
+            "first_required_charge_kwh": required_charge,
+            "first_discharge_budget_kwh": discharge_budget,
+            "projection_cost_eur": projected_cost,
+            "scenario_count": len(scenario_problem.scenarios.scenarios),
+        }
+        return OptimizationResult(decision, projection)
+
+
+def _first_policy_projection_slot(
+    problem: OptimizationProblem,
+    required_charge_kwh: float,
+    discharge_budget_kwh: float,
+) -> BatteryPlanSlot | None:
+    if not problem.market:
+        return None
+    capacity = problem.constraints.capacity_kwh
+    start = _clamp(
+        capacity * problem.battery.soc_pct / 100.0,
+        capacity * problem.constraints.min_soc_pct / 100.0,
+        capacity * problem.constraints.max_soc_pct / 100.0,
+    )
+    return BatteryPlanSlot(
+        slot=problem.market[0].slot,
+        mode=(
+            PlanMode.CHARGE
+            if required_charge_kwh > 1e-9
+            else PlanMode.DISCHARGE
+            if discharge_budget_kwh > 1e-9
+            else PlanMode.IDLE
+        ),
+        pv_charge_allowed=problem.policy.pv_charging_allowed,
+        grid_charge_allowed=problem.policy.grid_charging_allowed,
+        planned_charge_kwh=required_charge_kwh,
+        planned_discharge_kwh=0.0,
+        required_charge_kwh=required_charge_kwh,
+        discharge_budget_kwh=discharge_budget_kwh,
+        expected_soc_start_pct=100.0 * start / capacity,
+        expected_soc_end_pct=100.0 * start / capacity,
+        planned_pv_charge_kwh=0.0,
+        planned_grid_charge_kwh=required_charge_kwh,
+    )
 
 
 def _scenario_flows(slots, policy):
@@ -902,6 +1065,208 @@ def _scenario_flows(slots, policy):
     )
 
 
+def _p50_scenario_bundle(problem: OptimizationProblem) -> ScenarioBundle:
+    """Represent the point forecast as a normal probability-one scenario."""
+    slots = tuple(
+        ScenarioSlot(
+            load.slot,
+            max(0.0, load.energy.p50_kwh),
+            max(0.0, pv.energy.p50_kwh),
+            max(0.0, ev.energy.p50_kwh),
+        )
+        for load, pv, ev in zip(
+            problem.forecast.load.slots,
+            problem.forecast.pv.slots,
+            problem.forecast.ev.slots,
+            strict=True,
+        )
+    )
+    generated_at = max(
+        problem.forecast.load.generated_at_ms,
+        problem.forecast.pv.generated_at_ms,
+        problem.forecast.ev.generated_at_ms,
+    )
+    return ScenarioBundle(
+        f"{problem.problem_id}:p50",
+        (
+            f"{problem.forecast.load.forecast_id}|"
+            f"{problem.forecast.pv.forecast_id}|{problem.forecast.ev.forecast_id}"
+        ),
+        generated_at,
+        min(
+            problem.forecast.load.training_cutoff_ms,
+            problem.forecast.pv.training_cutoff_ms,
+            problem.forecast.ev.training_cutoff_ms,
+        ),
+        "p50-degenerate-v1",
+        (ScenarioPath("p50", 1.0, slots),),
+    )
+
+
+def _unified_p50_projection(
+    problem: OptimizationProblem,
+    first_policy_slot: BatteryPlanSlot | None,
+) -> tuple[tuple[BatteryPlanSlot, ...], float]:
+    """Project one P50 path with the same recourse objective as scenarios."""
+    if first_policy_slot is None:
+        return (), 0.0
+    p50_path = _p50_scenario_bundle(problem).scenarios[0]
+    demand, charge_surplus, physical_surplus, discharge_limit = _scenario_flows(
+        p50_path.slots, problem.ev_policy
+    )
+    prices = tuple(float(item.import_price_ct_per_kwh) for item in problem.market)
+    export_prices = tuple(
+        max(
+            float(item.export_price_ct_per_kwh),
+            float(problem.policy.export_opportunity_ct_per_kwh),
+        )
+        for item in problem.market
+    )
+    constraints = problem.constraints
+    eta = math.sqrt(constraints.round_trip_efficiency)
+    minimum = constraints.capacity_kwh * constraints.min_soc_pct / 100.0
+    maximum = constraints.capacity_kwh * constraints.max_soc_pct / 100.0
+    step = max(
+        min(STOCHASTIC_RECOURSE_STEP_KWH, maximum - minimum),
+        (maximum - minimum) / max(1, STOCHASTIC_MAX_RECOURSE_STATES - 1),
+    )
+    energies = _energy_lattice(minimum, maximum, step)
+    current = _clamp(
+        constraints.capacity_kwh * problem.battery.soc_pct / 100.0,
+        minimum,
+        maximum,
+    )
+    max_charge = constraints.max_charge_power_w / 1000.0 * SLOT_H
+    max_discharge = constraints.max_discharge_power_w / 1000.0 * SLOT_H
+    result: list[BatteryPlanSlot] = []
+    total_cost = 0.0
+    for index, forecast_slot in enumerate(problem.forecast.load.slots):
+        start = current
+        if index == 0:
+            charge = min(
+                max_charge,
+                max(
+                    first_policy_slot.required_charge_kwh,
+                    charge_surplus[0] if problem.policy.pv_charging_allowed else 0.0,
+                ),
+            )
+            discharge = (
+                0.0
+                if charge > 1e-9
+                else min(
+                    first_policy_slot.discharge_budget_kwh,
+                    discharge_limit[0],
+                    max_discharge,
+                )
+            )
+            current = _clamp(start + charge * eta - discharge / eta, minimum, maximum)
+            charge = max(0.0, (current - start) / eta) if charge > 0.0 else 0.0
+            discharge = max(0.0, (start - current) * eta) if discharge > 0.0 else 0.0
+        else:
+            future = _backward_recourse_values(
+                problem,
+                prices,
+                export_prices,
+                demand,
+                charge_surplus,
+                physical_surplus,
+                discharge_limit,
+                energies,
+                start_slot=index + 1,
+            )
+            low = max(
+                minimum,
+                start - min(max_discharge, discharge_limit[index]) / eta,
+            )
+            high = min(maximum, start + max_charge * eta)
+            best = None
+            for next_index in range(
+                bisect_left(energies, low - 1e-9),
+                bisect_right(energies, high + 1e-9),
+            ):
+                candidate_energy = energies[next_index]
+                delta = candidate_energy - start
+                candidate_charge = max(0.0, delta / eta)
+                candidate_discharge = max(0.0, -delta * eta)
+                cost = _transition_cost(
+                    problem,
+                    index,
+                    candidate_charge,
+                    candidate_discharge,
+                    prices,
+                    export_prices,
+                    demand,
+                    charge_surplus,
+                    physical_surplus,
+                    discharge_limit,
+                )
+                if cost is None:
+                    continue
+                exported = max(0.0, physical_surplus[index] - candidate_charge)
+                future_objective = _interpolate_energy_value(
+                    energies, future, candidate_energy
+                )
+                candidate = (
+                    cost + future_objective.cost_eur,
+                    exported + future_objective.pv_export_kwh,
+                    candidate_charge
+                    + candidate_discharge
+                    + future_objective.throughput_kwh,
+                    candidate_energy,
+                    candidate_charge,
+                    candidate_discharge,
+                )
+                if best is None or candidate[:3] < best[:3]:
+                    best = candidate
+            if best is None:
+                raise ValueError("P50 projection has no feasible transition")
+            _, _, _, current, charge, discharge = best
+
+        grid_charge = max(0.0, charge - physical_surplus[index])
+        transition_cost = _transition_cost(
+            problem,
+            index,
+            charge,
+            discharge,
+            prices,
+            export_prices,
+            demand,
+            charge_surplus,
+            physical_surplus,
+            discharge_limit,
+        )
+        if transition_cost is None:
+            raise ValueError("P50 projection selected an infeasible transition")
+        total_cost += transition_cost
+        mode = (
+            PlanMode.CHARGE
+            if charge > 1e-9
+            else PlanMode.DISCHARGE
+            if discharge > 1e-9
+            else PlanMode.IDLE
+        )
+        result.append(
+            BatteryPlanSlot(
+                slot=forecast_slot.slot,
+                mode=mode,
+                pv_charge_allowed=problem.policy.pv_charging_allowed,
+                grid_charge_allowed=problem.policy.grid_charging_allowed,
+                planned_charge_kwh=charge,
+                planned_discharge_kwh=discharge,
+                required_charge_kwh=grid_charge,
+                discharge_budget_kwh=discharge,
+                expected_soc_start_pct=100.0 * start / constraints.capacity_kwh,
+                expected_soc_end_pct=100.0 * current / constraints.capacity_kwh,
+                planned_pv_charge_kwh=charge - grid_charge,
+                planned_grid_charge_kwh=grid_charge,
+            )
+        )
+    total_cost -= (
+        problem.policy.terminal_value_ct_per_kwh * max(0.0, current - minimum) / 100.0
+    )
+    return tuple(result), total_cost
+
+
 def _backward_recourse_values(
     problem,
     prices,
@@ -922,7 +1287,11 @@ def _backward_recourse_values(
     max_discharge = constraints.max_discharge_power_w / 1000.0 * SLOT_H
 
     values = tuple(
-        -problem.policy.terminal_value_ct_per_kwh * max(0.0, energy - minimum) / 100.0
+        _Objective(
+            -problem.policy.terminal_value_ct_per_kwh
+            * max(0.0, energy - minimum)
+            / 100.0
+        )
         for energy in energies
     )
     for slot_index in range(len(prices) - 1, start_slot - 1, -1):
@@ -934,14 +1303,14 @@ def _backward_recourse_values(
                 energy - min(max_discharge, discharge_limit[slot_index]) / eta,
             )
             high = min(maximum, energy + max_charge * eta)
-            best = float("inf")
+            best = None
             lower_index = bisect_left(energies, low - 1e-9)
             upper_index = bisect_right(energies, high + 1e-9) - 1
             for next_index in range(lower_index, upper_index + 1):
                 delta = energies[next_index] - energy
                 charge = max(0.0, delta / eta)
                 discharge = max(0.0, -delta * eta)
-                cost = _transition_cost(
+                objective = _transition_objective(
                     problem,
                     slot_index,
                     charge,
@@ -953,14 +1322,43 @@ def _backward_recourse_values(
                     physical_surplus,
                     discharge_limit,
                 )
-                if cost is not None:
-                    best = min(best, cost + next_values[next_index])
-            current.append(best)
+                if objective is not None:
+                    candidate = objective.plus(next_values[next_index])
+                    if best is None or _objective_is_better(candidate, best):
+                        best = candidate
+            current.append(best or _Objective(float("inf")))
         values = tuple(current)
     return values
 
 
 def _transition_cost(
+    problem,
+    slot_index,
+    charge,
+    discharge,
+    prices,
+    export_prices,
+    demand,
+    charge_surplus,
+    physical_surplus,
+    discharge_limit,
+):
+    objective = _transition_objective(
+        problem,
+        slot_index,
+        charge,
+        discharge,
+        prices,
+        export_prices,
+        demand,
+        charge_surplus,
+        physical_surplus,
+        discharge_limit,
+    )
+    return objective.cost_eur if objective is not None else None
+
+
+def _transition_objective(
     problem,
     slot_index,
     charge,
@@ -988,11 +1386,6 @@ def _transition_cost(
     if discharge > 1e-9:
         if not policy.discharge_allowed:
             return None
-        if (
-            policy.discharge_floor_ct_per_kwh is not None
-            and prices[slot_index] < policy.discharge_floor_ct_per_kwh - 1e-9
-        ):
-            return None
     if charge > 1e-9:
         if not (policy.pv_charging_allowed or policy.grid_charging_allowed):
             return None
@@ -1006,19 +1399,31 @@ def _transition_cost(
     # PV diverted from EV is permitted when battery priority is configured, but
     # it creates equal grid import and is therefore priced as grid energy.
     grid_charge = max(0.0, charge - physical_surplus[slot_index])
-    if grid_charge > 1e-9:
-        future_peak = max(prices[slot_index + 1 :], default=0.0)
-        if future_peak * constraints.round_trip_efficiency < (
-            prices[slot_index] + policy.min_margin_ct_per_kwh
-        ):
-            return None
     imported = max(0.0, demand[slot_index] - discharge) + grid_charge
     exported = max(0.0, physical_surplus[slot_index] - charge)
-    return (
-        imported * prices[slot_index]
-        - exported * export_prices[slot_index]
-        + discharge * policy.min_margin_ct_per_kwh
-    ) / 100.0
+    return _Objective(
+        (
+            imported * prices[slot_index]
+            - exported * export_prices[slot_index]
+            + discharge * policy.min_margin_ct_per_kwh
+        )
+        / 100.0,
+        exported,
+        charge + discharge,
+    )
+
+
+def _objective_is_better(candidate: _Objective, current: _Objective) -> bool:
+    cost_delta = candidate.cost_eur - current.cost_eur
+    if cost_delta < -ECONOMIC_COST_TIE_EUR:
+        return True
+    if abs(cost_delta) > ECONOMIC_COST_TIE_EUR:
+        return False
+    if candidate.pv_export_kwh < current.pv_export_kwh - 1e-9:
+        return True
+    if abs(candidate.pv_export_kwh - current.pv_export_kwh) > 1e-9:
+        return False
+    return candidate.throughput_kwh < current.throughput_kwh - 1e-9
 
 
 def _path_is_better(
@@ -1085,6 +1490,19 @@ def _interpolate_energy_value(energies, values, energy):
         return values[-1]
     low_energy, high_energy = energies[position - 1], energies[position]
     low_value, high_value = values[position - 1], values[position]
+    if isinstance(low_value, _Objective):
+        if not math.isfinite(low_value.cost_eur):
+            return high_value
+        if not math.isfinite(high_value.cost_eur):
+            return low_value
+        fraction = (energy - low_energy) / (high_energy - low_energy)
+        return _Objective(
+            low_value.cost_eur * (1.0 - fraction) + high_value.cost_eur * fraction,
+            low_value.pv_export_kwh * (1.0 - fraction)
+            + high_value.pv_export_kwh * fraction,
+            low_value.throughput_kwh * (1.0 - fraction)
+            + high_value.throughput_kwh * fraction,
+        )
     if not math.isfinite(low_value) or not math.isfinite(high_value):
         return min(low_value, high_value)
     fraction = (energy - low_energy) / (high_energy - low_energy)

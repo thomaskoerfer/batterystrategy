@@ -20,12 +20,14 @@ from .contracts import (
     BatteryPlan,
     ForecastDistributionBundle,
     ForecastSlot,
+    OptimizationDecision,
     OptimizationProblem,
     ScenarioBuildRequest,
     ScenarioBundle,
 )
-from .economic_optimizer import StochasticDynamicProgrammingOptimizer
+from .economic_optimizer import UnifiedScenarioOptimizer
 from .scenario_generation import ScenarioBuilder
+from .scenario_learning_ledger import append_scenario_learning_vintage
 
 FORECAST_TRACE_DIRECTORY = "battery_strategy_forecast_trace"
 FORECAST_TRACE_SCHEMA_VERSION = 4
@@ -145,6 +147,7 @@ class ForecastTraceScheduler:
                     shadow_problem = optimization_problem
                     build_result = None
                     optimizer_diagnostics = {}
+                    unified_result = None
                     started = time.perf_counter()
                     if scenario_request is not None:
                         try:
@@ -158,12 +161,27 @@ class ForecastTraceScheduler:
                                     optimization_problem,
                                     scenarios=build_result.scenarios,
                                 )
-                                (
-                                    shadow_plan,
-                                    optimizer_diagnostics,
-                                ) = StochasticDynamicProgrammingOptimizer().optimize_with_diagnostics(
-                                    shadow_problem
+                                optimizer = UnifiedScenarioOptimizer()
+                                unified_result = optimizer.optimize(shadow_problem)
+                                projection = unified_result.projection
+                                # Schema 4 readers still consume a plan-shaped
+                                # projection during the shadow-only rollout.
+                                shadow_plan = BatteryPlan(
+                                    projection.projection_id,
+                                    projection.problem_id,
+                                    projection.generated_at_ms,
+                                    projection.optimizer_version,
+                                    projection.constraints,
+                                    projection.slots,
+                                    projection.baseline_cost_eur,
+                                    projection.optimized_cost_eur,
                                 )
+                                optimizer_diagnostics = {
+                                    **optimizer.last_diagnostics,
+                                    "decision": _serialize_decision(
+                                        unified_result.decision
+                                    ),
+                                }
                                 shadow_status = "completed"
                         except Exception as err:
                             shadow_status = "failed"
@@ -193,6 +211,17 @@ class ForecastTraceScheduler:
                             ),
                         },
                     )
+                    if (
+                        build_result is not None
+                        and shadow_problem is not None
+                        and unified_result is not None
+                    ):
+                        append_scenario_learning_vintage(
+                            self._root.parent / "battery_strategy_scenario_learning",
+                            build_result=build_result,
+                            optimization_problem=shadow_problem,
+                            optimization_result=unified_result,
+                        )
                 finally:
                     fcntl.flock(lock_handle, fcntl.LOCK_UN)
         except Exception as err:
@@ -429,6 +458,18 @@ def _serialize_build_diagnostics(result) -> dict[str, object]:
         "seed": diagnostics.seed,
         "input_fingerprint": diagnostics.input_fingerprint,
         "model_version": diagnostics.model_version,
+        "candidates": [
+            [
+                item.weeks_ago,
+                item.component_distance,
+                item.repaired_slots,
+                item.excluded_component_values,
+                item.raw_weight,
+                item.probability,
+                item.selected,
+            ]
+            for item in diagnostics.candidates
+        ],
     }
 
 
@@ -454,6 +495,25 @@ def _serialize_plan(plan: BatteryPlan | None) -> dict[str, object] | None:
             ]
             for item in plan.slots[:FORECAST_TRACE_MAX_SLOTS]
         ],
+    }
+
+
+def _serialize_decision(
+    decision: OptimizationDecision | None,
+) -> dict[str, object] | None:
+    if decision is None:
+        return None
+    item = decision.slot
+    return {
+        "decision_id": decision.decision_id,
+        "optimizer_version": decision.optimizer_version,
+        "slot_start_ms": item.slot.start_ms,
+        "slot_end_ms": item.slot.end_ms,
+        "mode": item.mode.value,
+        "required_charge_kwh": item.required_charge_kwh,
+        "discharge_budget_kwh": item.discharge_budget_kwh,
+        "pv_charge_allowed": item.pv_charge_allowed,
+        "grid_charge_allowed": item.grid_charge_allowed,
     }
 
 

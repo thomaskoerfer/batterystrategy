@@ -36,6 +36,14 @@ live coordinator only schedules that observational write in the executor.
 Public diagnostics redact configured entities, locations, credentials, device
 identifiers and provider payloads.
 
+`scenario_learning_ledger.py` records at most one hourly scenario vintage plus
+EV active/inactive boundaries. It retains 400 days under a 128 MiB cap and
+contains forecast quantiles, candidate evidence, generated paths, current
+decisions and P50 projections. It is deliberately write-only from the runtime:
+forecasting, scenario generation, optimization, compilation and live control
+never import or read it. A future offline learner requires a separate reviewed
+impact analysis and may supply only an immutable versioned model snapshot.
+
 `forecast_trace.py` records at most one immutable forecast vintage per UTC
 quarter-hour in a compressed, 21-day sidecar with an additional 64 MiB cap
 below the Home Assistant config

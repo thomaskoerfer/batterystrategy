@@ -179,14 +179,15 @@ cannot be newer than the problem's `as_of_ms`. The optimizer may consume a
 valid scenario bundle but may not read history, calibrate marginals, repair
 evidence or manufacture scenarios.
 
-`CommercialPolicy` includes explicit fields for export opportunity,
-the optional discharge feasibility floor, independent PV/grid/discharge
-permissions and PV-recovery confidence/reserve. These make existing hidden
-optimizer inputs explicit without changing units or plan/live ownership. Their
-semantics were approved by the owner on 2026-08-30; see
-`docs/impact-analyses/2026-08-30-phase-5-pure-optimizer.md`.
+`CommercialPolicy` contains export opportunity, independent PV/grid/discharge
+permissions, minimum throughput margin and terminal inventory value. The
+unified optimizer does not consume a price-rank floor or a separate PV recovery
+confidence/reserve. Scenario recourse and the physical objective own that risk.
 
-The optimizer returns a `BatteryPlan`. It may plan either charge or discharge in
+The optimizer returns `OptimizationResult`. Its `OptimizationDecision` is
+binding for exactly the current slot. Its `PlanProjection` is non-authoritative
+and cannot be consumed by the compiler. Either output may plan charge or
+discharge in
 one slot, never both. Every slot explicitly identifies whether PV and grid
 charging are commercially allowed. Planned charge is split explicitly into PV
 and grid energy; the two sources must sum to total planned charge.
@@ -203,7 +204,7 @@ optimizer resolves the tie deterministically toward less grid energy and then
 later feasible grid charging. This secondary ordering never overrides forecast
 inputs, uncertainty policy or a primary cost difference.
 `discharge_budget_kwh` is commercial permission, not a live power target. The
-plan carries the battery constraints used during optimization so the compiler
+decision carries the battery constraints used during optimization so the compiler
 does not query configuration behind the contract. Planned discharge is expected
 execution and must be contained by that permission; a budget may be larger to
 cover unexpected live household load. Future recharge reduces inventory
@@ -215,27 +216,27 @@ cost is accounting metadata, not a forward-looking opportunity value.
 The economic objective contains real import cost, foregone export revenue and
 explicit policy margin only. Price ranks and planning heuristics must never
 enter it as fictional monetary credits.
-PV-recovery discharge permission requires a physical storage-headroom shortage:
-confidence-weighted future PV surplus must exceed remaining battery headroom and
-the uncertainty reserve. Forecast grid export is diagnostic optimizer output;
-by itself it must not authorize discharge because it can result from plan
-discretization or an economic choice.
+PV headroom is an outcome of weighted coherent scenarios, export valuation and
+physical storage constraints. No parallel recovery heuristic may create
+permission.
 
-Published future profiles are canonical projections of `BatteryPlan`. Actual
+Published future profiles are canonical `PlanProjection` data. Actual
 history may be joined up to the observation time, but a live directive or live
 command must never rewrite future plan SoC, power or budget values. Live
 deviations become optimizer input at the next planning run instead.
 
 ### Planning publication
 
-The planning application returns one immutable `PlanningResult` containing:
+At cutover the planning application returns one immutable result containing:
 
-- the canonical `BatteryPlan`, or `None` when no executable plan is available;
+- the current `OptimizationDecision`, or `None` when no executable decision is
+  available;
+- the non-authoritative `PlanProjection`;
 - an immutable `StrategyPlan` operator projection for established entities and
   dashboards;
 - non-authoritative diagnostics and profile data.
 
-Only `PlanningResult.battery_plan` may cross into the plan compiler. Operator
+Only the optimization decision may cross into the plan compiler. Operator
 profiles, `StrategyPlan`, diagnostics and dashboard data must never be parsed or
 combined to reconstruct executable intent. This keeps display compatibility
 separate from safety-critical permission.
@@ -250,14 +251,19 @@ from current configuration is also non-executable. This contract migration was
 approved by the owner on 2026-09-04; see
 `docs/impact-analyses/2026-09-04-architecture-followup.md`.
 
+During the approved shadow release the established `BatteryPlan` publication
+remains authoritative and the separated result is evaluation-only. This
+temporary compatibility ends at cutover and is not part of the target contract.
+
 ### Optimization to plan compiler
 
-The plan compiler combines `BatteryPlan` with measured `SlotProgress`. It may
+At cutover the plan compiler combines `OptimizationDecision` with measured
+`SlotProgress`. It may
 reduce remaining required charge or discharge budget based on actual progress,
 but it does not re-optimize prices, infer charge sources or move planned energy
 between slots. It publishes the optimizer's explicit required total charge only
 when that slot also contains an explicit grid commitment. Any economic deferral
-must already be represented in `BatteryPlan` and its SoC trajectory.
+must already be represented in the decision.
 
 The active slot is a latched economic commitment. A discharge commitment taken
 from a plan generated before the slot starts is explicitly `provisional`. The

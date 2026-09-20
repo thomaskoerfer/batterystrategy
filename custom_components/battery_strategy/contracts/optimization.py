@@ -247,7 +247,74 @@ class BatteryPlan:
         require_slots_sorted_unique(slot_keys)
 
 
+@dataclass(frozen=True, slots=True)
+class OptimizationDecision:
+    """Executable commercial permission for exactly the current slot."""
+
+    decision_id: str
+    problem_id: str
+    generated_at_ms: int
+    optimizer_version: str
+    constraints: BatteryConstraints
+    slot: BatteryPlanSlot
+
+    def __post_init__(self) -> None:
+        if not self.decision_id or not self.problem_id or not self.optimizer_version:
+            raise ValueError("decision identity and optimizer_version are required")
+        if self.generated_at_ms < 0:
+            raise ValueError("generated_at_ms must be non-negative")
+
+
+@dataclass(frozen=True, slots=True)
+class PlanProjection:
+    """Non-authoritative future trajectory for presentation and evaluation."""
+
+    projection_id: str
+    problem_id: str
+    generated_at_ms: int
+    optimizer_version: str
+    constraints: BatteryConstraints
+    slots: tuple[BatteryPlanSlot, ...]
+    baseline_cost_eur: float
+    optimized_cost_eur: float
+
+    def __post_init__(self) -> None:
+        if not self.projection_id or not self.problem_id or not self.optimizer_version:
+            raise ValueError("projection identity and optimizer_version are required")
+        if self.generated_at_ms < 0:
+            raise ValueError("generated_at_ms must be non-negative")
+        require_finite("baseline_cost_eur", self.baseline_cost_eur)
+        require_finite("optimized_cost_eur", self.optimized_cost_eur)
+        require_slots_sorted_unique(tuple(item.slot for item in self.slots))
+
+
+@dataclass(frozen=True, slots=True)
+class OptimizationResult:
+    """Separated executable decision and informational horizon projection."""
+
+    decision: OptimizationDecision | None
+    projection: PlanProjection
+
+    def __post_init__(self) -> None:
+        if self.decision is None:
+            if self.projection.slots:
+                raise ValueError("non-empty projection requires a current decision")
+            return
+        if not self.projection.slots:
+            raise ValueError("decision requires a non-empty projection")
+        if self.decision.problem_id != self.projection.problem_id:
+            raise ValueError("decision and projection must share a problem")
+        if self.decision.slot.slot != self.projection.slots[0].slot:
+            raise ValueError("decision must describe the first projection slot")
+
+
 class Optimizer(Protocol):
     """Side-effect-free economic optimizer boundary."""
 
     def optimize(self, problem: OptimizationProblem) -> BatteryPlan: ...
+
+
+class ScenarioOptimizer(Protocol):
+    """Unified optimizer boundary for scenario and probability-one P50 input."""
+
+    def optimize(self, problem: OptimizationProblem) -> OptimizationResult: ...

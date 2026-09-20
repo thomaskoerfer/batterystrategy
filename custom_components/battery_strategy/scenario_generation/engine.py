@@ -18,6 +18,7 @@ from ..contracts import (
     ScenarioBuildResult,
     ScenarioBuildStatus,
     ScenarioBundle,
+    ScenarioCandidateDiagnostic,
     ScenarioPath,
     ScenarioSlot,
 )
@@ -76,6 +77,7 @@ class ScenarioBuilder:
 
         fallback_slots = 0
         ev_probability_max_error = 0.0
+        candidate_diagnostics: tuple[ScenarioCandidateDiagnostic, ...] = ()
 
         def diagnostics(accepted, candidates, repaired, excluded):
             return ScenarioBuildDiagnostics(
@@ -93,6 +95,7 @@ class ScenarioBuilder:
                 request.settings.seed,
                 fingerprint,
                 f"{MODEL_VERSION}+{REPAIR_POLICY_VERSION}",
+                candidate_diagnostics,
             )
 
         if not input_valid:
@@ -143,6 +146,7 @@ class ScenarioBuilder:
                 candidates.append(candidate)
         eligible = overlapping_paths >= request.settings.minimum_paths
         candidates.sort(key=lambda item: (item.component_distance, item.weeks_ago))
+        all_candidates = tuple(candidates)
         candidates = candidates[: request.settings.maximum_paths]
         if len(candidates) < request.settings.minimum_paths:
             reasons["too_few_paths"] += 1
@@ -195,6 +199,27 @@ class ScenarioBuilder:
         ]
         total_weight = sum(raw_weights)
         probabilities = tuple(weight / total_weight for weight in raw_weights)
+        selected_weeks = {item.weeks_ago for item in candidates}
+        probability_by_week = {
+            item.weeks_ago: probabilities[index]
+            for index, item in enumerate(candidates)
+        }
+        candidate_diagnostics = tuple(
+            ScenarioCandidateDiagnostic(
+                item.weeks_ago,
+                item.component_distance,
+                item.repaired_slots,
+                item.excluded_components,
+                max(
+                    1e-9,
+                    1.0 - item.repaired_slots / max(1, len(item.slots)),
+                )
+                / (1.0 + item.component_distance),
+                probability_by_week.get(item.weeks_ago, 0.0),
+                item.weeks_ago in selected_weeks,
+            )
+            for item in all_candidates
+        )
         ev_active_paths = []
         for slot_index, ev_slot in enumerate(forecast.ev.slots):
             historical_values = tuple(

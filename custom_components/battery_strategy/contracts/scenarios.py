@@ -145,6 +145,19 @@ class ScenarioBuildStatus(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
+class ScenarioCandidateDiagnostic:
+    """Compact, non-authoritative evidence for offline scenario evaluation."""
+
+    weeks_ago: int
+    component_distance: float
+    repaired_slots: int
+    excluded_component_values: int
+    raw_weight: float
+    probability: float
+    selected: bool
+
+
+@dataclass(frozen=True, slots=True)
 class ScenarioBuildDiagnostics:
     eligible: bool
     candidate_paths: int
@@ -160,6 +173,7 @@ class ScenarioBuildDiagnostics:
     seed: int
     input_fingerprint: str
     model_version: str
+    candidates: tuple[ScenarioCandidateDiagnostic, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
