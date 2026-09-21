@@ -15,6 +15,7 @@ from .contracts import (
 
 SLOT_H = 0.25
 ENERGY_STEP_KWH = 0.025
+ENERGY_EPSILON_KWH = 1e-9
 STOCHASTIC_RECOURSE_STEP_KWH = 0.1
 STOCHASTIC_MAX_RECOURSE_STATES = 600
 ECONOMIC_COST_TIE_EUR = 1e-9
@@ -137,7 +138,11 @@ class DynamicProgrammingOptimizer:
                 mode = PlanMode.CHARGE
             elif action.discharge_kwh > 1e-9:
                 mode = PlanMode.DISCHARGE
-            required = action.charge_kwh if action.grid_charge_kwh > 1e-9 else 0.0
+            required = (
+                action.charge_kwh
+                if action.grid_charge_kwh > ENERGY_EPSILON_KWH
+                else 0.0
+            )
             plan_slots.append(
                 BatteryPlanSlot(
                     slot=load_slots[index].slot,
@@ -521,7 +526,12 @@ class DynamicProgrammingOptimizer:
         budgets = []
 
         for index, action in enumerate(actions):
-            if action.charge_kwh > 1e-6 or not policy.discharge_allowed:
+            # Forecast PV charging is optional live behavior and may coexist with a
+            # discharge budget for unexpected house load. Grid charging may not.
+            if (
+                action.grid_charge_kwh > ENERGY_EPSILON_KWH
+                or not policy.discharge_allowed
+            ):
                 budgets.append(0.0)
                 continue
             budgets.append(

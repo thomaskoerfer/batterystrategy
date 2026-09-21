@@ -37,6 +37,7 @@ from custom_components.battery_strategy.contracts import (
 from custom_components.battery_strategy.economic_optimizer import (
     DynamicProgrammingOptimizer,
     StochasticDynamicProgrammingOptimizer,
+    _Action,
     _energy_lattice,
     _scenario_flows,
 )
@@ -340,8 +341,9 @@ def test_stochastic_common_budget_survives_zero_p50_load():
     assert plan.slots[0].discharge_budget_kwh > 0.0
 
 
-def _with_probability_one_scenario(candidate, loads):
+def _with_probability_one_scenario(candidate, loads, pv=None):
     slots = tuple(item.slot for item in candidate.forecast.load.slots)
+    pv = tuple(pv or (0.0,) * len(slots))
     return replace(
         candidate,
         scenarios=ScenarioBundle(
@@ -355,8 +357,8 @@ def _with_probability_one_scenario(candidate, loads):
                     "only",
                     1.0,
                     tuple(
-                        ScenarioSlot(slot, load, 0.0, 0.0)
-                        for slot, load in zip(slots, loads, strict=True)
+                        ScenarioSlot(slot, load, generation, 0.0)
+                        for slot, load, generation in zip(slots, loads, pv, strict=True)
                     ),
                 ),
             ),
@@ -383,6 +385,51 @@ def test_commercial_budget_is_not_capped_by_expected_current_load(current_load):
     assert stochastic.slots[0].discharge_budget_kwh == pytest.approx(0.6)
     assert deterministic.slots[0].planned_discharge_kwh <= current_load
     assert stochastic.slots[0].planned_discharge_kwh == pytest.approx(current_load)
+
+
+def test_forecast_pv_charge_keeps_budget_for_unexpected_house_load():
+    loads = (0.0, 0.6)
+    pv = (0.5, 0.0)
+    candidate = problem(
+        [50.0, 40.0],
+        loads=loads,
+        pv=pv,
+        soc=20.0,
+        rte=0.8,
+    )
+
+    deterministic = DynamicProgrammingOptimizer().optimize(candidate)
+    stochastic = StochasticDynamicProgrammingOptimizer().optimize(
+        _with_probability_one_scenario(candidate, loads, pv)
+    )
+
+    assert deterministic.slots[0].planned_pv_charge_kwh > 0.0
+    assert deterministic.slots[0].planned_grid_charge_kwh == 0.0
+    assert deterministic.slots[0].discharge_budget_kwh > 0.0
+    assert deterministic.slots[0].discharge_budget_kwh == pytest.approx(
+        stochastic.slots[0].discharge_budget_kwh
+    )
+
+
+def test_tiny_grid_charge_residue_excludes_discharge_budget():
+    candidate = problem([50.0], loads=[0.0], pv=[0.5], soc=20.0, rte=0.8)
+    action = _Action(
+        charge_kwh=0.5,
+        pv_charge_kwh=0.5 - 5e-7,
+        grid_charge_kwh=5e-7,
+        soc_start_kwh=1.2,
+    )
+
+    budgets = DynamicProgrammingOptimizer()._discharge_budgets(
+        candidate,
+        (50.0,),
+        (0.0,),
+        (0.0,),
+        (0.5,),
+        (action,),
+    )
+
+    assert budgets == [0.0]
 
 
 def test_commercial_budget_reserves_inventory_without_economic_recharge():
