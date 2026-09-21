@@ -76,6 +76,13 @@ Discharge budget is permission for the plan compiler and live controller, not a
 power target. Planned discharge must fit within it. The optimizer never plans
 battery export when export has no compensating value.
 
+The budget is a commercial envelope calculated independently of expected
+current-slot load. Candidate permission compares avoided current import with
+the continuation value of lower inventory. Later peaks, partial or complete
+recharge, charge power, efficiency, PV spill and terminal inventory therefore
+share one valuation. Unused permission has no throughput cost; expected
+discharge remains load-dependent and cannot exceed the envelope.
+
 ## Current implementation
 
 The extracted implementation uses stochastic dynamic programming with a

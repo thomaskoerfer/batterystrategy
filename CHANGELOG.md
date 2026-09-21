@@ -2,6 +2,18 @@
 
 All notable changes to Battery Strategy are documented here.
 
+## [Unreleased]
+
+### Changed
+
+- Replaced load-shaped discharge permission with one continuation-value
+  commercial envelope shared by the deterministic fallback and stochastic
+  cutover optimizer.
+- Kept expected execution load-dependent while allowing safe permission for
+  unexpected eligible household demand.
+- Removed the fallback optimizer's parallel replacement, reservation and
+  PV-recovery budget heuristics without changing its action plan.
+
 ## [0.2.0-rc.29] - 2026-09-20
 
 ### Changed

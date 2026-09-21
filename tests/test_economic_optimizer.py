@@ -340,6 +340,98 @@ def test_stochastic_common_budget_survives_zero_p50_load():
     assert plan.slots[0].discharge_budget_kwh > 0.0
 
 
+def _with_probability_one_scenario(candidate, loads):
+    slots = tuple(item.slot for item in candidate.forecast.load.slots)
+    return replace(
+        candidate,
+        scenarios=ScenarioBundle(
+            "p50-explicit",
+            "test",
+            candidate.as_of_ms,
+            candidate.as_of_ms,
+            "test-v1",
+            (
+                ScenarioPath(
+                    "only",
+                    1.0,
+                    tuple(
+                        ScenarioSlot(slot, load, 0.0, 0.0)
+                        for slot, load in zip(slots, loads, strict=True)
+                    ),
+                ),
+            ),
+        ),
+    )
+
+
+@pytest.mark.parametrize("current_load", (0.1, 0.5))
+def test_commercial_budget_is_not_capped_by_expected_current_load(current_load):
+    loads = (current_load, 0.05, 0.0, 0.0, 0.6, 0.6)
+    candidate = problem(
+        [41.34, 48.79, 15.0, 15.0, 45.0, 45.0],
+        loads=loads,
+        soc=23.0,
+        rte=0.8,
+    )
+
+    deterministic = DynamicProgrammingOptimizer().optimize(candidate)
+    stochastic = StochasticDynamicProgrammingOptimizer().optimize(
+        _with_probability_one_scenario(candidate, loads)
+    )
+
+    assert deterministic.slots[0].discharge_budget_kwh == pytest.approx(0.6)
+    assert stochastic.slots[0].discharge_budget_kwh == pytest.approx(0.6)
+    assert deterministic.slots[0].planned_discharge_kwh <= current_load
+    assert stochastic.slots[0].planned_discharge_kwh == pytest.approx(current_load)
+
+
+def test_commercial_budget_reserves_inventory_without_economic_recharge():
+    loads = (0.1, 0.6)
+    candidate = problem([41.34, 70.0], loads=loads, soc=23.0, rte=0.8)
+
+    deterministic = DynamicProgrammingOptimizer().optimize(candidate)
+    stochastic = StochasticDynamicProgrammingOptimizer().optimize(
+        _with_probability_one_scenario(candidate, loads)
+    )
+
+    assert deterministic.slots[0].discharge_budget_kwh < 0.6
+    assert stochastic.slots[0].discharge_budget_kwh < 0.6
+
+
+def test_commercial_budget_releases_only_rechargeable_inventory():
+    no_loads = (0.1, 0.6)
+    recharge_loads = (0.1, 0.0, 0.6)
+    without_recharge = problem([41.34, 70.0], loads=no_loads, soc=23.0, rte=0.8)
+    with_recharge = problem(
+        [41.34, 15.0, 70.0], loads=recharge_loads, soc=23.0, rte=0.8
+    )
+    partial_recharge = replace(
+        with_recharge,
+        constraints=replace(with_recharge.constraints, max_charge_power_w=800.0),
+    )
+
+    cases = (
+        (
+            DynamicProgrammingOptimizer(),
+            without_recharge,
+            partial_recharge,
+            with_recharge,
+        ),
+        (
+            StochasticDynamicProgrammingOptimizer(),
+            _with_probability_one_scenario(without_recharge, no_loads),
+            _with_probability_one_scenario(partial_recharge, recharge_loads),
+            _with_probability_one_scenario(with_recharge, recharge_loads),
+        ),
+    )
+    for optimizer, no_recharge, partial, complete in cases:
+        no_budget = optimizer.optimize(no_recharge).slots[0].discharge_budget_kwh
+        partial_budget = optimizer.optimize(partial).slots[0].discharge_budget_kwh
+        complete_budget = optimizer.optimize(complete).slots[0].discharge_budget_kwh
+        assert no_budget < partial_budget < complete_budget
+        assert complete_budget == pytest.approx(0.6)
+
+
 def test_stochastic_energy_lattice_never_crosses_physical_endpoint():
     lattice = _energy_lattice(0.0, 0.55, 0.1)
 
@@ -724,6 +816,7 @@ def test_terminal_value_preserves_inventory_at_horizon():
     )
     assert without_terminal.slots[0].planned_discharge_kwh > 0.0
     assert with_terminal.slots[0].planned_discharge_kwh == 0.0
+    assert with_terminal.slots[0].discharge_budget_kwh == 0.0
 
 
 def test_pv_recovery_budget_requires_a_real_headroom_shortage():

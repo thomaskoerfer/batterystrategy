@@ -18,8 +18,6 @@ ENERGY_STEP_KWH = 0.025
 STOCHASTIC_RECOURSE_STEP_KWH = 0.1
 STOCHASTIC_MAX_RECOURSE_STATES = 600
 ECONOMIC_COST_TIE_EUR = 1e-9
-PV_RECOVERY_LOOKAHEAD_H = 18.0
-SCARCE_VALUE_TIE_CT = 0.5
 OPTIMIZER_VERSION = "economic-dp-v2"
 STOCHASTIC_OPTIMIZER_VERSION = "stochastic-two-stage-dp-v1"
 
@@ -36,6 +34,22 @@ class _Action:
     grid_charge_kwh: float = 0.0
     grid_import_kwh: float = 0.0
     grid_export_kwh: float = 0.0
+
+
+@dataclass(frozen=True, slots=True)
+class _Objective:
+    """Lexicographic economic objective used throughout scenario recourse."""
+
+    cost_eur: float = 0.0
+    pv_export_kwh: float = 0.0
+    throughput_kwh: float = 0.0
+
+    def plus(self, other: _Objective, weight: float = 1.0) -> _Objective:
+        return _Objective(
+            self.cost_eur + weight * other.cost_eur,
+            self.pv_export_kwh + weight * other.pv_export_kwh,
+            self.throughput_kwh + weight * other.throughput_kwh,
+        )
 
 
 class DynamicProgrammingOptimizer:
@@ -491,79 +505,36 @@ class DynamicProgrammingOptimizer:
         min_energy = constraints.capacity_kwh * constraints.min_soc_pct / 100.0
         max_energy = constraints.capacity_kwh * constraints.max_soc_pct / 100.0
         max_slot = constraints.max_discharge_power_w / 1000.0 * SLOT_H
-        lookahead = max(1, round(PV_RECOVERY_LOOKAHEAD_H / SLOT_H))
+        step = min(ENERGY_STEP_KWH, max_energy - min_energy)
+        energies = _energy_lattice(min_energy, max_energy, step)
+        continuation = _backward_recourse_tables(
+            problem,
+            prices,
+            export_prices,
+            net_load,
+            surplus,
+            surplus,
+            net_load,
+            energies,
+            respect_legacy_guards=True,
+        )
         budgets = []
 
-        def replacement_is_economic(current_price, replacement_price):
-            return current_price + 1e-9 >= (
-                replacement_price / constraints.round_trip_efficiency
-                + policy.min_margin_ct_per_kwh
-            )
-
         for index, action in enumerate(actions):
-            if action.grid_charge_kwh > 1e-6 or not policy.discharge_allowed:
+            if action.charge_kwh > 1e-6 or not policy.discharge_allowed:
                 budgets.append(0.0)
                 continue
-            available = max(0.0, (action.soc_start_kwh - min_energy) * eta_d)
-            maximum = min(max_slot, available)
-            if maximum <= 1e-6 or prices[index] < (
-                export_prices[index] + policy.min_margin_ct_per_kwh
-            ):
-                budgets.append(max(0.0, action.discharge_kwh))
-                continue
-
-            end = min(len(actions), index + 1 + lookahead)
-            for later in range(index + 1, end):
-                if prices[later] > prices[index] + SCARCE_VALUE_TIE_CT:
-                    end = later
-                    break
-            future_surplus = sum(surplus[index + 1 : end])
-            recoverable = future_surplus * eta_c * policy.pv_recovery_confidence
-            headroom = max(0.0, max_energy - action.soc_end_kwh)
-            safe_recovery = (
-                max(
-                    0.0,
-                    recoverable - headroom - policy.pv_recovery_reserve_kwh,
-                )
-                * eta_d
-            )
-            pv_budget = min(
-                maximum,
-                max(
-                    0.0,
-                    safe_recovery
-                    - action.charge_kwh * constraints.round_trip_efficiency,
-                ),
-            )
-
-            replacement = 0.0
-            reserved = 0.0
-            for later in range(index + 1, len(actions)):
-                pv_input = min(actions[later].charge_kwh, surplus[later])
-                grid_input = max(0.0, actions[later].charge_kwh - pv_input)
-                if replacement_is_economic(prices[index], prices[later]):
-                    replacement += grid_input * constraints.round_trip_efficiency
-                if replacement_is_economic(prices[index], export_prices[later]):
-                    replacement += (
-                        pv_input
-                        * policy.pv_recovery_confidence
-                        * constraints.round_trip_efficiency
-                    )
-                if prices[later] <= prices[index] + 1e-9:
-                    continue
-                future_need = min(max_slot, net_load[later])
-                used = min(replacement, future_need)
-                replacement -= used
-                reserved += future_need - used
-
-            scarce = 0.0
-            floor = policy.discharge_floor_ct_per_kwh or 0.0
-            if action.charge_kwh <= 1e-6 and prices[index] >= floor:
-                scarce = max(0.0, available + safe_recovery - reserved)
             budgets.append(
-                min(
-                    maximum,
-                    max(action.discharge_kwh, pv_budget, min(maximum, scarce)),
+                _commercial_discharge_envelope(
+                    problem,
+                    current_price_ct=prices[index],
+                    start_energy_kwh=action.soc_start_kwh,
+                    minimum_energy_kwh=min_energy,
+                    maximum_discharge_kwh=max_slot,
+                    eta_discharge=eta_d,
+                    energies=energies,
+                    continuation=((1.0, continuation[index + 1]),),
+                    respect_discharge_floor=True,
                 )
             )
         return budgets
@@ -790,7 +761,8 @@ class StochasticDynamicProgrammingOptimizer:
         policies = tuple((charge, 0.0) for charge in charge_values) + tuple(
             (0.0, budget) for budget in budget_values[1:]
         )
-        if required_first_policy is not None:
+        policy_is_forced = required_first_policy is not None
+        if policy_is_forced:
             required_charge, discharge_budget = required_first_policy
             if (
                 required_charge < 0.0
@@ -802,69 +774,73 @@ class StochasticDynamicProgrammingOptimizer:
                 raise ValueError("required first policy is outside executable bounds")
             policies = ((required_charge, discharge_budget),)
         for required_charge, discharge_budget in policies:
-            expected = 0.0
-            feasible = True
-            grid_charge = 0.0
-            for (probability, flows), (_, future_values) in zip(
-                scenario_flows, recourse, strict=True
-            ):
-                automatic_pv = (
-                    flows[1][0] if problem.policy.pv_charging_allowed else 0.0
-                )
-                charge = min(max_charge, max(required_charge, automatic_pv))
-                discharge = (
-                    0.0
-                    if charge > 1e-9
-                    else min(discharge_budget, flows[3][0], max_discharge)
-                )
-                next_energy = _clamp(
-                    quantized_start + charge * eta - discharge / eta,
-                    minimum,
-                    maximum,
-                )
-                actual_charge = (
-                    max(0.0, (next_energy - quantized_start) / eta)
-                    if charge > 0.0
-                    else 0.0
-                )
-                actual_discharge = (
-                    max(0.0, (quantized_start - next_energy) * eta)
-                    if discharge > 0.0
-                    else 0.0
-                )
-                step_cost = _transition_cost(
-                    problem,
-                    0,
-                    actual_charge,
-                    actual_discharge,
-                    prices,
-                    export_prices,
-                    flows[0],
-                    flows[1],
-                    flows[2],
-                    flows[3],
-                )
-                if step_cost is None:
-                    feasible = False
-                    break
-                expected += probability * (
-                    step_cost
-                    + _interpolate_energy_value(energies, future_values, next_energy)
-                )
-                grid_charge += probability * max(0.0, actual_charge - flows[2][0])
-            if not feasible:
-                continue
-            candidate = (
-                expected,
-                grid_charge,
+            evaluation = _evaluate_first_policy(
+                problem,
+                prices,
+                export_prices,
+                scenario_flows,
+                recourse,
+                energies,
+                quantized_start,
+                minimum,
+                maximum,
+                max_charge,
+                max_discharge,
+                eta,
                 required_charge,
                 discharge_budget,
             )
-            if best is None or candidate < best:
+            if evaluation is None:
+                continue
+            expected, grid_charge = evaluation
+            candidate = (expected, required_charge, discharge_budget, grid_charge)
+            if (
+                best is None
+                or _objective_is_better(candidate[0], best[0])
+                or (
+                    not _objective_is_better(best[0], candidate[0])
+                    and (candidate[1], candidate[2]) < (best[1], best[2])
+                )
+            ):
                 best = candidate
         if best is None:
             raise ValueError("stochastic optimizer has no feasible first transition")
-        return best[2], best[3], best[0], best[1]
+        required_charge = best[1]
+        discharge_budget = best[2] if policy_is_forced else 0.0
+        if not policy_is_forced and required_charge <= 1e-9:
+            discharge_budget = _commercial_discharge_envelope(
+                problem,
+                current_price_ct=prices[0],
+                start_energy_kwh=quantized_start,
+                minimum_energy_kwh=minimum,
+                maximum_discharge_kwh=max_discharge,
+                eta_discharge=eta,
+                energies=energies,
+                continuation=tuple(
+                    (probability, future_values)
+                    for probability, future_values in recourse
+                ),
+            )
+        selected = _evaluate_first_policy(
+            problem,
+            prices,
+            export_prices,
+            scenario_flows,
+            recourse,
+            energies,
+            quantized_start,
+            minimum,
+            maximum,
+            max_charge,
+            max_discharge,
+            eta,
+            required_charge,
+            discharge_budget,
+        )
+        if selected is None:
+            raise ValueError("commercial discharge envelope is not executable")
+        expected, grid_charge = selected
+        return required_charge, discharge_budget, expected.cost_eur, grid_charge
 
 
 def _scenario_flows(slots, policy):
@@ -913,7 +889,34 @@ def _backward_recourse_values(
     energies,
     *,
     start_slot,
+    respect_legacy_guards=False,
 ):
+    return _backward_recourse_tables(
+        problem,
+        prices,
+        export_prices,
+        demand,
+        charge_surplus,
+        physical_surplus,
+        discharge_limit,
+        energies,
+        respect_legacy_guards=respect_legacy_guards,
+    )[start_slot]
+
+
+def _backward_recourse_tables(
+    problem,
+    prices,
+    export_prices,
+    demand,
+    charge_surplus,
+    physical_surplus,
+    discharge_limit,
+    energies,
+    *,
+    respect_legacy_guards=False,
+):
+    """Return continuation objectives for every slot boundary in one pass."""
     constraints = problem.constraints
     eta = math.sqrt(constraints.round_trip_efficiency)
     minimum = energies[0]
@@ -922,10 +925,16 @@ def _backward_recourse_values(
     max_discharge = constraints.max_discharge_power_w / 1000.0 * SLOT_H
 
     values = tuple(
-        -problem.policy.terminal_value_ct_per_kwh * max(0.0, energy - minimum) / 100.0
+        _Objective(
+            -problem.policy.terminal_value_ct_per_kwh
+            * max(0.0, energy - minimum)
+            / 100.0
+        )
         for energy in energies
     )
-    for slot_index in range(len(prices) - 1, start_slot - 1, -1):
+    tables = [()] * (len(prices) + 1)
+    tables[len(prices)] = values
+    for slot_index in range(len(prices) - 1, -1, -1):
         next_values = values
         current = []
         for energy in energies:
@@ -934,14 +943,14 @@ def _backward_recourse_values(
                 energy - min(max_discharge, discharge_limit[slot_index]) / eta,
             )
             high = min(maximum, energy + max_charge * eta)
-            best = float("inf")
+            best = None
             lower_index = bisect_left(energies, low - 1e-9)
             upper_index = bisect_right(energies, high + 1e-9) - 1
             for next_index in range(lower_index, upper_index + 1):
                 delta = energies[next_index] - energy
                 charge = max(0.0, delta / eta)
                 discharge = max(0.0, -delta * eta)
-                cost = _transition_cost(
+                objective = _transition_objective(
                     problem,
                     slot_index,
                     charge,
@@ -952,12 +961,164 @@ def _backward_recourse_values(
                     charge_surplus,
                     physical_surplus,
                     discharge_limit,
+                    respect_legacy_guards=respect_legacy_guards,
                 )
-                if cost is not None:
-                    best = min(best, cost + next_values[next_index])
-            current.append(best)
+                if objective is not None:
+                    candidate = objective.plus(next_values[next_index])
+                    if best is None or _objective_is_better(candidate, best):
+                        best = candidate
+            current.append(best or _Objective(float("inf")))
         values = tuple(current)
-    return values
+        tables[slot_index] = values
+    return tuple(tables)
+
+
+def _commercial_discharge_envelope(
+    problem,
+    *,
+    current_price_ct,
+    start_energy_kwh,
+    minimum_energy_kwh,
+    maximum_discharge_kwh,
+    eta_discharge,
+    energies,
+    continuation,
+    planned_discharge_kwh=0.0,
+    respect_discharge_floor=False,
+):
+    """Return the largest contiguous discharge permission with no cost regret.
+
+    Permission is valued as hypothetical eligible household demand. The live
+    layer still decides whether that demand exists, so forecast load must not
+    cap this envelope or charge unused permission as battery throughput.
+    """
+    policy = problem.policy
+    if not policy.discharge_allowed:
+        return 0.0
+    below_legacy_floor = bool(
+        respect_discharge_floor
+        and policy.discharge_floor_ct_per_kwh is not None
+        and current_price_ct < policy.discharge_floor_ct_per_kwh - 1e-9
+    )
+
+    available = max(0.0, (start_energy_kwh - minimum_energy_kwh) * eta_discharge)
+    maximum = min(maximum_discharge_kwh, available)
+    planned = min(maximum, max(0.0, planned_discharge_kwh))
+    if maximum <= planned + 1e-9:
+        return planned
+
+    baseline_energy = _clamp(
+        start_energy_kwh - planned / eta_discharge,
+        minimum_energy_kwh,
+        energies[-1],
+    )
+    baseline_future = _Objective()
+    for probability, values in continuation:
+        baseline_future = baseline_future.plus(
+            _interpolate_energy_value(energies, values, baseline_energy), probability
+        )
+    candidates = sorted(
+        {
+            planned,
+            maximum,
+            *(
+                value
+                for value in _action_lattice(maximum, ENERGY_STEP_KWH * eta_discharge)
+                if value > planned + 1e-9
+            ),
+        }
+    )
+    safe = planned
+    for candidate in candidates:
+        if candidate <= planned + 1e-9:
+            continue
+        next_energy = _clamp(
+            start_energy_kwh - candidate / eta_discharge,
+            minimum_energy_kwh,
+            energies[-1],
+        )
+        future = _Objective()
+        for probability, values in continuation:
+            future = future.plus(
+                _interpolate_energy_value(energies, values, next_energy), probability
+            )
+        if (
+            below_legacy_floor
+            and future.pv_export_kwh >= baseline_future.pv_export_kwh - 1e-9
+        ):
+            break
+        incremental = candidate - planned
+        regret = (
+            future.cost_eur
+            - baseline_future.cost_eur
+            - incremental * (current_price_ct - policy.min_margin_ct_per_kwh) / 100.0
+        )
+        if regret > ECONOMIC_COST_TIE_EUR:
+            break
+        safe = candidate
+    return safe
+
+
+def _evaluate_first_policy(
+    problem,
+    prices,
+    export_prices,
+    scenario_flows,
+    recourse,
+    energies,
+    start_energy,
+    minimum,
+    maximum,
+    max_charge,
+    max_discharge,
+    eta,
+    required_charge,
+    discharge_budget,
+):
+    """Evaluate expected execution without assigning a cost to unused permission."""
+    expected = _Objective()
+    grid_charge = 0.0
+    for (probability, flows), (_, future_values) in zip(
+        scenario_flows, recourse, strict=True
+    ):
+        automatic_pv = flows[1][0] if problem.policy.pv_charging_allowed else 0.0
+        charge = min(max_charge, max(required_charge, automatic_pv))
+        discharge = (
+            0.0 if charge > 1e-9 else min(discharge_budget, flows[3][0], max_discharge)
+        )
+        next_energy = _clamp(
+            start_energy + charge * eta - discharge / eta,
+            minimum,
+            maximum,
+        )
+        actual_charge = (
+            max(0.0, (next_energy - start_energy) / eta) if charge > 0.0 else 0.0
+        )
+        actual_discharge = (
+            max(0.0, (start_energy - next_energy) * eta) if discharge > 0.0 else 0.0
+        )
+        step_objective = _transition_objective(
+            problem,
+            0,
+            actual_charge,
+            actual_discharge,
+            prices,
+            export_prices,
+            flows[0],
+            flows[1],
+            flows[2],
+            flows[3],
+        )
+        if step_objective is None:
+            return None
+        expected = expected.plus(
+            step_objective.plus(
+                _interpolate_energy_value(energies, future_values, next_energy)
+            ),
+            probability,
+        )
+        grid_charge += probability * max(0.0, actual_charge - flows[2][0])
+    return expected, grid_charge
 
 
 def _transition_cost(
@@ -971,6 +1132,35 @@ def _transition_cost(
     charge_surplus,
     physical_surplus,
     discharge_limit,
+):
+    objective = _transition_objective(
+        problem,
+        slot_index,
+        charge,
+        discharge,
+        prices,
+        export_prices,
+        demand,
+        charge_surplus,
+        physical_surplus,
+        discharge_limit,
+    )
+    return objective.cost_eur if objective is not None else None
+
+
+def _transition_objective(
+    problem,
+    slot_index,
+    charge,
+    discharge,
+    prices,
+    export_prices,
+    demand,
+    charge_surplus,
+    physical_surplus,
+    discharge_limit,
+    *,
+    respect_legacy_guards=False,
 ):
     policy = problem.policy
     constraints = problem.constraints
@@ -989,7 +1179,8 @@ def _transition_cost(
         if not policy.discharge_allowed:
             return None
         if (
-            policy.discharge_floor_ct_per_kwh is not None
+            respect_legacy_guards
+            and policy.discharge_floor_ct_per_kwh is not None
             and prices[slot_index] < policy.discharge_floor_ct_per_kwh - 1e-9
         ):
             return None
@@ -1006,7 +1197,7 @@ def _transition_cost(
     # PV diverted from EV is permitted when battery priority is configured, but
     # it creates equal grid import and is therefore priced as grid energy.
     grid_charge = max(0.0, charge - physical_surplus[slot_index])
-    if grid_charge > 1e-9:
+    if respect_legacy_guards and grid_charge > 1e-9:
         future_peak = max(prices[slot_index + 1 :], default=0.0)
         if future_peak * constraints.round_trip_efficiency < (
             prices[slot_index] + policy.min_margin_ct_per_kwh
@@ -1014,11 +1205,29 @@ def _transition_cost(
             return None
     imported = max(0.0, demand[slot_index] - discharge) + grid_charge
     exported = max(0.0, physical_surplus[slot_index] - charge)
-    return (
-        imported * prices[slot_index]
-        - exported * export_prices[slot_index]
-        + discharge * policy.min_margin_ct_per_kwh
-    ) / 100.0
+    return _Objective(
+        (
+            imported * prices[slot_index]
+            - exported * export_prices[slot_index]
+            + discharge * policy.min_margin_ct_per_kwh
+        )
+        / 100.0,
+        exported,
+        charge + discharge,
+    )
+
+
+def _objective_is_better(candidate: _Objective, current: _Objective) -> bool:
+    cost_delta = candidate.cost_eur - current.cost_eur
+    if cost_delta < -ECONOMIC_COST_TIE_EUR:
+        return True
+    if abs(cost_delta) > ECONOMIC_COST_TIE_EUR:
+        return False
+    if candidate.pv_export_kwh < current.pv_export_kwh - 1e-9:
+        return True
+    if abs(candidate.pv_export_kwh - current.pv_export_kwh) > 1e-9:
+        return False
+    return candidate.throughput_kwh < current.throughput_kwh - 1e-9
 
 
 def _path_is_better(
@@ -1085,6 +1294,19 @@ def _interpolate_energy_value(energies, values, energy):
         return values[-1]
     low_energy, high_energy = energies[position - 1], energies[position]
     low_value, high_value = values[position - 1], values[position]
+    if isinstance(low_value, _Objective):
+        if not math.isfinite(low_value.cost_eur):
+            return high_value
+        if not math.isfinite(high_value.cost_eur):
+            return low_value
+        fraction = (energy - low_energy) / (high_energy - low_energy)
+        return _Objective(
+            low_value.cost_eur * (1.0 - fraction) + high_value.cost_eur * fraction,
+            low_value.pv_export_kwh * (1.0 - fraction)
+            + high_value.pv_export_kwh * fraction,
+            low_value.throughput_kwh * (1.0 - fraction)
+            + high_value.throughput_kwh * fraction,
+        )
     if not math.isfinite(low_value) or not math.isfinite(high_value):
         return min(low_value, high_value)
     fraction = (energy - low_energy) / (high_energy - low_energy)
