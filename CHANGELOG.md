@@ -2,6 +2,19 @@
 
 All notable changes to Battery Strategy are documented here.
 
+## [0.2.0-rc.31] - 2026-09-21
+
+### Changed
+
+- Replaced load-shaped discharge permission with one continuation-value
+  commercial envelope shared by the established and unified optimizers.
+- Kept expected execution load-dependent while allowing safe permission for
+  unexpected eligible household demand.
+- Removed the established optimizer's parallel replacement, reservation and
+  PV-recovery budget heuristics without changing its action plan.
+- Reused backward recourse tables across the P50 projection, reducing unified
+  optimizer runtime while preserving scenario and fallback semantics.
+
 ## [0.2.0-rc.30] - 2026-09-20
 
 ### Added

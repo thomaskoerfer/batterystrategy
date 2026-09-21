@@ -62,6 +62,15 @@ charge and a commercial discharge budget. Budget is energy permission, not a
 power target. The live controller still limits discharge to eligible measured
 load and never turns a projection into permission.
 
+The discharge budget is a commercial envelope, calculated independently of
+the expected current-slot load. For every candidate permission, optimization
+compares avoided current import with the continuation value of the resulting
+lower inventory. The envelope ends at the first candidate with economic
+regret, so later peaks, partial or complete recharge, charge power, efficiency,
+PV spill and terminal inventory are valued by one continuation model. Unused
+permission has no throughput cost. Expected discharge remains load-dependent
+and cannot exceed the envelope.
+
 Projection slots contain expected charge/discharge sources and SoC solely for
 presentation and evaluation.
 
