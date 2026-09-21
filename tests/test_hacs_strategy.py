@@ -3640,8 +3640,8 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertGreater(sum(p["grid_export_fc_w"] for p in plan["points"][1:4]), 0.0)
         self.assertEqual(plan["points"][0]["discharge_budget_kwh"], 0.0)
 
-    def test_optimizer_pv_charge_with_headroom_has_no_recovery_budget(self):
-        """Plan rounding must not turn forecast export into discharge permission."""
+    def test_optimizer_pv_charge_keeps_contingent_discharge_budget(self):
+        """Forecast PV charge must not block permission for unexpected house load."""
         start = dt.datetime(2026, 8, 13, 12, tzinfo=TEST_TIMEZONE)
         prices = [20.0] * 4 + [50.0] * 4
         intervals = [
@@ -3688,7 +3688,8 @@ class HacsStrategyTests(unittest.TestCase):
 
         current = plan["points"][0]
         self.assertGreater(current["charge_fc_w"], 0.0)
-        self.assertEqual(current["discharge_budget_kwh"], 0.0)
+        self.assertEqual(current["discharge_fc_w"], 0.0)
+        self.assertGreater(current["discharge_budget_kwh"], 0.0)
         self.assertGreater(
             sum(point["grid_export_fc_w"] for point in plan["points"][:4]),
             0.0,

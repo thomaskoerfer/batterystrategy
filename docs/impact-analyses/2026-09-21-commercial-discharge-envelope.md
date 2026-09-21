@@ -23,6 +23,8 @@ Both optimizers use the same continuation-value rule for discharge permission:
   slot and SoC limits;
 - unused permission has no economic or throughput cost;
 - required grid charge and discharge permission remain mutually exclusive.
+- forecast PV charging may coexist with discharge permission because live PV
+  surplus takes precedence while the budget covers unexpected eligible load.
 
 The established optimizer retains its existing plan and legacy feasibility
 guards until cutover. Its historical discharge floor may be crossed only when

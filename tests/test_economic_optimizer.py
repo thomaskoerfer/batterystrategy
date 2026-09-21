@@ -36,6 +36,7 @@ from custom_components.battery_strategy.economic_optimizer import (
     DynamicProgrammingOptimizer,
     StochasticDynamicProgrammingOptimizer,
     UnifiedScenarioOptimizer,
+    _Action,
     _energy_lattice,
     _scenario_flows,
 )
@@ -462,6 +463,48 @@ def test_commercial_budget_is_not_capped_by_expected_current_load(current_load):
     assert unified.projection.slots[0].planned_discharge_kwh == pytest.approx(
         current_load
     )
+
+
+def test_forecast_pv_charge_keeps_budget_for_unexpected_house_load():
+    candidate = problem(
+        [50.0, 40.0],
+        loads=[0.0, 0.6],
+        pv=[0.5, 0.0],
+        soc=20.0,
+        rte=0.8,
+    )
+
+    deterministic = DynamicProgrammingOptimizer().optimize(candidate)
+    unified = UnifiedScenarioOptimizer().optimize(candidate)
+
+    assert deterministic.slots[0].planned_pv_charge_kwh > 0.0
+    assert deterministic.slots[0].planned_grid_charge_kwh == 0.0
+    assert deterministic.slots[0].discharge_budget_kwh > 0.0
+    assert unified.decision is not None
+    assert deterministic.slots[0].discharge_budget_kwh == pytest.approx(
+        unified.decision.slot.discharge_budget_kwh
+    )
+
+
+def test_tiny_grid_charge_residue_excludes_discharge_budget():
+    candidate = problem([50.0], loads=[0.0], pv=[0.5], soc=20.0, rte=0.8)
+    action = _Action(
+        charge_kwh=0.5,
+        pv_charge_kwh=0.5 - 5e-7,
+        grid_charge_kwh=5e-7,
+        soc_start_kwh=1.2,
+    )
+
+    budgets = DynamicProgrammingOptimizer()._discharge_budgets(
+        candidate,
+        (50.0,),
+        (0.0,),
+        (0.0,),
+        (0.5,),
+        (action,),
+    )
+
+    assert budgets == [0.0]
 
 
 def test_commercial_budget_reserves_inventory_without_economic_recharge():

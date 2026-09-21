@@ -10,6 +10,8 @@ All notable changes to Battery Strategy are documented here.
   commercial envelope shared by the established and unified optimizers.
 - Kept expected execution load-dependent while allowing safe permission for
   unexpected eligible household demand.
+- Kept contingent discharge permission available during forecast PV charging;
+  only required grid charging remains mutually exclusive with discharge.
 - Removed the established optimizer's parallel replacement, reservation and
   PV-recovery budget heuristics without changing its action plan.
 - Reused backward recourse tables across the P50 projection, reducing unified
