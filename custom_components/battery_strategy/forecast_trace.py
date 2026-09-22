@@ -28,7 +28,7 @@ from .scenario_learning_ledger import append_scenario_learning_vintage
 from .shadow_evaluator import evaluate_shadow
 
 FORECAST_TRACE_DIRECTORY = "battery_strategy_forecast_trace"
-FORECAST_TRACE_SCHEMA_VERSION = 4
+FORECAST_TRACE_SCHEMA_VERSION = 6
 FORECAST_TRACE_RETENTION_DAYS = 21
 FORECAST_TRACE_MAX_BYTES = 64 * 1024 * 1024
 FORECAST_TRACE_MAX_SLOTS = 192
@@ -388,6 +388,9 @@ def _serialize_scenarios(
                         item.house_load_kwh,
                         item.pv_generation_kwh,
                         item.ev_charge_kwh,
+                        item.import_price_ct_per_kwh,
+                        item.export_price_ct_per_kwh,
+                        item.price_is_firm,
                     ]
                     for item in scenario.slots[:FORECAST_TRACE_MAX_SLOTS]
                 ],

@@ -12,7 +12,7 @@ from pathlib import Path
 
 from .contracts import OptimizationProblem, OptimizationResult, ScenarioBuildResult
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 RETENTION_DAYS = 400
 MAX_BYTES = 128 * 1024 * 1024
 HOUR_MS = 60 * 60 * 1000
@@ -120,6 +120,9 @@ def _payload(build_result, problem, result) -> dict[str, object]:
                             slot.house_load_kwh,
                             slot.pv_generation_kwh,
                             slot.ev_charge_kwh,
+                            slot.import_price_ct_per_kwh,
+                            slot.export_price_ct_per_kwh,
+                            slot.price_is_firm,
                         ]
                         for slot in path.slots
                     ],
