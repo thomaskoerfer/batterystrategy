@@ -94,6 +94,17 @@ SENSORS: tuple[BatteryStrategySensorDescription, ...] = (
     _sensor("baseline_cost_tomorrow", "Baseline Cost Tomorrow", "EUR"),
     _sensor("optimized_cost_tomorrow", "Optimized Cost Tomorrow", "EUR"),
     _sensor("estimated_savings_tomorrow", "Estimated Savings Tomorrow", "EUR"),
+    _sensor("estimated_savings_horizon", "Estimated Savings Horizon", "EUR"),
+    _sensor(
+        "estimated_savings_firm_horizon",
+        "Estimated Savings Firm Horizon",
+        "EUR",
+    ),
+    _sensor(
+        "estimated_savings_continuation",
+        "Estimated Savings Continuation",
+        "EUR",
+    ),
     _sensor(
         "actual_savings_today",
         "Actual Savings Today",

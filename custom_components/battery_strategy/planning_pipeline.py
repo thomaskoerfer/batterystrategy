@@ -531,6 +531,12 @@ def run(
 
     save_today = plan.get("today", {}).get("saving_eur", 0.0) or 0.0
     save_tom = plan.get("tomorrow", {}).get("saving_eur", 0.0) or 0.0
+    horizon_savings = plan.get("horizon_savings", {})
+    known_through = None
+    for interval in intervals:
+        if interval.source != "tibber":
+            break
+        known_through = interval.starts_at + dt.timedelta(minutes=15)
 
     savings_state.estimated_daily[today] = round(save_today, 3)
     cumulative = 0.0
@@ -671,6 +677,12 @@ def run(
         .get("with_bat_eur"),
         "estimated_savings_today_eur": round(save_today, 3),
         "estimated_savings_tomorrow_eur": round(save_tom, 3),
+        "estimated_savings_horizon_eur": horizon_savings.get("total_eur", 0.0),
+        "estimated_savings_firm_horizon_eur": horizon_savings.get("firm_eur", 0.0),
+        "estimated_savings_continuation_eur": horizon_savings.get(
+            "continuation_eur", 0.0
+        ),
+        "price_known_through": known_through.isoformat() if known_through else None,
         "estimated_savings_cumulative_eur": round(cumulative, 3),
         "actual_savings_today_eur": round(actual_today_saving, 3),
         "actual_savings_cumulative_eur": actual_savings_lifetime_eur,

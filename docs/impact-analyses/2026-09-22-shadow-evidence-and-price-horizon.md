@@ -14,7 +14,11 @@ non-authoritative scenario pipeline in two related places:
    an unambiguous active/inactive state and never interpolate metered energy.
 2. Planning uses a fixed rolling slot horizon. Published retail prices remain
    firm per slot. EEX Base/Peak fills only unpublished slots and is an uncertain
-   anchor for joint scenario price paths, not a firm dispatch price.
+  anchor for joint scenario price paths, not a firm dispatch price.
+
+Projected value is published for the rolling horizon and split into firm-price
+savings and uncertain continuation value. Calendar-day views remain available
+for display, but they are not the stable cross-midnight decision metric.
 
 `ScenarioBuildRequest.market` and the optional price fields on `ScenarioSlot`
 are additive contract changes approved with this decision. Firm slots are
