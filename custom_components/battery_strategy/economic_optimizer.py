@@ -579,7 +579,11 @@ class StochasticDynamicProgrammingOptimizer:
             for item in problem.market
         )
         scenario_flows = tuple(
-            (scenario.probability, _scenario_flows(scenario.slots, problem.ev_policy))
+            (
+                scenario.probability,
+                _scenario_flows(scenario.slots, problem.ev_policy),
+                *_scenario_price_paths(scenario.slots, prices, export_prices),
+            )
             for scenario in scenarios.scenarios
         )
         required_charge, discharge_budget, expected_cost, _expected_grid_equivalent = (
@@ -743,8 +747,8 @@ class StochasticDynamicProgrammingOptimizer:
                 probability,
                 _backward_recourse_values(
                     problem,
-                    prices,
-                    export_prices,
+                    scenario_prices,
+                    scenario_exports,
                     flows[0],
                     flows[1],
                     flows[2],
@@ -753,11 +757,17 @@ class StochasticDynamicProgrammingOptimizer:
                     start_slot=1,
                 ),
             )
-            for probability, flows in scenario_flows
+            for probability, flows, scenario_prices, scenario_exports in scenario_flows
         )
         best = None
-        max_charge = constraints.max_charge_power_w / 1000.0 * SLOT_H
-        max_discharge = constraints.max_discharge_power_w / 1000.0 * SLOT_H
+        max_charge = min(
+            constraints.max_charge_power_w / 1000.0 * SLOT_H,
+            max(0.0, (maximum - start) / eta),
+        )
+        max_discharge = min(
+            constraints.max_discharge_power_w / 1000.0 * SLOT_H,
+            max(0.0, (start - minimum) * eta),
+        )
         charge_values = (
             _action_lattice(max_charge, ENERGY_STEP_KWH / eta)
             if problem.policy.grid_charging_allowed
@@ -885,6 +895,23 @@ def _scenario_flows(slots, policy):
         tuple(charge_surplus),
         tuple(physical_surplus),
         tuple(discharge_limit),
+    )
+
+
+def _scenario_price_paths(slots, prices, export_prices):
+    return (
+        tuple(
+            fallback
+            if item.import_price_ct_per_kwh is None
+            else item.import_price_ct_per_kwh
+            for item, fallback in zip(slots, prices, strict=True)
+        ),
+        tuple(
+            fallback
+            if item.export_price_ct_per_kwh is None
+            else item.export_price_ct_per_kwh
+            for item, fallback in zip(slots, export_prices, strict=True)
+        ),
     )
 
 
@@ -1088,9 +1115,10 @@ def _evaluate_first_policy(
     """Evaluate expected execution without assigning a cost to unused permission."""
     expected = _Objective()
     grid_charge = 0.0
-    for (probability, flows), (_, future_values) in zip(
-        scenario_flows, recourse, strict=True
-    ):
+    for (probability, flows, scenario_prices, scenario_exports), (
+        _,
+        future_values,
+    ) in zip(scenario_flows, recourse, strict=True):
         automatic_pv = flows[1][0] if problem.policy.pv_charging_allowed else 0.0
         charge = min(max_charge, max(required_charge, automatic_pv))
         discharge = (
@@ -1112,8 +1140,8 @@ def _evaluate_first_policy(
             0,
             actual_charge,
             actual_discharge,
-            prices,
-            export_prices,
+            scenario_prices,
+            scenario_exports,
             flows[0],
             flows[1],
             flows[2],

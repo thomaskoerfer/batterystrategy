@@ -112,7 +112,7 @@ def test_planning_pipeline_uses_owned_application_boundaries_without_facades():
     assert "global " not in source
     assert "_RUNTIME_" not in source
     assert "def _configure(" not in source
-    assert "market_context.apply_eex_proxy_prices(" in source
+    assert "market_context.build_rolling_horizon_prices(" in source
     assert "_update_actual_savings(" in source
     assert "startsAt" not in source
     assert "state_schema" not in source

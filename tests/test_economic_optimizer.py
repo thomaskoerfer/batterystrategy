@@ -211,6 +211,41 @@ def test_stochastic_required_charge_remains_executable_when_pv_is_uncertain():
     assert plan.slots[0].planned_grid_charge_kwh > 0.0
 
 
+def test_stochastic_first_charge_respects_actual_battery_headroom():
+    candidate = problem([1.0, 60.0], loads=[0.0, 0.6], soc=99.5)
+    slots = tuple(item.slot for item in candidate.forecast.load.slots)
+    scenarios = ScenarioBundle(
+        "headroom",
+        "source",
+        candidate.as_of_ms,
+        candidate.as_of_ms,
+        "test-v1",
+        (
+            ScenarioPath(
+                "path",
+                1.0,
+                tuple(
+                    ScenarioSlot(slot, load, 0.0, 0.0)
+                    for slot, load in zip(slots, (0.0, 0.6), strict=True)
+                ),
+            ),
+        ),
+    )
+
+    plan = StochasticDynamicProgrammingOptimizer().optimize(
+        replace(candidate, scenarios=scenarios)
+    )
+
+    eta = math.sqrt(candidate.constraints.round_trip_efficiency)
+    headroom_input = (
+        candidate.constraints.capacity_kwh
+        * (candidate.constraints.max_soc_pct - candidate.battery.soc_pct)
+        / 100.0
+        / eta
+    )
+    assert plan.slots[0].required_charge_kwh <= headroom_input + 1e-9
+
+
 def test_stochastic_optimizer_falls_back_exactly_without_scenarios():
     candidate = problem([10.0, 50.0], loads=[0.0, 0.5], soc=10.0)
     assert StochasticDynamicProgrammingOptimizer().optimize(candidate) == (

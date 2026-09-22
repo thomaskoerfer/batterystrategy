@@ -65,6 +65,7 @@ from .scenarios import (
     ScenarioBundle,
     ScenarioEvidenceSnapshot,
     ScenarioGenerationSettings,
+    ScenarioMarketSlot,
     ScenarioPath,
     ScenarioSlot,
 )
@@ -128,6 +129,7 @@ __all__ = [
     "ScenarioBundle",
     "ScenarioEvidenceSnapshot",
     "ScenarioGenerationSettings",
+    "ScenarioMarketSlot",
     "ScenarioPath",
     "ScenarioSlot",
     "SlotKey",

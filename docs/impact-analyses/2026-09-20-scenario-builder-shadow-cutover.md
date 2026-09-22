@@ -5,6 +5,10 @@ review, implement and make this shadow/cutover change deployment-ready. The
 approved semantic name is `HOUSE_LOAD_COMPONENT`. Later semantic contract
 changes still require a new impact analysis and owner approval.
 
+The evidence-repair and normalized-market-input details in this document are
+superseded by the approved 2026-09-22 shadow evidence and rolling price horizon
+impact analysis. The original decision history remains recorded below.
+
 ## Decision
 
 Make scenario generation a first-class pure module between forecasting and

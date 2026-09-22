@@ -4,13 +4,14 @@
 import datetime as dt
 import logging
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from .contracts import (
     ForecastDistributionBundle,
     OptimizationProblem,
     PvPlant,
     ScenarioBuildResult,
+    ScenarioMarketSlot,
 )
 from .forecast_application import (
     ProductionForecastConfig,
@@ -365,17 +366,26 @@ def run(
 
     market_context = _market_context_service(settings)
     eex_days = market_context.get_eex_day_context(owner_state.market, local_now)
-    intervals_all = runtime.tariffs.for_dates({today, tomorrow})
-    intervals_all, tomorrow_price_source = market_context.apply_eex_proxy_prices(
+    now_floor = floor_to_quarter(local_now)
+    horizon_slots = math.ceil(settings.planning_horizon_h / SLOT_H)
+    horizon_end = now_floor.astimezone(dt.UTC) + dt.timedelta(
+        minutes=15 * max(0, horizon_slots - 1)
+    )
+    horizon_dates = {
+        (now_floor.date() + dt.timedelta(days=offset)).isoformat()
+        for offset in range(
+            (horizon_end.astimezone(settings.timezone).date() - now_floor.date()).days
+            + 1
+        )
+    }
+    intervals_all = runtime.tariffs.for_dates(horizon_dates)
+    intervals, tomorrow_price_source = market_context.build_rolling_horizon_prices(
         intervals_all,
         eex_days,
-        local_now.date(),
-        local_now.date() + dt.timedelta(days=1),
+        now_floor,
+        horizon_slots,
     )
-    now_floor = floor_to_quarter(local_now)
     now_ts_ms = int(now_ts * 1000)
-    intervals = [it for it in intervals_all if it.starts_at >= now_floor]
-    intervals = intervals[: math.ceil(settings.planning_horizon_h / SLOT_H)]
     if soc is not None:
         start_e = clamp(
             settings.battery_capacity_kwh * soc / 100.0,
@@ -443,7 +453,21 @@ def run(
     forecast_diagnostics = forecast_result.diagnostics
     scenario_result = None
     try:
-        scenario_result = ScenarioBuilder().build(forecast_result.scenario_request)
+        scenario_request = replace(
+            forecast_result.scenario_request,
+            market=tuple(
+                ScenarioMarketSlot(
+                    load.slot,
+                    interval.price_eur_per_kwh * 100.0,
+                    settings.export_opportunity_ct_per_kwh,
+                    interval.source,
+                )
+                for load, interval in zip(
+                    forecast_bundle.load.slots, intervals, strict=True
+                )
+            ),
+        )
+        scenario_result = ScenarioBuilder().build(scenario_request)
     except Exception as err:
         LOGGER.warning("Scenario generation failed; using deterministic plan: %s", err)
         forecast_diagnostics.update(

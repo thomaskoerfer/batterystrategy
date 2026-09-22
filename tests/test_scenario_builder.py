@@ -33,6 +33,10 @@ from custom_components.battery_strategy.forecasting.uncertainty import (
     cohort_key,
 )
 from custom_components.battery_strategy.scenario_generation import ScenarioBuilder
+from custom_components.battery_strategy.scenario_generation.engine import (
+    _repair_continuous,
+    _repair_ev,
+)
 
 SLOT_MS = 15 * 60 * 1000
 
@@ -391,3 +395,19 @@ def test_builder_rejects_evidence_newer_than_earliest_marginal_vintage():
 
     assert result.status is ScenarioBuildStatus.INVALID_INPUT
     assert result.diagnostics.eligible is False
+
+
+def test_bounded_restart_run_is_repaired_as_one_channel_gap():
+    values, repaired = _repair_continuous(
+        (1.0, 0.0, 0.0, 4.0), (True, False, False, True), 2
+    )
+    assert values == pytest.approx((1.0, 2.0, 3.0, 4.0))
+    assert repaired == frozenset({1, 2})
+
+
+def test_ev_gap_classifies_state_but_does_not_interpolate_energy():
+    values, repaired = _repair_ev(
+        (0.2, 0.0, 0.0, 0.6), (True, False, False, True), 2, 0.075
+    )
+    assert values == (0.2, 0.075, 0.075, 0.6)
+    assert repaired == frozenset({1, 2})
