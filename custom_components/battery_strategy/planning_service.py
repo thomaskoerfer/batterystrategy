@@ -220,6 +220,7 @@ class PlanningService:
         points = []
         operator_points = []
         daily: dict[str, dict[str, float]] = {}
+        horizon_savings = {"firm_eur": 0.0, "continuation_eur": 0.0}
         slot_hours = self._settings.slot_hours
         export_value = self._settings.export_opportunity_ct_per_kwh
         for interval, load_slot, pv_slot, plan_slot in zip(
@@ -316,6 +317,14 @@ class PlanningService:
             values["with_bat"] += (
                 grid_import_kwh * price_ct - grid_export_kwh * export_value
             ) / 100.0
+            slot_saving = (
+                net_load_kwh * price_ct
+                - surplus_kwh * export_value
+                - grid_import_kwh * price_ct
+                + grid_export_kwh * export_value
+            ) / 100.0
+            bucket = "firm_eur" if interval.source == "tibber" else "continuation_eur"
+            horizon_savings[bucket] += slot_saving
 
         daily_costs = {
             date: {
@@ -350,6 +359,11 @@ class PlanningService:
                     2,
                 ),
                 "daily_costs": daily_costs,
+                "horizon_savings": {
+                    "firm_eur": round(horizon_savings["firm_eur"], 3),
+                    "continuation_eur": round(horizon_savings["continuation_eur"], 3),
+                    "total_eur": round(sum(horizon_savings.values()), 3),
+                },
                 "optimizer_source": candidate.optimizer_version,
             }
         )

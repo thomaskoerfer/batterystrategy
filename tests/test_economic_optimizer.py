@@ -1005,3 +1005,12 @@ def test_pure_optimizer_matches_current_economic_kernel(prices, loads, pv, soc):
         sum(item["with_bat_eur"] for item in current["daily_costs"].values()),
         abs=5e-4,
     )
+    assert current["horizon_savings"]["total_eur"] == pytest.approx(
+        pure.baseline_cost_eur - pure.optimized_cost_eur,
+        abs=1.5e-3,
+    )
+    assert (
+        current["horizon_savings"]["firm_eur"]
+        == current["horizon_savings"]["total_eur"]
+    )
+    assert current["horizon_savings"]["continuation_eur"] == 0.0

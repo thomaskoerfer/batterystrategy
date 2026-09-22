@@ -27,6 +27,10 @@ depends on timestamped prices and commercial metadata, not account identifiers,
 locations or provider-specific payloads. Additional tariff or wholesale sources
 must implement the same normalized roles without changing optimization.
 
+Operator projection exposes the last contiguous firm-price boundary and splits
+rolling-horizon savings into firm and continuation portions. Calendar-day cost
+cards are presentation slices and must not be interpreted as horizon value.
+
 ## Verification
 
 Tests cover real-price precedence, complete proxy grids, timezone alignment,
