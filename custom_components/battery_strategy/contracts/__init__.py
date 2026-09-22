@@ -70,6 +70,7 @@ from .scenarios import (
     ScenarioCandidateDiagnostic,
     ScenarioEvidenceSnapshot,
     ScenarioGenerationSettings,
+    ScenarioMarketSlot,
     ScenarioPath,
     ScenarioSlot,
 )
@@ -137,6 +138,7 @@ __all__ = [
     "ScenarioCandidateDiagnostic",
     "ScenarioEvidenceSnapshot",
     "ScenarioGenerationSettings",
+    "ScenarioMarketSlot",
     "ScenarioOptimizer",
     "ScenarioPath",
     "ScenarioSlot",

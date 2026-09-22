@@ -29,8 +29,8 @@ from ..forecasting.uncertainty import (
     lead_bucket,
 )
 
-MODEL_VERSION = "weekly-empirical-copula-v3"
-REPAIR_POLICY_VERSION = "isolated-continuous-2pct-v1"
+MODEL_VERSION = "weekly-joint-scenario-v4"
+REPAIR_POLICY_VERSION = "bounded-channel-repair-2pct-v2"
 _LOAD_INVALID = frozenset(
     {QualityFlag.MISSING_GRID, QualityFlag.MISSING_BATTERY, QualityFlag.RESTART_GAP}
 )
@@ -44,6 +44,8 @@ class _Candidate:
     slots: tuple[HistoricalFeatureSlot, ...]
     load_template: tuple[float, ...]
     pv_template: tuple[float, ...]
+    ev_template: tuple[float, ...]
+    price_template: tuple[float, ...]
     repaired_slots: int
     excluded_components: int
     component_distance: float
@@ -117,6 +119,8 @@ class ScenarioBuilder:
             if item.slot.end_ms <= evidence.training_cutoff_ms
         )
         by_local = {_local_key(item.slot.start_ms, zone): item for item in history}
+        history_start = min((item.slot.start_ms for item in history), default=0)
+        history_end = max((item.slot.end_ms for item in history), default=0)
         targets = tuple(
             dt.datetime.fromtimestamp(slot.slot.start_ms / 1000.0, dt.UTC).astimezone(
                 zone
@@ -127,12 +131,21 @@ class ScenarioBuilder:
         candidates = []
         overlapping_paths = 0
         for weeks_ago in range(1, 54):
+            shifted_starts = tuple(
+                int((local - dt.timedelta(weeks=weeks_ago)).timestamp() * 1000)
+                for local in targets
+            )
+            if (
+                not shifted_starts
+                or shifted_starts[0] < history_start
+                or shifted_starts[-1] >= history_end
+            ):
+                reasons["history_warmup"] += 1
+                continue
             raw = tuple(
                 by_local.get(_shifted_key(local, weeks_ago)) for local in targets
             )
-            overlapping_paths += int(
-                bool(raw) and all(item is not None for item in raw)
-            )
+            overlapping_paths += 1
             candidate = _prepare_candidate(
                 weeks_ago,
                 raw,
@@ -140,6 +153,7 @@ class ScenarioBuilder:
                 active_now,
                 evidence.ev_active_threshold_kwh,
                 forecast.load.components,
+                bool(request.market),
                 reasons,
             )
             if candidate is not None:
@@ -227,7 +241,7 @@ class ScenarioBuilder:
         ev_active_paths = []
         for slot_index, ev_slot in enumerate(forecast.ev.slots):
             historical_values = tuple(
-                item.slots[slot_index].ev_charge_kwh for item in candidates
+                item.ev_template[slot_index] for item in candidates
             )
             active = _weighted_active_tail(
                 historical_values,
@@ -245,7 +259,7 @@ class ScenarioBuilder:
             zip(candidates, raw_weights, strict=True)
         ):
             path_slots = []
-            for slot_index, historical in enumerate(candidate.slots):
+            for slot_index in range(len(candidate.load_template)):
                 load_values = tuple(
                     item.load_template[slot_index] for item in candidates
                 )
@@ -278,22 +292,28 @@ class ScenarioBuilder:
                     ev = 0.0
                 else:
                     active_values = tuple(
-                        candidates[item].slots[slot_index].ev_charge_kwh
+                        candidates[item].ev_template[slot_index]
                         for item in active_indexes
                     )
                     ev = max(
                         evidence.ev_active_threshold_kwh,
                         _marginal_value(
                             ev_slot.energy,
-                            _rank(historical.ev_charge_kwh, active_values),
+                            _rank(candidate.ev_template[slot_index], active_values),
                         ),
                     )
+                import_price, export_price, price_is_firm = _scenario_price(
+                    request, candidates, candidate, slot_index, targets
+                )
                 path_slots.append(
                     ScenarioSlot(
                         load_slot.slot,
                         round(load, 6),
                         round(pv, 6),
                         round(max(0.0, ev), 6),
+                        import_price,
+                        export_price,
+                        price_is_firm,
                     )
                 )
             paths.append(
@@ -331,6 +351,7 @@ def _prepare_candidate(
     active_now: bool,
     ev_active_threshold_kwh: float,
     forecast_components,
+    prices_required: bool,
     reasons: Counter[str],
 ) -> _Candidate | None:
     if not raw or any(item is None for item in raw):
@@ -339,9 +360,6 @@ def _prepare_candidate(
     slots = tuple(item for item in raw if item is not None)
     if active_now and slots[0].ev_charge_kwh < ev_active_threshold_kwh:
         reasons["ev_state_mismatch"] += 1
-        return None
-    if any(frozenset(item.quality.flags) & _EV_INVALID for item in slots):
-        reasons["invalid_ev_boundary"] += 1
         return None
     max_repairs = math.floor(len(slots) * maximum_repair_fraction)
     load_values, load_repairs = _repair_continuous(
@@ -354,10 +372,28 @@ def _prepare_candidate(
         tuple(_valid(item, _PV_INVALID) for item in slots),
         max_repairs,
     )
+    if prices_required:
+        price_values, price_repairs = _repair_continuous(
+            tuple(item.price_ct_per_kwh for item in slots),
+            tuple(item.price_ct_per_kwh is not None for item in slots),
+            max_repairs,
+        )
+    else:
+        price_values, price_repairs = tuple(0.0 for _ in slots), frozenset()
+    ev_values, ev_repairs = _repair_ev(
+        tuple(item.ev_charge_kwh for item in slots),
+        tuple(_valid(item, _EV_INVALID) for item in slots),
+        max_repairs,
+        ev_active_threshold_kwh,
+    )
+    if ev_values is None:
+        reasons["invalid_ev_boundary"] += 1
+        return None
     if (
         load_values is None
         or pv_values is None
-        or load_repairs + pv_repairs > max_repairs
+        or price_values is None
+        or len(load_repairs | pv_repairs | price_repairs | ev_repairs) > max_repairs
     ):
         reasons["repair_limit"] += 1
         return None
@@ -370,7 +406,9 @@ def _prepare_candidate(
         slots,
         load_values,
         pv_values,
-        load_repairs + pv_repairs,
+        ev_values,
+        price_values,
+        len(load_repairs | pv_repairs | price_repairs | ev_repairs),
         excluded,
         component_distance,
     )
@@ -379,18 +417,83 @@ def _prepare_candidate(
 def _repair_continuous(values, valid, max_repairs):
     invalid = [index for index, usable in enumerate(valid) if not usable]
     if len(invalid) > max_repairs:
-        return None, 0
+        return None, frozenset()
     result = list(values)
-    for index in invalid:
+    cursor = 0
+    while cursor < len(invalid):
+        start = invalid[cursor]
+        end = start
+        while cursor + 1 < len(invalid) and invalid[cursor + 1] == end + 1:
+            cursor += 1
+            end = invalid[cursor]
         if (
-            index == 0
-            or index == len(values) - 1
-            or not valid[index - 1]
-            or not valid[index + 1]
+            start == 0
+            or end == len(values) - 1
+            or not valid[start - 1]
+            or not valid[end + 1]
         ):
-            return None, 0
-        result[index] = (values[index - 1] + values[index + 1]) / 2.0
-    return tuple(result), len(invalid)
+            return None, frozenset()
+        left = float(values[start - 1])
+        right = float(values[end + 1])
+        width = end - start + 2
+        for offset, index in enumerate(range(start, end + 1), 1):
+            result[index] = left + (right - left) * offset / width
+        cursor += 1
+    return tuple(float(item) for item in result), frozenset(invalid)
+
+
+def _repair_ev(values, valid, max_repairs, active_threshold):
+    """Classify bounded EV gaps without inventing metered energy."""
+    invalid = [index for index, usable in enumerate(valid) if not usable]
+    if len(invalid) > max_repairs:
+        return None, frozenset()
+    result = list(values)
+    cursor = 0
+    while cursor < len(invalid):
+        start = invalid[cursor]
+        end = start
+        while cursor + 1 < len(invalid) and invalid[cursor + 1] == end + 1:
+            cursor += 1
+            end = invalid[cursor]
+        if (
+            start == 0
+            or end == len(values) - 1
+            or not valid[start - 1]
+            or not valid[end + 1]
+        ):
+            return None, frozenset()
+        left_active = values[start - 1] >= active_threshold
+        right_active = values[end + 1] >= active_threshold
+        if left_active != right_active:
+            return None, frozenset()
+        classified = active_threshold if left_active else 0.0
+        for index in range(start, end + 1):
+            result[index] = classified
+        cursor += 1
+    return tuple(float(item) for item in result), frozenset(invalid)
+
+
+def _scenario_price(request, candidates, candidate, slot_index, targets):
+    if not request.market:
+        return None, None, True
+    market = request.market[slot_index]
+    if market.source == "tibber":
+        return market.import_price_ct_per_kwh, market.export_price_ct_per_kwh, True
+    local = targets[slot_index]
+    group = (local.date(), 8 <= local.hour < 20)
+    indexes = [
+        index
+        for index, target in enumerate(targets)
+        if (target.date(), 8 <= target.hour < 20) == group
+        and request.market[index].source != "tibber"
+    ]
+    historical = [candidate.price_template[index] for index in indexes]
+    price = market.import_price_ct_per_kwh
+    if historical:
+        price += candidate.price_template[slot_index] - sum(historical) / len(
+            historical
+        )
+    return round(price, 6), market.export_price_ct_per_kwh, False
 
 
 def _valid(item: HistoricalFeatureSlot, invalid_flags: frozenset[QualityFlag]) -> bool:

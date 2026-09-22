@@ -483,10 +483,80 @@ class MarketContextService:
         proxy = self.build_eex_proxy_day_prices(existing, eex_days, today, tomorrow)
         if not proxy:
             return sorted(existing, key=lambda item: item.starts_at), "missing"
-        retained = [
-            interval for interval in existing if interval.starts_at.date() != tomorrow
-        ]
-        return sorted(retained + proxy, key=lambda item: item.starts_at), "eex_proxy"
+        by_timestamp = {int(item.timestamp): item for item in proxy}
+        # A published tariff is authoritative per slot. EEX fills only gaps;
+        # it never replaces a partially published real-price day.
+        by_timestamp.update({int(item.timestamp): item for item in existing})
+        merged = sorted(by_timestamp.values(), key=lambda item: item.starts_at)
+        source = "mixed" if real_tomorrow else "eex_proxy"
+        return merged, source
+
+    def build_rolling_horizon_prices(
+        self,
+        intervals: list[TariffInterval] | tuple[TariffInterval, ...],
+        eex_days: dict,
+        start: dt.datetime,
+        horizon_slots: int,
+    ) -> tuple[list[TariffInterval], str]:
+        """Return a fixed UTC-slot horizon, preserving every real tariff slot."""
+        start_utc = start.astimezone(dt.UTC)
+        targets = tuple(
+            start_utc + dt.timedelta(minutes=15 * index)
+            for index in range(horizon_slots)
+        )
+        existing = {int(item.timestamp): item for item in intervals}
+        dates = sorted(
+            {target.astimezone(self._config.timezone).date() for target in targets}
+        )
+        proxy_by_timestamp: dict[int, TariffInterval] = {}
+        proxy_by_local_slot: dict[tuple[dt.date, int, int], TariffInterval] = {}
+        reference = list(intervals)
+        for target_date in dates:
+            prior_date = target_date - dt.timedelta(days=1)
+            proxy = self.build_eex_proxy_day_prices(
+                reference, eex_days, prior_date, target_date
+            )
+            proxy_by_timestamp.update({int(item.timestamp): item for item in proxy})
+            proxy_by_local_slot.update(
+                {
+                    (
+                        item.starts_at.date(),
+                        item.starts_at.hour,
+                        item.starts_at.minute,
+                    ): item
+                    for item in proxy
+                }
+            )
+            reference.extend(proxy)
+        result = []
+        sources = set()
+        for target in targets:
+            key = int(target.timestamp())
+            item = existing.get(key) or proxy_by_timestamp.get(key)
+            if item is None:
+                local = target.astimezone(self._config.timezone)
+                template = proxy_by_local_slot.get(
+                    (local.date(), local.hour, local.minute)
+                )
+                if template is not None:
+                    item = TariffInterval(
+                        local,
+                        template.price_eur_per_kwh,
+                        source="eex_proxy",
+                    )
+            if item is None:
+                break
+            result.append(item)
+            sources.add(item.source)
+        if sources == {"tibber"}:
+            source = "tibber"
+        elif "tibber" in sources:
+            source = "mixed"
+        elif sources:
+            source = "eex_proxy"
+        else:
+            source = "missing"
+        return result, source
 
     def build_plan_metadata(
         self,

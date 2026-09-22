@@ -3,13 +3,14 @@
 
 import datetime as dt
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from .contracts import (
     ForecastDistributionBundle,
     OptimizationProblem,
     PvPlant,
     ScenarioBuildRequest,
+    ScenarioMarketSlot,
 )
 from .forecast_application import (
     ProductionForecastConfig,
@@ -361,17 +362,26 @@ def run(
 
     market_context = _market_context_service(settings)
     eex_days = market_context.get_eex_day_context(owner_state.market, local_now)
-    intervals_all = runtime.tariffs.for_dates({today, tomorrow})
-    intervals_all, tomorrow_price_source = market_context.apply_eex_proxy_prices(
+    now_floor = floor_to_quarter(local_now)
+    horizon_slots = math.ceil(settings.planning_horizon_h / SLOT_H)
+    horizon_end = now_floor.astimezone(dt.UTC) + dt.timedelta(
+        minutes=15 * max(0, horizon_slots - 1)
+    )
+    horizon_dates = {
+        (now_floor.date() + dt.timedelta(days=offset)).isoformat()
+        for offset in range(
+            (horizon_end.astimezone(settings.timezone).date() - now_floor.date()).days
+            + 1
+        )
+    }
+    intervals_all = runtime.tariffs.for_dates(horizon_dates)
+    intervals, tomorrow_price_source = market_context.build_rolling_horizon_prices(
         intervals_all,
         eex_days,
-        local_now.date(),
-        local_now.date() + dt.timedelta(days=1),
+        now_floor,
+        horizon_slots,
     )
-    now_floor = floor_to_quarter(local_now)
     now_ts_ms = int(now_ts * 1000)
-    intervals = [it for it in intervals_all if it.starts_at >= now_floor]
-    intervals = intervals[: math.ceil(settings.planning_horizon_h / SLOT_H)]
     if soc is not None:
         start_e = clamp(
             settings.battery_capacity_kwh * soc / 100.0,
@@ -774,7 +784,18 @@ def run(
         True,
         forecast_bundle,
         publication.optimization_problem,
-        forecast_result.scenario_request,
+        replace(
+            forecast_result.scenario_request,
+            market=tuple(
+                ScenarioMarketSlot(
+                    item.slot,
+                    item.import_price_ct_per_kwh,
+                    item.export_price_ct_per_kwh,
+                    item.source,
+                )
+                for item in publication.optimization_problem.market
+            ),
+        ),
     )
 
 

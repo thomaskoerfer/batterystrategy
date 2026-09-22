@@ -16,7 +16,8 @@ ScenarioBuilder.build(ScenarioBuildRequest) -> ScenarioBuildResult
 ```
 
 The request contains one aligned marginal `ForecastDistributionBundle`, one
-deeply immutable causal `ScenarioEvidenceSnapshot` and bounded settings. A
+deeply immutable causal `ScenarioEvidenceSnapshot`, optional normalized market
+observations and bounded settings. A
 successful result contains a separate `ScenarioBundle`. An unavailable result
 contains a structured status and diagnostics, never a fabricated path.
 
@@ -35,8 +36,10 @@ historical boundary; an inactive state still permits paths in which charging
 starts later. Historical activity uses the normalized threshold captured with
 the EV forecast evidence, not a greater-than-zero noise test or optimizer policy.
 
-Only isolated aggregate load/PV history gaps may be interpolated, up to the
-versioned repair fraction. Missing device-component evidence does not reject a
+Short aggregate load/PV/price restart gaps bracketed by valid observations may
+be interpolated, up to the versioned repair fraction. EV gaps are accepted only
+when both boundaries imply the same active state; their energy comes from the
+current EV distribution and is never interpolated. Missing device-component evidence does not reject a
 quality-valid aggregate path. Repair and fallback counts are persisted for
 evaluation; neither operation changes current marginal forecasts.
 Available quality-valid house-load components rank and weight otherwise valid
@@ -55,7 +58,8 @@ through the EV marginal distribution.
 
 ## Non-responsibilities
 
-Scenario generation does not read prices, battery state, commercial policy,
+Scenario generation reads only normalized firm/proxy market observations to
+preserve joint price dependence. It does not read providers, battery state, commercial policy,
 Home Assistant, Recorder, files, networks or the wall clock. It does not choose
 battery actions, compile budgets or issue commands. The optimizer must not
 recreate scenario-generation behavior.

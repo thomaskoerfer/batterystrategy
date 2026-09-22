@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from custom_components.battery_strategy import forecast_trace as trace_module
+from custom_components.battery_strategy import shadow_evaluator
 from custom_components.battery_strategy.contracts import (
     DataQuality,
     EvForecast,
@@ -296,7 +297,7 @@ def test_reload_schedulers_share_single_flight_before_scenario_work(tmp_path):
             active -= 1
 
     monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr(trace_module.ScenarioBuilder, "build", slow_build)
+    monkeypatch.setattr(shadow_evaluator.ScenarioBuilder, "build", slow_build)
 
     bundle = forecast_bundle(1_800_000_000_000)
     schedulers = (

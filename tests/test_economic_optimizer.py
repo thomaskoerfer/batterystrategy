@@ -154,6 +154,26 @@ def test_unified_optimizer_uses_p50_as_probability_one_scenario():
     assert direct.decision.slot.required_charge_kwh > 0.0
 
 
+def test_unified_first_charge_respects_actual_battery_headroom():
+    candidate = problem([1.0, 60.0], loads=[0.0, 0.6], soc=99.5)
+
+    result = UnifiedScenarioOptimizer().optimize(candidate)
+
+    assert result.decision is not None
+    eta = math.sqrt(candidate.constraints.round_trip_efficiency)
+    headroom_input = (
+        candidate.constraints.capacity_kwh
+        * (candidate.constraints.max_soc_pct - candidate.battery.soc_pct)
+        / 100.0
+        / eta
+    )
+    assert result.decision.slot.required_charge_kwh <= headroom_input + 1e-9
+    assert (
+        result.decision.slot.required_charge_kwh
+        <= result.decision.slot.planned_charge_kwh
+    )
+
+
 def test_optimization_decision_must_cover_generation_time():
     result = UnifiedScenarioOptimizer().optimize(problem([20.0], loads=[0.2], soc=50.0))
     assert result.decision is not None

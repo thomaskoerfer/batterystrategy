@@ -44,7 +44,7 @@ def build_optimization_problem(
                 load_slot.slot,
                 interval.price_eur_per_kwh * 100.0,
                 policy.export_opportunity_ct_per_kwh,
-                "captured_market_snapshot",
+                interval.source,
             )
             for interval, load_slot in zip(intervals, forecast.load.slots, strict=True)
         ),

@@ -13,7 +13,6 @@ import threading
 import time
 import uuid
 from collections.abc import Callable
-from dataclasses import replace
 from pathlib import Path
 
 from .contracts import (
@@ -25,9 +24,8 @@ from .contracts import (
     ScenarioBuildRequest,
     ScenarioBundle,
 )
-from .economic_optimizer import UnifiedScenarioOptimizer
-from .scenario_generation import ScenarioBuilder
 from .scenario_learning_ledger import append_scenario_learning_vintage
+from .shadow_evaluator import evaluate_shadow
 
 FORECAST_TRACE_DIRECTORY = "battery_strategy_forecast_trace"
 FORECAST_TRACE_SCHEMA_VERSION = 4
@@ -141,92 +139,45 @@ class ForecastTraceScheduler:
                 except BlockingIOError:
                     return
                 try:
-                    shadow_plan = None
-                    shadow_status = "scenario_inputs_unavailable"
-                    shadow_runtime_ms = None
-                    shadow_problem = optimization_problem
-                    build_result = None
-                    optimizer_diagnostics = {}
-                    unified_result = None
-                    started = time.perf_counter()
-                    if scenario_request is not None:
-                        try:
-                            build_result = ScenarioBuilder().build(scenario_request)
-                            if optimization_problem is None:
-                                shadow_status = (
-                                    build_result.status.value
-                                    if build_result.scenarios is None
-                                    else "optimization_problem_unavailable"
-                                )
-                            else:
-                                shadow_problem = (
-                                    replace(
-                                        optimization_problem,
-                                        scenarios=build_result.scenarios,
-                                    )
-                                    if build_result.scenarios is not None
-                                    else optimization_problem
-                                )
-                                optimizer = UnifiedScenarioOptimizer()
-                                unified_result = optimizer.optimize(shadow_problem)
-                                projection = unified_result.projection
-                                # Schema 4 readers still consume a plan-shaped
-                                # projection during the shadow-only rollout.
-                                shadow_plan = BatteryPlan(
-                                    projection.projection_id,
-                                    projection.problem_id,
-                                    projection.generated_at_ms,
-                                    projection.optimizer_version,
-                                    projection.constraints,
-                                    projection.slots,
-                                    projection.baseline_cost_eur,
-                                    projection.optimized_cost_eur,
-                                )
-                                optimizer_diagnostics = {
-                                    **optimizer.last_diagnostics,
-                                    "decision": _serialize_decision(
-                                        unified_result.decision
-                                    ),
-                                }
-                                shadow_status = (
-                                    "completed"
-                                    if build_result.scenarios is not None
-                                    else "completed_p50_fallback"
-                                )
-                        except Exception as err:
-                            shadow_status = "failed"
-                            self._warn(err)
-                        finally:
-                            shadow_runtime_ms = round(
-                                (time.perf_counter() - started) * 1000.0, 3
-                            )
+                    evaluation = evaluate_shadow(scenario_request, optimization_problem)
+                    if evaluation.error is not None:
+                        LOGGER.warning("Shadow optimizer failed: %s", evaluation.error)
+                    optimizer_diagnostics = dict(evaluation.optimizer_diagnostics)
+                    if evaluation.optimization_result is not None:
+                        optimizer_diagnostics["decision"] = _serialize_decision(
+                            evaluation.optimization_result.decision
+                        )
                     _append_forecast_trace_locked(
                         self._root,
                         bundle,
                         authoritative_plan,
-                        shadow_plan,
-                        shadow_problem,
+                        evaluation.plan,
+                        evaluation.problem,
                         {
-                            "status": shadow_status,
-                            "runtime_ms": shadow_runtime_ms,
+                            "status": evaluation.status,
+                            "runtime_ms": evaluation.runtime_ms,
                             "scenario_build": (
-                                _serialize_build_diagnostics(build_result)
-                                if build_result is not None
+                                _serialize_build_diagnostics(evaluation.build_result)
+                                if evaluation.build_result is not None
                                 else None
                             ),
                             **(
                                 optimizer_diagnostics
-                                if shadow_status.startswith("completed")
+                                if evaluation.status.startswith("completed")
                                 else {}
                             ),
                         },
                     )
-                    if build_result is not None and shadow_problem is not None:
+                    if (
+                        evaluation.build_result is not None
+                        and evaluation.problem is not None
+                        and evaluation.optimization_result is not None
+                    ):
                         append_scenario_learning_vintage(
                             self._root.parent / "battery_strategy_scenario_learning",
-                            build_result=build_result,
-                            optimization_problem=shadow_problem,
-                            optimization_result=unified_result,
+                            build_result=evaluation.build_result,
+                            optimization_problem=evaluation.problem,
+                            optimization_result=evaluation.optimization_result,
                         )
                 finally:
                     fcntl.flock(lock_handle, fcntl.LOCK_UN)

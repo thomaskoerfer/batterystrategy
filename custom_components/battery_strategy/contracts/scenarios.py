@@ -6,7 +6,12 @@ import math
 from dataclasses import dataclass
 from enum import StrEnum
 
-from .common import SlotKey, require_nonnegative, require_slots_sorted_unique
+from .common import (
+    SlotKey,
+    require_finite,
+    require_nonnegative,
+    require_slots_sorted_unique,
+)
 from .forecasting import ForecastDistributionBundle, HistoricalFeatureSlot
 
 MAX_SCENARIOS = 12
@@ -73,12 +78,37 @@ class ScenarioGenerationSettings:
 
 
 @dataclass(frozen=True, slots=True)
+class ScenarioMarketSlot:
+    """One market observation supplied to scenario generation."""
+
+    slot: SlotKey
+    import_price_ct_per_kwh: float
+    export_price_ct_per_kwh: float
+    source: str
+
+    def __post_init__(self) -> None:
+        require_finite("import_price_ct_per_kwh", self.import_price_ct_per_kwh)
+        require_finite("export_price_ct_per_kwh", self.export_price_ct_per_kwh)
+        if not self.source:
+            raise ValueError("scenario market source is required")
+
+
+@dataclass(frozen=True, slots=True)
 class ScenarioBuildRequest:
     """Complete immutable input to scenario generation."""
 
     forecast: ForecastDistributionBundle
     evidence: ScenarioEvidenceSnapshot
     settings: ScenarioGenerationSettings = ScenarioGenerationSettings()
+    market: tuple[ScenarioMarketSlot, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.market:
+            require_slots_sorted_unique(tuple(item.slot for item in self.market))
+            if tuple(item.slot for item in self.market) != tuple(
+                item.slot for item in self.forecast.load.slots
+            ):
+                raise ValueError("scenario market and forecast grids must match")
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,11 +117,18 @@ class ScenarioSlot:
     house_load_kwh: float
     pv_generation_kwh: float
     ev_charge_kwh: float
+    import_price_ct_per_kwh: float | None = None
+    export_price_ct_per_kwh: float | None = None
+    price_is_firm: bool = True
 
     def __post_init__(self) -> None:
         require_nonnegative("house_load_kwh", self.house_load_kwh)
         require_nonnegative("pv_generation_kwh", self.pv_generation_kwh)
         require_nonnegative("ev_charge_kwh", self.ev_charge_kwh)
+        if self.import_price_ct_per_kwh is not None:
+            require_finite("import_price_ct_per_kwh", self.import_price_ct_per_kwh)
+        if self.export_price_ct_per_kwh is not None:
+            require_finite("export_price_ct_per_kwh", self.export_price_ct_per_kwh)
 
 
 @dataclass(frozen=True, slots=True)
