@@ -101,8 +101,8 @@ SENSORS: tuple[BatteryStrategySensorDescription, ...] = (
         "EUR",
     ),
     _sensor(
-        "estimated_savings_continuation",
-        "Estimated Savings Continuation",
+        "estimated_savings_projected_continuation",
+        "Estimated Savings Projected Continuation",
         "EUR",
     ),
     _sensor(

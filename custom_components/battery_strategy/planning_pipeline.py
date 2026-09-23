@@ -722,7 +722,7 @@ def run(
         "estimated_savings_tomorrow_eur": round(save_tom, 3),
         "estimated_savings_horizon_eur": horizon_savings.get("total_eur", 0.0),
         "estimated_savings_firm_horizon_eur": horizon_savings.get("firm_eur", 0.0),
-        "estimated_savings_continuation_eur": horizon_savings.get(
+        "estimated_savings_projected_continuation_eur": horizon_savings.get(
             "continuation_eur", 0.0
         ),
         "price_known_through": known_through.isoformat() if known_through else None,

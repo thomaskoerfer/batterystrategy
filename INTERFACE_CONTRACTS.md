@@ -123,10 +123,14 @@ shapes may reach scenario generation only through its evidence snapshot.
 
 `ScenarioBuilder.build(ScenarioBuildRequest)` returns a structured
 `ScenarioBuildResult`. The request contains one marginal bundle, a deeply
-immutable causal `ScenarioEvidenceSnapshot` and bounded settings. A successful
+immutable causal `ScenarioEvidenceSnapshot`, optional normalized market slots
+and bounded settings. A successful
 result contains a separate `ScenarioBundle` of at most 12 complete coherent
-paths on the same grid. Every path carries EV-free house-load, PV-generation and
-EV-charge energy separately. Probabilities are positive and sum to one;
+paths on the same grid. Every path carries EV-free house-load, PV-generation,
+EV-charge energy and optional import/export prices separately. Published retail
+prices are identical and marked firm in every path. EEX-derived slots are
+explicit proxy anchors whose historical deviations remain coupled to the same
+load/PV/EV analogue. Probabilities are positive and sum to one;
 generation time, source forecast identity, causal training cutoff and model
 version are explicit. Marginal P10/P50/P90 values are not scenarios and must
 not be combined into synthetic all-low or all-high trajectories.
@@ -135,8 +139,11 @@ The evidence snapshot carries the EV forecaster's normalized slot-energy
 activity threshold so historical session boundaries use the same semantics as
 the emitted EV marginal. This is forecast evidence, not optimizer EV policy.
 
-The builder may repair only isolated aggregate load/PV history gaps within its
-versioned limit. It never interpolates EV or changes current forecast values.
+The builder may repair only short, internally bounded aggregate load/PV/price
+history gaps within its versioned limit. EV gaps are accepted only when both
+valid boundaries imply the same active state; the gap is state-classified and
+its energy is drawn from the current EV marginal, never interpolated. It never
+changes current forecast values.
 Marginal mapping prefers calibrated residual cohorts, then emitted forecast
 quantiles, then a centered causal empirical distribution. Every fallback and
 repair is diagnostic evidence for the release gate. Missing component-level
