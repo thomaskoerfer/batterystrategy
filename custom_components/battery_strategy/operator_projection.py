@@ -120,6 +120,19 @@ def build_operator_projection(
         "baseline_cost_tomorrow": _daily_cost(plan, tomorrow, "base_eur"),
         "optimized_cost_tomorrow": _daily_cost(plan, tomorrow, "with_bat_eur"),
         "estimated_savings_tomorrow": _daily_cost(plan, tomorrow, "saving_eur"),
+        "estimated_savings_horizon": round(
+            _raw_float(optimizer_attrs, "estimated_savings_horizon_eur"), 3
+        ),
+        "estimated_savings_firm_horizon": round(
+            _raw_float(optimizer_attrs, "estimated_savings_firm_horizon_eur"), 3
+        ),
+        "estimated_savings_projected_continuation": round(
+            _raw_float(
+                optimizer_attrs,
+                "estimated_savings_projected_continuation_eur",
+            ),
+            3,
+        ),
         "actual_savings_today": round(
             _raw_float(optimizer_attrs, "actual_savings_today_eur"), 3
         ),
