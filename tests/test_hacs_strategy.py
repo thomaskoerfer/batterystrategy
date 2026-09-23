@@ -1768,6 +1768,25 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertEqual(projection.value("optimizer_discharge_budget"), 0.6)
         self.assertEqual(projection.value("plan_live_discharge_budget"), 0.123)
 
+    def test_horizon_savings_are_exposed_by_operator_projection(self):
+        projection = operator_projection(
+            {
+                "plan": StrategyPlan([], COMMAND_IDLE, 0, "test"),
+                "optimizer_attrs": {
+                    "estimated_savings_horizon_eur": 1.23456,
+                    "estimated_savings_firm_horizon_eur": 0.87654,
+                    "estimated_savings_projected_continuation_eur": 0.35802,
+                },
+            },
+            dt.date(2027, 1, 15),
+        )
+
+        self.assertEqual(projection.value("estimated_savings_horizon"), 1.235)
+        self.assertEqual(projection.value("estimated_savings_firm_horizon"), 0.877)
+        self.assertEqual(
+            projection.value("estimated_savings_projected_continuation"), 0.358
+        )
+
     def _coordinator_for_strategy_enabled(self, strategy_enabled=True):
         coordinator = object.__new__(BatteryStrategyCoordinator)
         coordinator.entry = SimpleNamespace(
