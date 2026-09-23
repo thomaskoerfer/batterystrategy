@@ -17,7 +17,8 @@ non-authoritative scenario pipeline in two related places:
   anchor for joint scenario price paths, not a firm dispatch price.
 
 Projected value is published for the rolling horizon and split into firm-price
-savings and uncertain continuation value. Calendar-day views remain available
+savings and a central-proxy projected continuation value. It is not presented
+as an expectation over the scenario distribution. Calendar-day views remain available
 for display, but they are not the stable cross-midnight decision metric.
 
 `ScenarioBuildRequest.market` and the optional price fields on `ScenarioSlot`
@@ -46,6 +47,13 @@ for tests and callers not yet providing market evidence. The shadow branch is
 non-authoritative. The cutover branch receives the same contracts and model;
 its existing orchestration difference remains the only authority difference.
 Rollback is branch-local and requires no state migration.
+
+Until stochastic cutover, the authoritative deterministic optimizer continues
+to use the explicitly marked central EEX curve as its receding-horizon fallback.
+After cutover the same central curve remains only the documented deterministic
+availability fallback when scenario evidence is insufficient or invalid. It is
+never relabeled as firm; a valid stochastic run branches proxy prices before
+commercial evaluation.
 
 ## Verification
 

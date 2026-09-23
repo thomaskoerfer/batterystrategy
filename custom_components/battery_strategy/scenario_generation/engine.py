@@ -633,6 +633,15 @@ def _fingerprint(request: ScenarioBuildRequest) -> str:
         request.settings.maximum_paths,
         request.settings.maximum_repair_fraction,
         request.settings.seed,
+        tuple(
+            (
+                item.slot.start_ms,
+                item.import_price_ct_per_kwh,
+                item.export_price_ct_per_kwh,
+                item.source,
+            )
+            for item in request.market
+        ),
         MODEL_VERSION,
         REPAIR_POLICY_VERSION,
     )

@@ -1,6 +1,8 @@
 """Regression tests for the rolling firm/proxy market boundary."""
 
 import datetime as dt
+from itertools import pairwise
+from zoneinfo import ZoneInfo
 
 from custom_components.battery_strategy.market_context import (
     MarketContextConfig,
@@ -61,3 +63,33 @@ def test_rolling_horizon_has_constant_length_across_midnight(monkeypatch):
 
     assert len(before) == len(after) == 192
     assert before[0].starts_at + dt.timedelta(minutes=15) == after[0].starts_at
+
+
+def test_rolling_horizon_remains_a_unique_utc_grid_across_dst(monkeypatch):
+    candidate = MarketContextService(
+        MarketContextConfig(ZoneInfo("Europe/Berlin"), 0.8, 1.0)
+    )
+
+    def proxy(_intervals, _days, _prior, target):
+        midnight = dt.datetime.combine(
+            target, dt.time.min, tzinfo=ZoneInfo("Europe/Berlin")
+        )
+        return [
+            TariffInterval(
+                midnight + dt.timedelta(minutes=15 * index), 0.30, "eex_proxy"
+            )
+            for index in range(96)
+        ]
+
+    monkeypatch.setattr(candidate, "build_eex_proxy_day_prices", proxy)
+    for start in (
+        dt.datetime(2026, 3, 28, 12, tzinfo=ZoneInfo("Europe/Berlin")),
+        dt.datetime(2026, 10, 24, 12, tzinfo=ZoneInfo("Europe/Berlin")),
+    ):
+        result, _ = candidate.build_rolling_horizon_prices((), {}, start, 192)
+        timestamps = [item.starts_at.astimezone(dt.UTC) for item in result]
+        assert len(result) == len(set(timestamps)) == 192
+        assert all(
+            later - earlier == dt.timedelta(minutes=15)
+            for earlier, later in pairwise(timestamps)
+        )
