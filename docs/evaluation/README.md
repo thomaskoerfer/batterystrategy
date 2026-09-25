@@ -78,6 +78,22 @@ These metrics are evidence for a later reviewed model change, not an online
 reinforcement loop. The existing online calibration remains owned by the
 forecast application and is unchanged by this trace or evaluator.
 
+For schema-7 vintages the same utility additionally reports
+`shadow_heat_pump_total`, `shadow_load_component:heat_pump_dhw` and
+`shadow_load_component:heat_pump_space_heating`. Review them against their
+authoritative `load_component:*` counterparts by lead-time bucket. Collect at
+least seven complete local days, at least three complete heating runs and at
+least three DHW cycles before proposing promotion. Promotion requires lower
+combined heat-pump MAE and absolute bias without a material DHW regression;
+coverage and cold-start fallbacks are reported separately rather than hidden in
+the aggregate.
+
+Schema 7 stores this optional whole-heat-pump candidate in
+`forecast_shadows.heat_pump`. It runs after authoritative publication and is
+never supplied to optimization, compilation, live control or actuation. A
+candidate failure is recorded by status and exception type without invalidating
+the published plan.
+
 The optimizer evaluator reports load/PV scenario CRPS and central-80% coverage,
 EV-event Brier score and first-policy monetary regret versus a hindsight-perfect
 replay. For pre-cutover traces it also compares the former shadow plan. Only the first

@@ -27,6 +27,7 @@ from .forecast_calibration import (
 )
 from .forecast_evaluation import update_forecast_evaluation
 from .forecasting import FeatureStoreForecastNotReady
+from .forecasting.heat_pump_shadow import HeatPumpShadowRequest
 from .market_context import MarketContextConfig, MarketContextService
 from .models import StrategyOptions
 from .plan_presentation import (
@@ -93,6 +94,7 @@ class PlanningRunOutcome:
     optimization_problem: OptimizationProblem | None = None
     scenario_result: ScenarioBuildResult | None = None
     optimizer_evaluation: dict[str, object] | None = None
+    heat_pump_shadow_request: HeatPumpShadowRequest | None = None
 
 
 # PV surplus anti-cycling thresholds
@@ -845,6 +847,7 @@ def run(
             if publication.optimizer_evaluation is not None
             else None
         ),
+        forecast_result.heat_pump_shadow_request,
     )
 
 

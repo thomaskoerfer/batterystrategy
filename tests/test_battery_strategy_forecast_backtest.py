@@ -232,3 +232,49 @@ def test_loader_rejects_unknown_trace_and_feature_store_schemas(tmp_path):
     assert mod.load_forecast_observations(tmp_path) == []
     with pytest.raises(ValueError, match="unsupported feature-store schema"):
         mod.load_actuals(feature_path)
+
+
+def test_loader_scores_whole_heat_pump_shadow_separately(tmp_path):
+    generated = 1_800_000_000_000
+    slot = (generated // mod.SLOT_MS + 1) * mod.SLOT_MS
+    _write_trace(tmp_path, generated_at_ms=generated, slots=[(slot, 0.3, 0.0, 0.1)])
+    path = next(tmp_path.rglob("*.json.gz"))
+    payload = json.loads(gzip.decompress(path.read_bytes()))
+    payload["schema_version"] = 7
+    forecast_slot = [slot, slot + mod.SLOT_MS, 0.25, 0.1, 0.4, 12, 1.0, []]
+    payload["forecast_shadows"] = {
+        "heat_pump": {
+            "status": "completed",
+            "forecast": {
+                "generated_at_ms": generated,
+                "total": {"model_version": "wp-shadow-v1", "slots": [forecast_slot]},
+                "components": [
+                    {
+                        "component_key": "heat_pump_space_heating",
+                        "model_version": "heating-shadow-v1",
+                        "slots": [forecast_slot],
+                    }
+                ],
+            },
+        }
+    }
+    path.write_bytes(gzip.compress(json.dumps(payload).encode()))
+    actual = _actual(slot)
+    actual["load_components"].append(
+        {
+            "key": "heat_pump_space_heating",
+            "energy_kwh": 0.2,
+            "coverage": 1.0,
+            "flags": [],
+        }
+    )
+
+    residuals = mod.compare_forecasts(
+        mod.load_forecast_observations(tmp_path),
+        {slot: actual},
+        as_of_ms=slot + mod.SLOT_MS,
+    )
+
+    shadow = {item.series: item for item in residuals if item.series.startswith("shadow")}
+    assert shadow["shadow_heat_pump_total"].actual_kwh == pytest.approx(0.25)
+    assert shadow["shadow_load_component:heat_pump_space_heating"].actual_kwh == 0.2

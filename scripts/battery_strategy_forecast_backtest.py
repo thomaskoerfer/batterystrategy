@@ -14,7 +14,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 SLOT_MS = 15 * 60 * 1000
-SUPPORTED_TRACE_SCHEMAS = frozenset({1, 2})
+SUPPORTED_TRACE_SCHEMAS = frozenset(range(1, 8))
 SUPPORTED_FEATURE_STORE_SCHEMAS = frozenset({1, 2, 3})
 DEFAULT_TRACE_DIRECTORY = "/config/battery_strategy_forecast_trace"
 DEFAULT_FEATURE_STORE = "/config/battery_strategy_features.json.gz"
@@ -124,6 +124,33 @@ def load_forecast_observations(
                                 load_generated_at_ms,
                             )
                         )
+                heat_pump_shadow = (
+                    payload.get("forecast_shadows", {}).get("heat_pump") or {}
+                )
+                if heat_pump_shadow.get("status") == "completed":
+                    shadow_forecast = heat_pump_shadow.get("forecast") or {}
+                    shadow_generated_at_ms = int(
+                        shadow_forecast.get("generated_at_ms", vintage_generated_at_ms)
+                    )
+                    total = shadow_forecast.get("total")
+                    if isinstance(total, dict):
+                        observations.extend(
+                            _series_observations(
+                                "shadow_heat_pump_total",
+                                total,
+                                shadow_generated_at_ms,
+                            )
+                        )
+                    for component in shadow_forecast.get("components", []):
+                        key = str(component.get("component_key") or "")
+                        if key:
+                            observations.extend(
+                                _series_observations(
+                                    f"shadow_load_component:{key}",
+                                    component,
+                                    shadow_generated_at_ms,
+                                )
+                            )
             except OSError, EOFError, UnicodeError, ValueError, TypeError, KeyError:
                 continue
     return observations
@@ -306,9 +333,22 @@ def _actual_value(series: str, actual: dict | None) -> float | None:
         if flags.intersection(PV_INVALID_FLAGS):
             return None
         return _nonnegative_finite(actual.get("pv_generation_kwh"))
+    if series == "shadow_heat_pump_total":
+        values = [
+            _actual_component_value(actual, key)
+            for key in ("heat_pump_dhw", "heat_pump_space_heating")
+        ]
+        return None if any(value is None for value in values) else sum(values)
+    if series.startswith("shadow_load_component:"):
+        return _actual_component_value(
+            actual, series.removeprefix("shadow_load_component:")
+        )
     if not series.startswith("load_component:"):
         return None
-    key = series.removeprefix("load_component:")
+    return _actual_component_value(actual, series.removeprefix("load_component:"))
+
+
+def _actual_component_value(actual: dict, key: str) -> float | None:
     for component in actual.get("load_components", []):
         if str(component.get("key")) != key:
             continue
