@@ -97,7 +97,9 @@ evidence exists the verdict is `insufficient_data`; otherwise it is explicitly
 days, and a run must be bracketed by observed inactive slots within the same
 day. Status rates use configured candidate vintages as their denominator;
 `not_configured` remains visible but cannot contribute evidence. At least 95%
-of configured candidate vintages must be `ready`.
+of configured candidate vintages must be `ready`. Paired error and bootstrap
+metrics are likewise restricted to vintages issued on those complete configured
+local days.
 
 Schemas 7 and 8 store this optional whole-heat-pump candidate in
 `forecast_shadows.heat_pump`. It runs after authoritative publication and is

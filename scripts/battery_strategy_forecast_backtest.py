@@ -336,6 +336,14 @@ def evaluate_heat_pump_gate(
 ) -> dict[str, object]:
     """Evaluate the pre-registered whole-heat-pump promotion gate."""
     zone = ZoneInfo(timezone)
+    status_counts: dict[str, int] = defaultdict(int)
+    for item in statuses:
+        status_counts[item.status] += 1
+    experiment_statuses = [
+        item for item in statuses if item.status not in {"not_configured", "unknown"}
+    ]
+    complete_dates = _complete_trace_dates(experiment_statuses, zone)
+    complete_days = len(complete_dates)
     residual_by_key = {
         (item.series, item.generated_at_ms, item.start_ms): item for item in residuals
     }
@@ -344,6 +352,13 @@ def evaluate_heat_pump_gate(
     for key, shadow in residual_by_key.items():
         series, generated_at_ms, start_ms = key
         if series != "shadow_heat_pump_total":
+            continue
+        generated_date = (
+            datetime.fromtimestamp(generated_at_ms / 1000.0, UTC)
+            .astimezone(zone)
+            .date()
+        )
+        if generated_date not in complete_dates:
             continue
         authoritative_dhw = residual_by_key.get(
             ("load_component:heat_pump_dhw", generated_at_ms, start_ms)
@@ -361,7 +376,7 @@ def evaluate_heat_pump_gate(
         )
         paired.append(
             (
-                start_ms,
+                generated_at_ms,
                 authoritative_error,
                 shadow.error_kwh,
             )
@@ -376,14 +391,6 @@ def evaluate_heat_pump_gate(
     dhw_authoritative_mae = _mean_abs(item[0] for item in dhw_pairs)
     dhw_shadow_mae = _mean_abs(item[1] for item in dhw_pairs)
     confidence = _daily_block_bootstrap_mae_delta(paired, zone)
-    status_counts: dict[str, int] = defaultdict(int)
-    for item in statuses:
-        status_counts[item.status] += 1
-    experiment_statuses = [
-        item for item in statuses if item.status not in {"not_configured", "unknown"}
-    ]
-    complete_dates = _complete_trace_dates(experiment_statuses, zone)
-    complete_days = len(complete_dates)
     heating_runs = _count_complete_component_runs(
         actuals, "heat_pump_space_heating", complete_dates, zone
     )
@@ -515,9 +522,11 @@ def _count_complete_component_runs(actuals, component_key, complete_dates, zone)
 
 def _daily_block_bootstrap_mae_delta(paired, zone):
     by_day: dict[datetime.date, list[float]] = defaultdict(list)
-    for start_ms, authoritative_error, shadow_error in paired:
+    for generated_at_ms, authoritative_error, shadow_error in paired:
         local_day = (
-            datetime.fromtimestamp(start_ms / 1000.0, UTC).astimezone(zone).date()
+            datetime.fromtimestamp(generated_at_ms / 1000.0, UTC)
+            .astimezone(zone)
+            .date()
         )
         by_day[local_day].append(abs(shadow_error) - abs(authoritative_error))
     day_means = [sum(values) / len(values) for values in by_day.values() if values]

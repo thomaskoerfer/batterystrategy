@@ -166,10 +166,12 @@ limited to compressor time not occupied by forecast DHW. Missing or zero-energy
 DHW active-power evidence is marked `estimated` rather than presented as a
 fully evidenced coupling.
 
-The initial candidate emits P50 only. Historical variation between neighboring
-actual slots is not labelled as forecast uncertainty. P10/P90 remain absent
-until enough issued candidate vintages have matured to calibrate residuals by
-model version and lead-time class.
+The initial candidate emits P50 only, including the retained production DHW
+point forecast. Production DHW quantiles are not relabelled as candidate
+uncertainty. Historical variation between neighboring actual slots is likewise
+not labelled as forecast uncertainty. P10/P90 remain absent until enough issued
+candidate vintages have matured to calibrate residuals by model version and
+lead-time class.
 
 The candidate is not part of the authoritative `LoadForecast`. Forecasting
 captures an immutable request, and evaluation executes it only after the
