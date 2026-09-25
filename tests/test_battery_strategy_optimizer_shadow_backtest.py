@@ -1,4 +1,6 @@
+import gzip
 import importlib.util
+import json
 import pathlib
 import sys
 
@@ -12,6 +14,27 @@ spec = importlib.util.spec_from_file_location(
 mod = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = mod
 spec.loader.exec_module(mod)
+
+
+def test_trace_loader_accepts_schema_7_shadow_envelope_only(tmp_path):
+    day = tmp_path / "2026-09-25"
+    day.mkdir()
+    valid = {
+        "schema_version": 7,
+        "non_authoritative": True,
+        "generated_at_ms": 1,
+        "optimizer_plans": {},
+    }
+    invalid = {
+        "schema_version": 7,
+        "non_authoritative": True,
+        "generated_at_ms": 2,
+        "optimizer_plan": {},
+    }
+    (day / "1.json.gz").write_bytes(gzip.compress(json.dumps(valid).encode()))
+    (day / "2.json.gz").write_bytes(gzip.compress(json.dumps(invalid).encode()))
+
+    assert mod.load_traces(tmp_path, 0, 3) == [valid]
 
 
 def test_scenario_scores_report_crps_coverage_and_ev_brier():

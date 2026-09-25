@@ -155,8 +155,16 @@ space-heating model while retaining the production DHW cycle model. The
 candidate estimates space-heating state and electrical energy from causal
 component history, forecast outdoor temperature, target flow temperature,
 current heating state, active-run age and measured compressor input power. DHW
-occupancy suppresses simultaneous space heating and carries blocked demand into
-available following slots.
+occupancy is inferred from forecast DHW energy and historically observed DHW
+active power. Only occupancy beyond the comparable historical slots suppresses
+space heating and carries blocked demand into available following slots. This
+keeps DHW interruptions and subsequent recovery already present in history from
+being counted twice.
+
+The initial candidate emits P50 only. Historical variation between neighboring
+actual slots is not labelled as forecast uncertainty. P10/P90 remain absent
+until enough issued candidate vintages have matured to calibrate residuals by
+model version and lead-time class.
 
 The candidate is not part of the authoritative `LoadForecast`. Forecasting
 captures an immutable request, and evaluation executes it only after the

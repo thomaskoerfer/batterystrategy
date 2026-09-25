@@ -247,6 +247,7 @@ def test_loader_scores_whole_heat_pump_shadow_separately(tmp_path):
             "status": "completed",
             "forecast": {
                 "generated_at_ms": generated,
+                "diagnostics": {"status": "cold_start"},
                 "total": {"model_version": "wp-shadow-v1", "slots": [forecast_slot]},
                 "components": [
                     {
@@ -275,6 +276,84 @@ def test_loader_scores_whole_heat_pump_shadow_separately(tmp_path):
         as_of_ms=slot + mod.SLOT_MS,
     )
 
-    shadow = {item.series: item for item in residuals if item.series.startswith("shadow")}
+    shadow = {
+        item.series: item for item in residuals if item.series.startswith("shadow")
+    }
     assert shadow["shadow_heat_pump_total"].actual_kwh == pytest.approx(0.25)
     assert shadow["shadow_load_component:heat_pump_space_heating"].actual_kwh == 0.2
+    assert mod.load_heat_pump_trace_statuses(tmp_path)[0].status == "cold_start"
+
+
+def test_heat_pump_gate_requires_paired_improvement_and_complete_days():
+    residuals = []
+    statuses = []
+    actuals = {}
+    for index in range(7 * 96):
+        start_ms = index * mod.SLOT_MS
+        generated_at_ms = start_ms
+        statuses.append(mod.HeatPumpTraceStatus(generated_at_ms, start_ms, "ready"))
+        for series, forecast, actual in (
+            ("load_component:heat_pump_dhw", 0.1, 0.1),
+            ("shadow_load_component:heat_pump_dhw", 0.1, 0.1),
+            ("load_component:heat_pump_space_heating", 0.2, 0.1),
+            ("shadow_heat_pump_total", 0.22, 0.2),
+        ):
+            residuals.append(
+                mod.Residual(
+                    series,
+                    "model-v1",
+                    "0-1h",
+                    generated_at_ms,
+                    start_ms,
+                    forecast,
+                    actual,
+                    None,
+                    None,
+                    1.0,
+                )
+            )
+        active = index in {1, 3, 5}
+        actuals[start_ms] = {
+            "coverage": 1.0,
+            "flags": [],
+            "load_components": [
+                {
+                    "key": "heat_pump_dhw",
+                    "energy_kwh": 0.1 if active else 0.0,
+                    "coverage": 1.0,
+                    "flags": [],
+                },
+                {
+                    "key": "heat_pump_space_heating",
+                    "energy_kwh": 0.1 if active else 0.0,
+                    "coverage": 1.0,
+                    "flags": [],
+                },
+            ],
+        }
+
+    report = mod.evaluate_heat_pump_gate(residuals, statuses, actuals, timezone="UTC")
+
+    assert report["verdict"] == "pass"
+    assert report["evidence"]["complete_local_days"] == 7
+    assert report["evidence"]["space_heating_runs"] == 3
+    assert report["evidence"]["dhw_cycles"] == 3
+    assert (
+        report["paired_metrics"]["shadow_mae_kwh"]
+        < report["paired_metrics"]["authoritative_mae_kwh"]
+    )
+
+
+def test_heat_pump_gate_reports_insufficient_data_instead_of_passing_early():
+    statuses = [
+        mod.HeatPumpTraceStatus(
+            index * mod.SLOT_MS, index * mod.SLOT_MS, "not_configured"
+        )
+        for index in range(7 * 96)
+    ]
+
+    report = mod.evaluate_heat_pump_gate([], statuses, {}, timezone="UTC")
+
+    assert report["verdict"] == "insufficient_data"
+    assert report["evidence"]["complete_local_days"] == 0
+    assert report["evidence"]["candidate_status_counts"] == {"not_configured": 672}

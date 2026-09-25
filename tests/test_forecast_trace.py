@@ -156,10 +156,7 @@ def test_trace_keeps_heat_pump_candidate_separate_from_authoritative_forecast(tm
     evaluation = payload["forecast_shadows"]["heat_pump"]
     assert evaluation["non_authoritative"] is True
     assert evaluation["status"] == "completed"
-    assert (
-        evaluation["forecast"]["model_version"]
-        == "whole-heat-pump-shadow-v1"
-    )
+    assert evaluation["forecast"]["model_version"] == "whole-heat-pump-shadow-v1"
 
 
 def test_trace_writes_only_one_vintage_per_quarter(tmp_path):
@@ -338,7 +335,9 @@ def test_heat_pump_shadow_failure_is_contained_after_publication(tmp_path, monke
         heat_pump_shadow_request=request,
     )
 
-    payload = json.loads(gzip.decompress(next(tmp_path.rglob("*.json.gz")).read_bytes()))
+    payload = json.loads(
+        gzip.decompress(next(tmp_path.rglob("*.json.gz")).read_bytes())
+    )
     assert payload["forecast_shadows"]["heat_pump"]["status"] == "failed"
     assert payload["forecast_shadows"]["heat_pump"]["error_type"] == "RuntimeError"
     assert payload["optimizer_plans"]["authoritative"] is None

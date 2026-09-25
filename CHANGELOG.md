@@ -5,6 +5,9 @@
 - Add an isolated whole-heat-pump forecast shadow with bounded schema-7 trace
   evidence and offline component evaluation. Production forecast and control
   behavior remain unchanged.
+- Keep the initial whole-heat-pump candidate P50-only until matured residuals
+  support calibrated uncertainty, model only incremental DHW displacement, and
+  add an executable paired promotion gate with coverage and cycle evidence.
 
 All notable changes to Battery Strategy are documented here.
 

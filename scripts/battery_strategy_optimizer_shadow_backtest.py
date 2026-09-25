@@ -42,7 +42,7 @@ SLOT_MS = 15 * 60 * 1000
 # quarter-hour boundary is the operational boundary decision, even though its
 # timestamp naturally includes scheduler latency.
 BOUNDARY_DECISION_TOLERANCE_MS = 30_000
-TRACE_SCHEMA = 4
+TRACE_SCHEMAS = frozenset({4, 7})
 DAY_MS = 24 * 60 * 60 * 1000
 DEFAULT_TRACE_DIRECTORY = "/config/battery_strategy_forecast_trace"
 DEFAULT_FEATURE_STORE = "/config/battery_strategy_features.json.gz"
@@ -113,7 +113,8 @@ def load_traces(root: str | Path, start_ms: int, end_ms: int) -> list[dict]:
             payload = json.loads(gzip.decompress(path.read_bytes()))
             generated = int(payload["generated_at_ms"])
             if (
-                payload.get("schema_version") == TRACE_SCHEMA
+                payload.get("schema_version") in TRACE_SCHEMAS
+                and isinstance(payload.get("optimizer_plans"), dict)
                 and payload.get("non_authoritative") is True
                 and start_ms <= generated <= end_ms
             ):
