@@ -8,16 +8,23 @@ import csv
 import gzip
 import json
 import math
+import random
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 SLOT_MS = 15 * 60 * 1000
-SUPPORTED_TRACE_SCHEMAS = frozenset(range(1, 8))
+SUPPORTED_TRACE_SCHEMAS = frozenset(range(1, 9))
 SUPPORTED_FEATURE_STORE_SCHEMAS = frozenset({1, 2, 3})
 DEFAULT_TRACE_DIRECTORY = "/config/battery_strategy_forecast_trace"
 DEFAULT_FEATURE_STORE = "/config/battery_strategy_features.json.gz"
+HEAT_PUMP_MIN_RUNS = 3
+HEAT_PUMP_MIN_DHW_CYCLES = 3
+HEAT_PUMP_MIN_COMPLETE_DAYS = 7
+HEAT_PUMP_ACTIVE_KWH = 0.025
+HEAT_PUMP_DHW_MAE_TOLERANCE_KWH = 0.005
 LOAD_INVALID_FLAGS = frozenset(
     {
         "estimated",
@@ -69,6 +76,15 @@ class Residual:
     @property
     def error_kwh(self) -> float:
         return self.forecast_kwh - self.actual_kwh
+
+
+@dataclass(frozen=True, slots=True)
+class HeatPumpTraceStatus:
+    """One persisted whole-heat-pump candidate outcome."""
+
+    generated_at_ms: int
+    vintage_bucket_ms: int
+    status: str
 
 
 def load_forecast_observations(
@@ -169,6 +185,50 @@ def load_actuals(feature_store: str | Path) -> dict[int, dict]:
     }
 
 
+def load_heat_pump_trace_statuses(
+    trace_directory: str | Path,
+    *,
+    start_generated_ms: int = 0,
+    end_generated_ms: int = 2**63 - 1,
+) -> list[HeatPumpTraceStatus]:
+    """Load candidate outcomes, including cold starts and contained failures."""
+    root = Path(trace_directory)
+    if not root.exists():
+        return []
+    results: list[HeatPumpTraceStatus] = []
+    for path in sorted(root.glob("????-??-??/*.json.gz")):
+        try:
+            payload = json.loads(gzip.decompress(path.read_bytes()))
+            generated_at_ms = int(payload["generated_at_ms"])
+            if (
+                int(payload.get("schema_version", -1)) not in SUPPORTED_TRACE_SCHEMAS
+                or payload.get("non_authoritative") is not True
+                or not start_generated_ms <= generated_at_ms <= end_generated_ms
+            ):
+                continue
+            candidate = (payload.get("forecast_shadows") or {}).get("heat_pump")
+            if not isinstance(candidate, dict):
+                continue
+            status = str(candidate.get("status") or "unknown")
+            forecast = candidate.get("forecast")
+            if status == "completed" and isinstance(forecast, dict):
+                diagnostics = forecast.get("diagnostics") or {}
+                if diagnostics.get("status") == "cold_start":
+                    status = "cold_start"
+                else:
+                    status = "ready"
+            results.append(
+                HeatPumpTraceStatus(
+                    generated_at_ms,
+                    int(payload.get("vintage_bucket_ms", generated_at_ms)),
+                    status,
+                )
+            )
+        except OSError, EOFError, UnicodeError, ValueError, TypeError, KeyError:
+            continue
+    return results
+
+
 def compare_forecasts(
     observations: list[ForecastObservation],
     actuals: dict[int, dict],
@@ -264,6 +324,194 @@ def summarize(residuals: list[Residual]) -> list[dict[str, object]]:
             }
         )
     return rows
+
+
+def evaluate_heat_pump_gate(
+    residuals: list[Residual],
+    statuses: list[HeatPumpTraceStatus],
+    actuals: dict[int, dict],
+    *,
+    timezone: str,
+) -> dict[str, object]:
+    """Evaluate the pre-registered whole-heat-pump promotion gate."""
+    zone = ZoneInfo(timezone)
+    residual_by_key = {
+        (item.series, item.generated_at_ms, item.start_ms): item for item in residuals
+    }
+    paired = []
+    dhw_pairs = []
+    for key, shadow in residual_by_key.items():
+        series, generated_at_ms, start_ms = key
+        if series != "shadow_heat_pump_total":
+            continue
+        authoritative_dhw = residual_by_key.get(
+            ("load_component:heat_pump_dhw", generated_at_ms, start_ms)
+        )
+        authoritative_heating = residual_by_key.get(
+            ("load_component:heat_pump_space_heating", generated_at_ms, start_ms)
+        )
+        shadow_dhw = residual_by_key.get(
+            ("shadow_load_component:heat_pump_dhw", generated_at_ms, start_ms)
+        )
+        if authoritative_dhw is None or authoritative_heating is None:
+            continue
+        authoritative_error = (
+            authoritative_dhw.error_kwh + authoritative_heating.error_kwh
+        )
+        paired.append(
+            (
+                start_ms,
+                authoritative_error,
+                shadow.error_kwh,
+            )
+        )
+        if shadow_dhw is not None:
+            dhw_pairs.append((authoritative_dhw.error_kwh, shadow_dhw.error_kwh))
+
+    authoritative_mae = _mean_abs(item[1] for item in paired)
+    shadow_mae = _mean_abs(item[2] for item in paired)
+    authoritative_bias = _mean(item[1] for item in paired)
+    shadow_bias = _mean(item[2] for item in paired)
+    dhw_authoritative_mae = _mean_abs(item[0] for item in dhw_pairs)
+    dhw_shadow_mae = _mean_abs(item[1] for item in dhw_pairs)
+    confidence = _daily_block_bootstrap_mae_delta(paired, zone)
+    status_counts: dict[str, int] = defaultdict(int)
+    for item in statuses:
+        status_counts[item.status] += 1
+    experiment_statuses = [
+        item for item in statuses if item.status not in {"not_configured", "unknown"}
+    ]
+    complete_days = _complete_trace_days(experiment_statuses, zone)
+    window_start_ms = min(
+        (item.vintage_bucket_ms for item in experiment_statuses), default=0
+    )
+    window_end_ms = max(
+        (item.vintage_bucket_ms + SLOT_MS for item in experiment_statuses), default=0
+    )
+    heating_runs = _count_component_runs(
+        actuals, "heat_pump_space_heating", window_start_ms, window_end_ms
+    )
+    dhw_cycles = _count_component_runs(
+        actuals, "heat_pump_dhw", window_start_ms, window_end_ms
+    )
+
+    evidence_ready = (
+        complete_days >= HEAT_PUMP_MIN_COMPLETE_DAYS
+        and heating_runs >= HEAT_PUMP_MIN_RUNS
+        and dhw_cycles >= HEAT_PUMP_MIN_DHW_CYCLES
+        and bool(paired)
+        and bool(dhw_pairs)
+        and confidence is not None
+    )
+    if not evidence_ready:
+        verdict = "insufficient_data"
+    else:
+        assert authoritative_mae is not None
+        assert shadow_mae is not None
+        assert authoritative_bias is not None
+        assert shadow_bias is not None
+        assert dhw_authoritative_mae is not None
+        assert dhw_shadow_mae is not None
+        assert confidence is not None
+        improved = (
+            shadow_mae <= authoritative_mae
+            and abs(shadow_bias) <= abs(authoritative_bias)
+            and confidence[1] <= 0.0
+        )
+        dhw_stable = (
+            dhw_shadow_mae <= dhw_authoritative_mae + HEAT_PUMP_DHW_MAE_TOLERANCE_KWH
+        )
+        verdict = "pass" if improved and dhw_stable else "fail"
+
+    return {
+        "verdict": verdict,
+        "requirements": {
+            "complete_local_days": HEAT_PUMP_MIN_COMPLETE_DAYS,
+            "space_heating_runs": HEAT_PUMP_MIN_RUNS,
+            "dhw_cycles": HEAT_PUMP_MIN_DHW_CYCLES,
+            "dhw_mae_regression_tolerance_kwh": (HEAT_PUMP_DHW_MAE_TOLERANCE_KWH),
+        },
+        "evidence": {
+            "complete_local_days": complete_days,
+            "space_heating_runs": heating_runs,
+            "dhw_cycles": dhw_cycles,
+            "paired_slots": len(paired),
+            "dhw_paired_slots": len(dhw_pairs),
+            "candidate_status_counts": dict(sorted(status_counts.items())),
+        },
+        "paired_metrics": {
+            "authoritative_mae_kwh": authoritative_mae,
+            "shadow_mae_kwh": shadow_mae,
+            "authoritative_bias_kwh": authoritative_bias,
+            "shadow_bias_kwh": shadow_bias,
+            "shadow_minus_authoritative_mae_95pct_ci_kwh": confidence,
+            "authoritative_dhw_mae_kwh": dhw_authoritative_mae,
+            "shadow_dhw_mae_kwh": dhw_shadow_mae,
+        },
+    }
+
+
+def _complete_trace_days(statuses, zone):
+    buckets_by_day: dict[datetime.date, set[int]] = defaultdict(set)
+    for item in statuses:
+        local = datetime.fromtimestamp(item.vintage_bucket_ms / 1000.0, UTC).astimezone(
+            zone
+        )
+        buckets_by_day[local.date()].add(item.vintage_bucket_ms)
+    complete = 0
+    for local_day, buckets in buckets_by_day.items():
+        local_start = datetime.combine(local_day, datetime.min.time(), zone)
+        local_end = datetime.combine(
+            local_day + timedelta(days=1), datetime.min.time(), zone
+        )
+        expected = int((local_end.timestamp() - local_start.timestamp()) / (15 * 60))
+        if len(buckets) == expected:
+            complete += 1
+    return complete
+
+
+def _count_component_runs(actuals, component_key, window_start_ms, window_end_ms):
+    runs = 0
+    active = False
+    previous_start = None
+    for start_ms, actual in sorted(actuals.items()):
+        if not window_start_ms <= start_ms < window_end_ms:
+            continue
+        energy = _actual_component_value(actual, component_key)
+        contiguous = previous_start is not None and start_ms - previous_start == SLOT_MS
+        now_active = energy is not None and energy >= HEAT_PUMP_ACTIVE_KWH
+        if now_active and (not active or not contiguous):
+            runs += 1
+        active = now_active
+        previous_start = start_ms
+    return runs
+
+
+def _daily_block_bootstrap_mae_delta(paired, zone):
+    by_day: dict[datetime.date, list[float]] = defaultdict(list)
+    for start_ms, authoritative_error, shadow_error in paired:
+        local_day = (
+            datetime.fromtimestamp(start_ms / 1000.0, UTC).astimezone(zone).date()
+        )
+        by_day[local_day].append(abs(shadow_error) - abs(authoritative_error))
+    day_means = [sum(values) / len(values) for values in by_day.values() if values]
+    if len(day_means) < 2:
+        return None
+    rng = random.Random(0)
+    samples = sorted(
+        sum(rng.choice(day_means) for _ in day_means) / len(day_means)
+        for _ in range(2000)
+    )
+    return [samples[49], samples[1949]]
+
+
+def _mean(values):
+    values = list(values)
+    return sum(values) / len(values) if values else None
+
+
+def _mean_abs(values):
+    return _mean(abs(value) for value in values)
 
 
 def _series_observations(
@@ -410,6 +658,7 @@ def main() -> int:
     parser.add_argument("--feature-store", default=DEFAULT_FEATURE_STORE)
     parser.add_argument("--days", type=int, default=7)
     parser.add_argument("--as-of")
+    parser.add_argument("--timezone", default="UTC")
     parser.add_argument("--json-out")
     parser.add_argument("--csv-out")
     args = parser.parse_args()
@@ -421,10 +670,14 @@ def main() -> int:
     observations = load_forecast_observations(
         args.trace_dir, start_generated_ms=start_ms, end_generated_ms=as_of_ms
     )
-    residuals = compare_forecasts(
-        observations, load_actuals(args.feature_store), as_of_ms=as_of_ms
-    )
+    actuals = load_actuals(args.feature_store)
+    residuals = compare_forecasts(observations, actuals, as_of_ms=as_of_ms)
     rows = summarize(residuals)
+    statuses = load_heat_pump_trace_statuses(
+        args.trace_dir,
+        start_generated_ms=start_ms,
+        end_generated_ms=as_of_ms,
+    )
     report = {
         "non_authoritative": True,
         "as_of_ms": as_of_ms,
@@ -432,6 +685,12 @@ def main() -> int:
         "forecast_vintages": len({item.generated_at_ms for item in observations}),
         "matured_comparisons": len(residuals),
         "metrics": rows,
+        "heat_pump_shadow_gate": evaluate_heat_pump_gate(
+            residuals,
+            statuses,
+            actuals,
+            timezone=args.timezone,
+        ),
     }
     rendered = json.dumps(report, indent=2, sort_keys=True)
     if args.json_out:

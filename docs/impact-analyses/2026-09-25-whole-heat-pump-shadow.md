@@ -18,7 +18,7 @@ Unknown features remain ignorable.
 
 `ProductionForecastResult`, `PlanningRunOutcome` and the trace scheduler gain
 an internal immutable evaluation request. It is not an input to optimization or
-control. Forecast trace schema 7 gains an optional observation block; this is a
+control. Forecast trace schema 8 gains an optional observation block; this is a
 versioned evaluation format, not a production-layer contract change.
 
 ## Runtime isolation
@@ -37,23 +37,28 @@ The candidate models DHW and space heating as separate electrical-load
 components. Space heating uses outdoor temperature, target flow temperature,
 time/calendar context, current heating state, active-run age and current
 electrical input power. It does not use prices, battery state, PV, EV, optimizer
-output or live commands. DHW compressor occupancy suppresses simultaneous space
-heating and exposes deferred recovery in later slots.
+output or live commands. Forecast DHW energy and historical DHW active power
+estimate compressor occupancy. Only additional occupancy relative to comparable
+historical slots suppresses simultaneous space heating and exposes deferred
+recovery in later slots. The initial candidate emits P50 only; forecast
+quantiles require later calibration from matured candidate residuals.
 
 ## Storage and evaluation
 
 One additional compressed candidate block is stored in the existing bounded
 quarter-hour trace. Existing 21-day and 64 MiB caps remain authoritative. The
-offline forecast evaluator reads schemas 1 through 7 and reports the candidate
+offline forecast evaluator reads schemas 1 through 8 and reports the candidate
 components and combined heat-pump series separately.
 
-The first decision point is after seven complete local days with at least three
-space-heating runs and three DHW cycles. Promotion is manual and requires a
-separate impact analysis. The candidate must improve combined heat-pump MAE and
-absolute bias without materially regressing DHW, and its lead-time behavior and
-interval coverage must be inspectable.
+The evaluator returns `insufficient_data`, `pass` or `fail`. The first decision
+point is after seven complete local trace days with at least three space-heating
+runs and three DHW cycles. Promotion is manual and requires a separate impact
+analysis. Paired slot evidence must improve combined heat-pump MAE, not worsen
+absolute bias, keep the local-day block-bootstrap upper confidence bound for
+the MAE delta non-positive, and keep DHW MAE within 0.005 kWh per slot of the
+authoritative model. Candidate status and missing evidence remain explicit.
 
 ## Rollback
 
-Reinstall the preceding release. Schema-7 trace files are observational and are
+Reinstall the preceding release. Schema-8 trace files are observational and are
 ignored by older runtime code. Removing them is unnecessary for safe rollback.

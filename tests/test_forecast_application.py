@@ -48,6 +48,7 @@ class ForecastProductionTests(unittest.TestCase):
             "dataclasses",
             "datetime",
             "hashlib",
+            "heapq",
             "math",
             "statistics",
             "zoneinfo",

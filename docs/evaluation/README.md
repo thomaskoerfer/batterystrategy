@@ -39,12 +39,14 @@ quarter-hour in a compressed, 21-day sidecar with an additional 64 MiB cap
 below the Home Assistant config
 directory. Each vintage contains the already-produced load and PV contract
 outputs, model versions, target slots, P50 and optional calibrated quantiles,
-quality metadata and named load-component forecasts. Schema 5 stores the
+quality metadata and named load-component forecasts. Current schema 8 stores the
 separate EV marginal forecast, bounded coherent scenario set, Scenario Builder
 diagnostics, optimizer selection/fallback diagnostics and the authoritative
 plan, so identical vintages can be compared against actuals and perfect
-foresight. Historical schema-4 shadow traces remain readable by the offline
-evaluator but are no longer produced.
+foresight. Historical schema-4 and schema-7 shadow envelopes and schema-5
+cutover envelopes remain readable by the offline evaluator but are no longer
+produced. Readers identify historical envelope semantics from their payload
+keys rather than assuming every higher schema has the same shape.
 The same sidecar stores the redacted normalized market curve, battery state and
 constraints, commercial policy and EV interaction policy required to reproduce
 the optimization problem; it contains no entity or device identifiers.
@@ -71,24 +73,29 @@ lead-time bucket. Example:
 python3 scripts/battery_strategy_forecast_backtest.py \
   --trace-dir PATH_TO_FORECAST_TRACE \
   --feature-store PATH_TO_FEATURE_STORE \
-  --days 7
+  --days 7 \
+  --timezone HA_TIMEZONE
 ```
 
 These metrics are evidence for a later reviewed model change, not an online
 reinforcement loop. The existing online calibration remains owned by the
 forecast application and is unchanged by this trace or evaluator.
 
-For schema-7 vintages the same utility additionally reports
+For schema-7 and schema-8 vintages the same utility additionally reports
 `shadow_heat_pump_total`, `shadow_load_component:heat_pump_dhw` and
 `shadow_load_component:heat_pump_space_heating`. Review them against their
-authoritative `load_component:*` counterparts by lead-time bucket. Collect at
-least seven complete local days, at least three complete heating runs and at
-least three DHW cycles before proposing promotion. Promotion requires lower
-combined heat-pump MAE and absolute bias without a material DHW regression;
-coverage and cold-start fallbacks are reported separately rather than hidden in
-the aggregate.
+authoritative `load_component:*` counterparts by lead-time bucket. The report's
+`heat_pump_shadow_gate` performs the pre-registered paired comparison. It
+requires at least seven local days with every expected quarter-hour vintage, at
+least three complete heating runs and at least three DHW cycles. It reports
+`ready`, `cold_start` and `failed` outcomes separately. Promotion requires lower
+paired combined heat-pump MAE, no worse absolute bias, a non-positive upper
+bound of a deterministic 95% local-day block-bootstrap interval for the MAE
+difference, and no DHW MAE regression beyond 0.005 kWh per slot. Until all
+evidence exists the verdict is `insufficient_data`; otherwise it is explicitly
+`pass` or `fail`.
 
-Schema 7 stores this optional whole-heat-pump candidate in
+Schemas 7 and 8 store this optional whole-heat-pump candidate in
 `forecast_shadows.heat_pump`. It runs after authoritative publication and is
 never supplied to optimization, compilation, live control or actuation. A
 candidate failure is recorded by status and exception type without invalidating

@@ -8,6 +8,7 @@ evaluation layer.
 from __future__ import annotations
 
 import datetime as dt
+import heapq
 import math
 from dataclasses import dataclass
 from zoneinfo import ZoneInfo
@@ -28,7 +29,7 @@ from ..contracts import (
 SLOT_H = 0.25
 HEATING_KEY = "heat_pump_space_heating"
 DHW_KEY = "heat_pump_dhw"
-MODEL_VERSION = "whole-heat-pump-shadow-v1"
+MODEL_VERSION = "whole-heat-pump-shadow-v2"
 MAX_HISTORY_SLOTS = 90 * 96
 MAX_NEIGHBORS = 96
 MIN_ACTIVE_KWH = 0.025
@@ -81,6 +82,8 @@ class _HeatingSample:
     energy_kwh: float
     outdoor_temperature_c: float | None
     target_flow_temperature_c: float | None
+    dhw_occupancy: float
+    dhw_active_slot_kwh: float | None
     local_slot: int
     weekend: bool
 
@@ -110,14 +113,14 @@ def build_heat_pump_shadow_forecast(
             or (_driver_feature(driver, "heating_active_fraction") or 0.0) >= 0.5
         )
     )
-    active_age_s = max(
-        0.0, _driver_feature(driver, "heating_active_age_s") or 0.0
-    )
+    active_age_s = max(0.0, _driver_feature(driver, "heating_active_age_s") or 0.0)
     current_power_w = driver.power_w if driver is not None else 0.0
     weather_by_slot = {item.slot: item for item in weather}
     timezone = ZoneInfo(request.timezone)
     raw_slots: list[ForecastSlot] = []
     active_probabilities: list[float] = []
+    historical_dhw_occupancy: list[float] = []
+    dhw_active_slot_kwh: list[float | None] = []
     for index, slot in enumerate(request.slots):
         local = dt.datetime.fromtimestamp(slot.start_ms / 1000.0, dt.UTC).astimezone(
             timezone
@@ -132,25 +135,23 @@ def build_heat_pump_shadow_forecast(
         )
         target_flow = _driver_feature(driver, "target_flow_temperature_c")
         neighbors = _nearest_samples(samples, local, target_oat, target_flow)
-        expected_kwh, p10_kwh, p90_kwh, active_probability = _distribution(neighbors)
+        (
+            expected_kwh,
+            active_probability,
+            baseline_dhw_occupancy,
+            active_dhw_kwh,
+        ) = _distribution(neighbors)
         if current_active:
             elapsed_slots = active_age_s / (SLOT_H * 3600.0) + index
             persistence = _survival_probability(samples, elapsed_slots)
             live_energy = current_power_w * SLOT_H / 1000.0 * persistence
             expected_kwh = max(expected_kwh, live_energy)
             active_probability = max(active_probability, persistence)
-            p90_kwh = max(p90_kwh, current_power_w * SLOT_H / 1000.0)
         sample_count = len(neighbors)
-        energy = (
-            QuantileEnergy(
-                max(0.0, expected_kwh),
-                max(0.0, min(p10_kwh, expected_kwh)),
-                max(expected_kwh, p90_kwh),
-                sample_count,
-            )
-            if sample_count
-            else QuantileEnergy(max(0.0, expected_kwh))
-        )
+        # This candidate has no matured residual vintages yet. Emitting historical
+        # value dispersion as calibrated forecast quantiles would overstate what
+        # is known, so uncertainty stays absent until offline calibration exists.
+        energy = QuantileEnergy(max(0.0, expected_kwh))
         raw_slots.append(
             ForecastSlot(
                 slot,
@@ -161,11 +162,18 @@ def build_heat_pump_shadow_forecast(
             )
         )
         active_probabilities.append(active_probability)
+        historical_dhw_occupancy.append(baseline_dhw_occupancy)
+        dhw_active_slot_kwh.append(active_dhw_kwh)
 
-    coupled_slots = _couple_with_dhw(tuple(raw_slots), dhw.slots)
+    coupled_slots = _couple_with_dhw(
+        tuple(raw_slots),
+        dhw.slots,
+        tuple(historical_dhw_occupancy),
+        tuple(dhw_active_slot_kwh),
+    )
     heating = LoadForecastComponent(
         HEATING_KEY,
-        "space-heating-shadow-v1",
+        "space-heating-shadow-v2",
         min(request.as_of_ms, training_cutoff_ms),
         coupled_slots,
     )
@@ -219,6 +227,27 @@ def _heating_samples(
             or component.quality.flags
         ):
             continue
+        dhw = next(
+            (
+                candidate
+                for candidate in item.load_components
+                if candidate.component_key == DHW_KEY
+            ),
+            None,
+        )
+        dhw_occupancy = (
+            min(
+                1.0,
+                max(0.0, _feature(dhw.features, "dhw_charging_fraction") or 0.0),
+            )
+            if dhw is not None
+            else 0.0
+        )
+        dhw_active_slot_kwh = (
+            dhw.energy_kwh / dhw_occupancy
+            if dhw is not None and dhw_occupancy > 0.05
+            else None
+        )
         local = dt.datetime.fromtimestamp(
             item.slot.start_ms / 1000.0, dt.UTC
         ).astimezone(zone)
@@ -228,6 +257,8 @@ def _heating_samples(
                 component.energy_kwh,
                 _feature(component.features, "outdoor_temperature_c"),
                 _feature(component.features, "target_flow_temperature_c"),
+                dhw_occupancy,
+                dhw_active_slot_kwh,
                 local.hour * 4 + local.minute // 15,
                 local.weekday() >= 5,
             )
@@ -238,8 +269,8 @@ def _heating_samples(
 def _nearest_samples(samples, local, target_oat, target_flow):
     target_slot = local.hour * 4 + local.minute // 15
     weekend = local.weekday() >= 5
-    ranked = []
-    for sample in samples:
+
+    def ranked_sample(sample):
         slot_distance = abs(sample.local_slot - target_slot)
         slot_distance = min(slot_distance, 96 - slot_distance)
         distance = slot_distance / 8.0
@@ -249,14 +280,20 @@ def _nearest_samples(samples, local, target_oat, target_flow):
             distance += abs(sample.outdoor_temperature_c - target_oat) / 2.0
         if target_flow is not None and sample.target_flow_temperature_c is not None:
             distance += abs(sample.target_flow_temperature_c - target_flow) / 2.0
-        ranked.append((distance, sample))
-    ranked.sort(key=lambda item: (item[0], -item[1].start_ms))
-    return tuple(ranked[:MAX_NEIGHBORS])
+        return distance, sample
+
+    return tuple(
+        heapq.nsmallest(
+            MAX_NEIGHBORS,
+            (ranked_sample(sample) for sample in samples),
+            key=lambda item: (item[0], -item[1].start_ms),
+        )
+    )
 
 
 def _distribution(neighbors):
     if not neighbors:
-        return 0.0, 0.0, 0.0, 0.0
+        return 0.0, 0.0, 0.0, None
     weighted = tuple(
         (math.exp(-min(20.0, distance)), sample.energy_kwh)
         for distance, sample in neighbors
@@ -267,23 +304,25 @@ def _distribution(neighbors):
         sum(weight for weight, value in weighted if value >= MIN_ACTIVE_KWH)
         / total_weight
     )
-    return (
-        expected,
-        _weighted_quantile(weighted, 0.10),
-        _weighted_quantile(weighted, 0.90),
-        active_probability,
+    dhw_occupancy = (
+        sum(
+            weight * sample.dhw_occupancy
+            for (weight, _), (_, sample) in zip(weighted, neighbors, strict=True)
+        )
+        / total_weight
     )
-
-
-def _weighted_quantile(weighted, quantile):
-    ordered = sorted(weighted, key=lambda item: item[1])
-    threshold = sum(weight for weight, _ in ordered) * quantile
-    cumulative = 0.0
-    for weight, value in ordered:
-        cumulative += weight
-        if cumulative >= threshold:
-            return value
-    return ordered[-1][1]
+    active_dhw = tuple(
+        (math.exp(-min(20.0, distance)), sample.dhw_active_slot_kwh)
+        for distance, sample in neighbors
+        if sample.dhw_active_slot_kwh is not None
+    )
+    active_dhw_kwh = (
+        sum(weight * value for weight, value in active_dhw)
+        / sum(weight for weight, _ in active_dhw)
+        if active_dhw
+        else None
+    )
+    return expected, active_probability, dhw_occupancy, active_dhw_kwh
 
 
 def _survival_probability(samples, elapsed_slots):
@@ -308,41 +347,43 @@ def _survival_probability(samples, elapsed_slots):
     return remaining / len(durations)
 
 
-def _couple_with_dhw(heating_slots, dhw_slots):
+def _couple_with_dhw(
+    heating_slots,
+    dhw_slots,
+    historical_dhw_occupancy,
+    dhw_active_slot_kwh,
+):
     result = []
-    deferred = [0.0, 0.0, 0.0]
+    deferred = 0.0
     reference_capacity = max(
-        (item.energy.p90_kwh or item.energy.p50_kwh for item in heating_slots),
+        (item.energy.p50_kwh for item in heating_slots),
         default=0.0,
     )
-    for heating, dhw in zip(heating_slots, dhw_slots, strict=True):
-        calibrated = heating.energy.p10_kwh is not None
-        quantiles = [
-            heating.energy.p10_kwh or heating.energy.p50_kwh,
-            heating.energy.p50_kwh,
-            heating.energy.p90_kwh or heating.energy.p50_kwh,
-        ]
-        dhw_fraction = min(1.0, dhw.energy.p50_kwh / max(0.001, reference_capacity))
-        coupled = []
-        for index, value in enumerate(quantiles):
-            served = value * (1.0 - dhw_fraction)
-            deferred[index] += value - served
-            recovery = min(deferred[index], max(0.0, reference_capacity - served))
-            if dhw_fraction < 1e-9:
-                served += recovery
-                deferred[index] -= recovery
-            coupled.append(served)
+    for heating, dhw, baseline_occupancy, active_dhw_kwh in zip(
+        heating_slots,
+        dhw_slots,
+        historical_dhw_occupancy,
+        dhw_active_slot_kwh,
+        strict=True,
+    ):
+        predicted_occupancy = (
+            min(1.0, dhw.energy.p50_kwh / max(0.001, active_dhw_kwh))
+            if active_dhw_kwh is not None
+            else float(dhw.energy.p50_kwh > 1e-9)
+        )
+        incremental_occupancy = max(0.0, predicted_occupancy - baseline_occupancy)
+        historically_available = max(1e-6, 1.0 - baseline_occupancy)
+        displaced_fraction = min(1.0, incremental_occupancy / historically_available)
+        served = heating.energy.p50_kwh * (1.0 - displaced_fraction)
+        deferred += heating.energy.p50_kwh - served
+        if predicted_occupancy < 1e-9:
+            recovery = min(deferred, max(0.0, reference_capacity - served))
+            served += recovery
+            deferred -= recovery
         result.append(
             ForecastSlot(
                 heating.slot,
-                QuantileEnergy(
-                    coupled[1],
-                    min(coupled[0], coupled[1]),
-                    max(coupled[1], coupled[2]),
-                    heating.energy.calibration_samples,
-                )
-                if calibrated
-                else QuantileEnergy(coupled[1]),
+                QuantileEnergy(served),
                 heating.quality,
             )
         )
