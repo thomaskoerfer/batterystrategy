@@ -159,7 +159,10 @@ occupancy is inferred from forecast DHW energy and historically observed DHW
 active power. Only occupancy beyond the comparable historical slots suppresses
 space heating and carries blocked demand into available following slots. This
 keeps DHW interruptions and subsequent recovery already present in history from
-being counted twice.
+being counted twice. A current active heating run is extrapolated through its
+learned survival curve, but is still limited to compressor time not occupied by
+forecast DHW. Missing DHW active-power evidence is marked `estimated` rather
+than presented as a fully evidenced coupling.
 
 The initial candidate emits P50 only. Historical variation between neighboring
 actual slots is not labelled as forecast uncertainty. P10/P90 remain absent

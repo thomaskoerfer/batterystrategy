@@ -42,7 +42,7 @@ SLOT_MS = 15 * 60 * 1000
 # quarter-hour boundary is the operational boundary decision, even though its
 # timestamp naturally includes scheduler latency.
 BOUNDARY_DECISION_TOLERANCE_MS = 30_000
-TRACE_SCHEMAS = frozenset({4, 5, 7, 8})
+TRACE_SCHEMAS = frozenset({4, 5, 6, 7, 8})
 DAY_MS = 24 * 60 * 60 * 1000
 DEFAULT_TRACE_DIRECTORY = "/config/battery_strategy_forecast_trace"
 DEFAULT_FEATURE_STORE = "/config/battery_strategy_features.json.gz"

@@ -43,10 +43,10 @@ quality metadata and named load-component forecasts. Current schema 8 stores the
 separate EV marginal forecast, bounded coherent scenario set, Scenario Builder
 diagnostics, optimizer selection/fallback diagnostics and the authoritative
 plan, so identical vintages can be compared against actuals and perfect
-foresight. Historical schema-4 and schema-7 shadow envelopes and schema-5
-cutover envelopes remain readable by the offline evaluator but are no longer
-produced. Readers identify historical envelope semantics from their payload
-keys rather than assuming every higher schema has the same shape.
+foresight. Historical schema-4 and schema-7 shadow envelopes and schema-5 and
+schema-6 cutover envelopes remain readable by the offline evaluator but are no
+longer produced. Readers identify historical envelope semantics from their
+payload keys rather than assuming every higher schema has the same shape.
 The same sidecar stores the redacted normalized market curve, battery state and
 constraints, commercial policy and EV interaction policy required to reproduce
 the optimization problem; it contains no entity or device identifiers.
@@ -93,7 +93,11 @@ paired combined heat-pump MAE, no worse absolute bias, a non-positive upper
 bound of a deterministic 95% local-day block-bootstrap interval for the MAE
 difference, and no DHW MAE regression beyond 0.005 kWh per slot. Until all
 evidence exists the verdict is `insufficient_data`; otherwise it is explicitly
-`pass` or `fail`.
+`pass` or `fail`. Event evidence is counted only on those complete configured
+days, and a run must be bracketed by observed inactive slots within the same
+day. Status rates use configured candidate vintages as their denominator;
+`not_configured` remains visible but cannot contribute evidence. At least 95%
+of configured candidate vintages must be `ready`.
 
 Schemas 7 and 8 store this optional whole-heat-pump candidate in
 `forecast_shadows.heat_pump`. It runs after authoritative publication and is

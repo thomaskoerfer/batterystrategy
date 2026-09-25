@@ -23,6 +23,7 @@ DEFAULT_FEATURE_STORE = "/config/battery_strategy_features.json.gz"
 HEAT_PUMP_MIN_RUNS = 3
 HEAT_PUMP_MIN_DHW_CYCLES = 3
 HEAT_PUMP_MIN_COMPLETE_DAYS = 7
+HEAT_PUMP_MIN_READY_RATE = 0.95
 HEAT_PUMP_ACTIVE_KWH = 0.025
 HEAT_PUMP_DHW_MAE_TOLERANCE_KWH = 0.005
 LOAD_INVALID_FLAGS = frozenset(
@@ -381,18 +382,24 @@ def evaluate_heat_pump_gate(
     experiment_statuses = [
         item for item in statuses if item.status not in {"not_configured", "unknown"}
     ]
-    complete_days = _complete_trace_days(experiment_statuses, zone)
-    window_start_ms = min(
-        (item.vintage_bucket_ms for item in experiment_statuses), default=0
+    complete_dates = _complete_trace_dates(experiment_statuses, zone)
+    complete_days = len(complete_dates)
+    heating_runs = _count_complete_component_runs(
+        actuals, "heat_pump_space_heating", complete_dates, zone
     )
-    window_end_ms = max(
-        (item.vintage_bucket_ms + SLOT_MS for item in experiment_statuses), default=0
+    dhw_cycles = _count_complete_component_runs(
+        actuals, "heat_pump_dhw", complete_dates, zone
     )
-    heating_runs = _count_component_runs(
-        actuals, "heat_pump_space_heating", window_start_ms, window_end_ms
-    )
-    dhw_cycles = _count_component_runs(
-        actuals, "heat_pump_dhw", window_start_ms, window_end_ms
+    configured_status_counts = {
+        key: value
+        for key, value in status_counts.items()
+        if key not in {"not_configured", "unknown"}
+    }
+    configured_vintages = sum(configured_status_counts.values())
+    ready_rate = (
+        configured_status_counts.get("ready", 0) / configured_vintages
+        if configured_vintages
+        else 0.0
     )
 
     evidence_ready = (
@@ -402,6 +409,7 @@ def evaluate_heat_pump_gate(
         and bool(paired)
         and bool(dhw_pairs)
         and confidence is not None
+        and ready_rate >= HEAT_PUMP_MIN_READY_RATE
     )
     if not evidence_ready:
         verdict = "insufficient_data"
@@ -430,6 +438,7 @@ def evaluate_heat_pump_gate(
             "space_heating_runs": HEAT_PUMP_MIN_RUNS,
             "dhw_cycles": HEAT_PUMP_MIN_DHW_CYCLES,
             "dhw_mae_regression_tolerance_kwh": (HEAT_PUMP_DHW_MAE_TOLERANCE_KWH),
+            "minimum_ready_rate_pct": 100.0 * HEAT_PUMP_MIN_READY_RATE,
         },
         "evidence": {
             "complete_local_days": complete_days,
@@ -438,6 +447,12 @@ def evaluate_heat_pump_gate(
             "paired_slots": len(paired),
             "dhw_paired_slots": len(dhw_pairs),
             "candidate_status_counts": dict(sorted(status_counts.items())),
+            "configured_candidate_status_rates_pct": {
+                key: 100.0 * value / configured_vintages
+                for key, value in sorted(configured_status_counts.items())
+            }
+            if configured_vintages
+            else {},
         },
         "paired_metrics": {
             "authoritative_mae_kwh": authoritative_mae,
@@ -451,14 +466,14 @@ def evaluate_heat_pump_gate(
     }
 
 
-def _complete_trace_days(statuses, zone):
+def _complete_trace_dates(statuses, zone):
     buckets_by_day: dict[datetime.date, set[int]] = defaultdict(set)
     for item in statuses:
         local = datetime.fromtimestamp(item.vintage_bucket_ms / 1000.0, UTC).astimezone(
             zone
         )
         buckets_by_day[local.date()].add(item.vintage_bucket_ms)
-    complete = 0
+    complete = set()
     for local_day, buckets in buckets_by_day.items():
         local_start = datetime.combine(local_day, datetime.min.time(), zone)
         local_end = datetime.combine(
@@ -466,24 +481,35 @@ def _complete_trace_days(statuses, zone):
         )
         expected = int((local_end.timestamp() - local_start.timestamp()) / (15 * 60))
         if len(buckets) == expected:
-            complete += 1
+            complete.add(local_day)
     return complete
 
 
-def _count_component_runs(actuals, component_key, window_start_ms, window_end_ms):
+def _count_complete_component_runs(actuals, component_key, complete_dates, zone):
     runs = 0
-    active = False
-    previous_start = None
-    for start_ms, actual in sorted(actuals.items()):
-        if not window_start_ms <= start_ms < window_end_ms:
+    for local_day in complete_dates:
+        local_start = datetime.combine(local_day, datetime.min.time(), zone)
+        local_end = datetime.combine(
+            local_day + timedelta(days=1), datetime.min.time(), zone
+        )
+        start_ms = int(local_start.timestamp() * 1000)
+        end_ms = int(local_end.timestamp() * 1000)
+        energies = []
+        for slot_start_ms in range(start_ms, end_ms, SLOT_MS):
+            energy = _actual_component_value(actuals.get(slot_start_ms), component_key)
+            if energy is None:
+                energies = []
+                break
+            energies.append(energy)
+        if not energies:
             continue
-        energy = _actual_component_value(actual, component_key)
-        contiguous = previous_start is not None and start_ms - previous_start == SLOT_MS
-        now_active = energy is not None and energy >= HEAT_PUMP_ACTIVE_KWH
-        if now_active and (not active or not contiguous):
-            runs += 1
-        active = now_active
-        previous_start = start_ms
+        active = [value >= HEAT_PUMP_ACTIVE_KWH for value in energies]
+        runs += sum(
+            not active[index - 1]
+            and active[index]
+            and any(not value for value in active[index + 1 :])
+            for index in range(1, len(active) - 1)
+        )
     return runs
 
 

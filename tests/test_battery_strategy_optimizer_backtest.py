@@ -17,25 +17,32 @@ sys.modules[spec.name] = mod
 spec.loader.exec_module(mod)
 
 
-def test_trace_loader_accepts_legacy_shadow_and_schema_8_cutover_envelopes(tmp_path):
+def test_trace_loader_accepts_every_produced_optimizer_envelope(tmp_path):
     day = tmp_path / "2026-09-25"
     day.mkdir()
-    shadow = {
-        "schema_version": 7,
-        "non_authoritative": True,
-        "generated_at_ms": 1,
-        "optimizer_plans": {},
-    }
-    cutover = {
-        "schema_version": 8,
-        "non_authoritative": True,
-        "generated_at_ms": 2,
-        "optimizer_plan": {},
-    }
-    (day / "1.json.gz").write_bytes(gzip.compress(json.dumps(shadow).encode()))
-    (day / "2.json.gz").write_bytes(gzip.compress(json.dumps(cutover).encode()))
+    payloads = [
+        {
+            "schema_version": schema,
+            "non_authoritative": True,
+            "generated_at_ms": schema,
+            "optimizer_plans" if schema in {4, 7} else "optimizer_plan": {},
+        }
+        for schema in range(4, 9)
+    ]
+    payloads.insert(
+        4,
+        {
+            "schema_version": 7,
+            "non_authoritative": True,
+            "generated_at_ms": 70,
+            "optimizer_plan": {},
+        },
+    )
+    for index, payload in enumerate(payloads):
+        path = day / f"{index}.json.gz"
+        path.write_bytes(gzip.compress(json.dumps(payload).encode()))
 
-    assert mod.load_traces(tmp_path, 0, 3) == [shadow, cutover]
+    assert mod.load_traces(tmp_path, 0, 100) == payloads
 
 
 def test_scenario_scores_report_crps_coverage_and_ev_brier():
