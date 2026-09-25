@@ -152,4 +152,3 @@ def test_shadow_training_cutoff_never_exceeds_generation_time():
 
     assert result.training_cutoff_ms <= request.as_of_ms
     assert result.non_authoritative is True
-

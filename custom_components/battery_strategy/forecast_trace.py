@@ -353,7 +353,7 @@ def _append_forecast_trace_locked(
         "optimization_problem": _serialize_problem(optimization_problem),
         "shadow_evaluation": shadow_evaluation,
         "forecast_shadows": {
-            "heat_pump": _serialize_heat_pump_shadow_evaluation(
+            "heat_pump": _serialize_heat_pump_candidate(
                 heat_pump_shadow,
                 heat_pump_shadow_status,
                 heat_pump_shadow_error,
@@ -384,7 +384,7 @@ def _append_forecast_trace_locked(
     return target
 
 
-def _serialize_heat_pump_shadow_evaluation(
+def _serialize_heat_pump_candidate(
     forecast: HeatPumpShadowForecast | None,
     status: str | None,
     error: str | None,
