@@ -15,6 +15,7 @@ from custom_components.battery_strategy.contracts import (
     LoadForecast,
     LoadForecastComponent,
     LoadForecastContext,
+    QualityFlag,
     QuantileEnergy,
     SlotKey,
     WeatherSlot,
@@ -168,6 +169,44 @@ def test_historical_dhw_occupancy_is_not_displaced_twice():
     heating = result.component("heat_pump_space_heating")
     assert heating.slots[0].energy.p50_kwh == pytest.approx(0.2)
     assert heating.slots[1].energy.p50_kwh == pytest.approx(0.2)
+
+
+def test_active_run_respects_shared_compressor_occupancy():
+    request, _, context, weather, authoritative = _case(
+        active=True, dhw=(0.2, 0.0, 0.0, 0.0)
+    )
+    history = tuple(
+        _history_slot(
+            request.as_of_ms - (96 - index) * SLOT_MS,
+            0.2,
+            dhw_kwh=0.2,
+            dhw_fraction=0.5,
+        )
+        for index in range(96)
+    )
+
+    result = build_heat_pump_shadow_forecast(
+        request, history, context, weather, authoritative
+    )
+
+    assert result.component("heat_pump_space_heating").slots[0].energy.p50_kwh == (
+        pytest.approx(0.2)
+    )
+    assert result.total_slots[0].energy.p50_kwh == pytest.approx(0.4)
+
+
+def test_missing_dhw_active_power_is_explicitly_estimated():
+    request, history, context, weather, authoritative = _case(
+        active=True, dhw=(0.01, 0.0, 0.0, 0.0)
+    )
+
+    result = build_heat_pump_shadow_forecast(
+        request, history, context, weather, authoritative
+    )
+
+    heating = result.component("heat_pump_space_heating")
+    assert QualityFlag.ESTIMATED in heating.slots[0].quality.flags
+    assert result.diagnostics["missing_dhw_capacity_slots"] == 1
 
 
 def test_shadow_training_cutoff_never_exceeds_generation_time():

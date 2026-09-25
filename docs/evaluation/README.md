@@ -112,7 +112,11 @@ paired combined heat-pump MAE, no worse absolute bias, a non-positive upper
 bound of a deterministic 95% local-day block-bootstrap interval for the MAE
 difference, and no DHW MAE regression beyond 0.005 kWh per slot. Until all
 evidence exists the verdict is `insufficient_data`; otherwise it is explicitly
-`pass` or `fail`.
+`pass` or `fail`. Event evidence is counted only on those complete configured
+days, and a run must be bracketed by observed inactive slots within the same
+day. Status rates use configured candidate vintages as their denominator;
+`not_configured` remains visible but cannot contribute evidence. At least 95%
+of configured candidate vintages must be `ready`.
 
 The replacement optimizer shadow has a separate evaluator. It reports load/PV
 scenario CRPS and central-80% coverage, EV-event Brier score, shadow runtime and

@@ -357,3 +357,63 @@ def test_heat_pump_gate_reports_insufficient_data_instead_of_passing_early():
     assert report["verdict"] == "insufficient_data"
     assert report["evidence"]["complete_local_days"] == 0
     assert report["evidence"]["candidate_status_counts"] == {"not_configured": 672}
+
+
+def test_heat_pump_gate_excludes_events_from_not_configured_days():
+    statuses = []
+    actuals = {}
+    for day in range(14):
+        status = "ready" if day % 2 == 0 else "not_configured"
+        for slot in range(96):
+            start_ms = (day * 96 + slot) * mod.SLOT_MS
+            statuses.append(mod.HeatPumpTraceStatus(start_ms, start_ms, status))
+            event = status == "not_configured" and slot in {1, 3, 5}
+            actuals[start_ms] = {
+                "coverage": 1.0,
+                "flags": [],
+                "load_components": [
+                    {
+                        "key": key,
+                        "energy_kwh": 0.1 if event else 0.0,
+                        "coverage": 1.0,
+                        "flags": [],
+                    }
+                    for key in ("heat_pump_dhw", "heat_pump_space_heating")
+                ],
+            }
+
+    report = mod.evaluate_heat_pump_gate([], statuses, actuals, timezone="UTC")
+
+    assert report["evidence"]["complete_local_days"] == 7
+    assert report["evidence"]["space_heating_runs"] == 0
+    assert report["evidence"]["dhw_cycles"] == 0
+    assert report["evidence"]["configured_candidate_status_rates_pct"] == {
+        "ready": 100.0
+    }
+
+
+def test_heat_pump_gate_counts_only_fully_bracketed_runs():
+    statuses = []
+    actuals = {}
+    for slot in range(96):
+        start_ms = slot * mod.SLOT_MS
+        statuses.append(mod.HeatPumpTraceStatus(start_ms, start_ms, "ready"))
+        event = slot in {0, 10, 95}
+        actuals[start_ms] = {
+            "coverage": 1.0,
+            "flags": [],
+            "load_components": [
+                {
+                    "key": key,
+                    "energy_kwh": 0.1 if event else 0.0,
+                    "coverage": 1.0,
+                    "flags": [],
+                }
+                for key in ("heat_pump_dhw", "heat_pump_space_heating")
+            ],
+        }
+
+    report = mod.evaluate_heat_pump_gate([], statuses, actuals, timezone="UTC")
+
+    assert report["evidence"]["space_heating_runs"] == 1
+    assert report["evidence"]["dhw_cycles"] == 1

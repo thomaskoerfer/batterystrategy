@@ -41,7 +41,9 @@ output or live commands. Forecast DHW energy and historical DHW active power
 estimate compressor occupancy. Only additional occupancy relative to comparable
 historical slots suppresses simultaneous space heating and exposes deferred
 recovery in later slots. The initial candidate emits P50 only; forecast
-quantiles require later calibration from matured candidate residuals.
+quantiles require later calibration from matured candidate residuals. Active
+run continuation remains bounded by compressor time left after forecast DHW;
+missing DHW active-power evidence is explicitly estimated.
 
 ## Storage and evaluation
 
@@ -57,6 +59,9 @@ analysis. Paired slot evidence must improve combined heat-pump MAE, not worsen
 absolute bias, keep the local-day block-bootstrap upper confidence bound for
 the MAE delta non-positive, and keep DHW MAE within 0.005 kWh per slot of the
 authoritative model. Candidate status and missing evidence remain explicit.
+Only fully bracketed events inside complete configured local days count toward
+the cycle requirements, and at least 95% of configured candidate vintages must
+be `ready`.
 
 ## Rollback
 
