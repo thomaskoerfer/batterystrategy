@@ -362,6 +362,7 @@ def test_heat_pump_gate_reports_insufficient_data_instead_of_passing_early():
 def test_heat_pump_gate_excludes_events_from_not_configured_days():
     statuses = []
     actuals = {}
+    residuals = []
     for day in range(14):
         status = "ready" if day % 2 == 0 else "not_configured"
         for slot in range(96):
@@ -381,12 +382,34 @@ def test_heat_pump_gate_excludes_events_from_not_configured_days():
                     for key in ("heat_pump_dhw", "heat_pump_space_heating")
                 ],
             }
+            if day == 1 and slot == 10:
+                for series, forecast, actual in (
+                    ("load_component:heat_pump_dhw", 0.1, 0.1),
+                    ("shadow_load_component:heat_pump_dhw", 0.1, 0.1),
+                    ("load_component:heat_pump_space_heating", 0.2, 0.1),
+                    ("shadow_heat_pump_total", 0.22, 0.2),
+                ):
+                    residuals.append(
+                        mod.Residual(
+                            series,
+                            "model-v1",
+                            "0-1h",
+                            start_ms,
+                            start_ms + mod.SLOT_MS,
+                            forecast,
+                            actual,
+                            None,
+                            None,
+                            1.0,
+                        )
+                    )
 
-    report = mod.evaluate_heat_pump_gate([], statuses, actuals, timezone="UTC")
+    report = mod.evaluate_heat_pump_gate(residuals, statuses, actuals, timezone="UTC")
 
     assert report["evidence"]["complete_local_days"] == 7
     assert report["evidence"]["space_heating_runs"] == 0
     assert report["evidence"]["dhw_cycles"] == 0
+    assert report["evidence"]["paired_slots"] == 0
     assert report["evidence"]["configured_candidate_status_rates_pct"] == {
         "ready": 100.0
     }

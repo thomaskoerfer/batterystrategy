@@ -12,6 +12,8 @@
   exclude unconfigured or boundary-truncated events from promotion evidence.
 - Treat open heating runs as right-censored, reject zero-energy DHW capacity
   evidence, and cap stochastic presentation charging by physical SoC headroom.
+- Restrict promotion metrics to complete configured vintage days, keep every
+  candidate component P50-only, and read all produced optimizer trace schemas.
 
 All notable changes to Battery Strategy are documented here.
 

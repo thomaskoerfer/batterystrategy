@@ -78,7 +78,8 @@ without invalidating either plan.
 
 Schema 8 is reserved for the later authoritative stochastic-optimizer cutover
 envelope. Offline readers distinguish historical envelopes by their payload
-keys as well as their schema number so already persisted traces remain usable.
+keys as well as their schema number so already persisted schemas 4 through 8
+remain usable by both optimizer evaluators.
 
 The offline `scripts/battery_strategy_forecast_backtest.py` utility joins those
 vintages to finalized feature-store actuals by exact UTC slot key. It excludes
@@ -116,7 +117,9 @@ evidence exists the verdict is `insufficient_data`; otherwise it is explicitly
 days, and a run must be bracketed by observed inactive slots within the same
 day. Status rates use configured candidate vintages as their denominator;
 `not_configured` remains visible but cannot contribute evidence. At least 95%
-of configured candidate vintages must be `ready`.
+of configured candidate vintages must be `ready`. Paired error and bootstrap
+metrics are likewise restricted to vintages issued on those complete configured
+local days.
 
 The replacement optimizer shadow has a separate evaluator. It reports load/PV
 scenario CRPS and central-80% coverage, EV-event Brier score, shadow runtime and

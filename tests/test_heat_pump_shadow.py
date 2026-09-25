@@ -72,10 +72,20 @@ def _history_slot(
     )
 
 
-def _authoritative_load(request: ForecastRequest, dhw=(0.0, 0.0, 0.0, 0.0)):
+def _authoritative_load(
+    request: ForecastRequest,
+    dhw=(0.0, 0.0, 0.0, 0.0),
+    *,
+    dhw_quantiles: bool = False,
+):
     zero = tuple(ForecastSlot(slot, QuantileEnergy(0.0)) for slot in request.slots)
     dhw_slots = tuple(
-        ForecastSlot(slot, QuantileEnergy(value))
+        ForecastSlot(
+            slot,
+            QuantileEnergy(value, max(0.0, value - 0.1), value + 0.1, 20)
+            if dhw_quantiles
+            else QuantileEnergy(value),
+        )
         for slot, value in zip(request.slots, dhw, strict=True)
     )
     components = (
@@ -260,3 +270,19 @@ def test_shadow_training_cutoff_never_exceeds_generation_time():
 
     assert result.training_cutoff_ms <= request.as_of_ms
     assert result.non_authoritative is True
+
+
+def test_shadow_strips_authoritative_dhw_quantiles_until_candidate_is_calibrated():
+    request, history, context, weather, _ = _case(active=False)
+    authoritative = _authoritative_load(
+        request, (0.2, 0.0, 0.0, 0.0), dhw_quantiles=True
+    )
+
+    result = build_heat_pump_shadow_forecast(
+        request, history, context, weather, authoritative
+    )
+
+    dhw = result.component("heat_pump_dhw")
+    assert all(slot.energy.p10_kwh is None for slot in dhw.slots)
+    assert all(slot.energy.p90_kwh is None for slot in dhw.slots)
+    assert all(slot.energy.calibration_samples == 0 for slot in dhw.slots)

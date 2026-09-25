@@ -42,7 +42,7 @@ SLOT_MS = 15 * 60 * 1000
 # quarter-hour boundary is the operational boundary decision, even though its
 # timestamp naturally includes scheduler latency.
 BOUNDARY_DECISION_TOLERANCE_MS = 30_000
-TRACE_SCHEMAS = frozenset({4, 7})
+TRACE_SCHEMAS = frozenset({4, 5, 6, 7, 8})
 DAY_MS = 24 * 60 * 60 * 1000
 DEFAULT_TRACE_DIRECTORY = "/config/battery_strategy_forecast_trace"
 DEFAULT_FEATURE_STORE = "/config/battery_strategy_features.json.gz"
@@ -114,7 +114,10 @@ def load_traces(root: str | Path, start_ms: int, end_ms: int) -> list[dict]:
             generated = int(payload["generated_at_ms"])
             if (
                 payload.get("schema_version") in TRACE_SCHEMAS
-                and isinstance(payload.get("optimizer_plans"), dict)
+                and (
+                    isinstance(payload.get("optimizer_plan"), dict)
+                    or isinstance(payload.get("optimizer_plans"), dict)
+                )
                 and payload.get("non_authoritative") is True
                 and start_ms <= generated <= end_ms
             ):
@@ -235,8 +238,7 @@ def score_decisions(
     """Compare sampled first actions with full-horizon perfect foresight."""
     scores = []
     for trace in traces[:: max(1, stride)]:
-        shadow = (trace.get("optimizer_plans") or {}).get("shadow")
-        authoritative = (trace.get("optimizer_plans") or {}).get("authoritative")
+        shadow, authoritative = _optimizer_plans(trace)
         problem_payload = trace.get("optimization_problem")
         if not shadow or not authoritative or not problem_payload:
             continue
@@ -270,6 +272,20 @@ def score_decisions(
             )
         )
     return scores
+
+
+def _optimizer_plans(trace: dict) -> tuple[dict | None, dict | None]:
+    """Return comparable plans from either persisted optimizer envelope."""
+    authoritative = trace.get("optimizer_plan")
+    if isinstance(authoritative, dict):
+        return authoritative, authoritative
+    plans = trace.get("optimizer_plans") or {}
+    return plans.get("shadow"), plans.get("authoritative")
+
+
+def _optimizer_evaluation(trace: dict) -> dict:
+    """Return evaluation diagnostics from either persisted envelope."""
+    return trace.get("optimizer_evaluation") or trace.get("shadow_evaluation") or {}
 
 
 def hourly_boundary_vintages(traces: list[dict]) -> list[dict]:
@@ -415,16 +431,14 @@ def summarize(
         }
     ev = [item for item in scenario_scores if item.series == "ev_event"]
     runtimes = [
-        float(item["shadow_evaluation"]["runtime_ms"])
+        float(_optimizer_evaluation(item)["runtime_ms"])
         for item in gate_traces
-        if (item.get("shadow_evaluation") or {}).get("runtime_ms") is not None
+        if _optimizer_evaluation(item).get("runtime_ms") is not None
     ]
     eligible_builds = [
-        (item.get("shadow_evaluation") or {}).get("scenario_build") or {}
+        _optimizer_evaluation(item).get("scenario_build") or {}
         for item in gate_traces
-        if ((item.get("shadow_evaluation") or {}).get("scenario_build") or {}).get(
-            "eligible"
-        )
+        if (_optimizer_evaluation(item).get("scenario_build") or {}).get("eligible")
     ]
     completed_builds = sum(
         item.get("status") == "completed" for item in eligible_builds
@@ -481,8 +495,7 @@ def summarize(
         "non_authoritative": True,
         "trace_vintages": len(traces),
         "completed_shadow_vintages": sum(
-            (item.get("shadow_evaluation") or {}).get("status") == "completed"
-            for item in traces
+            _optimizer_evaluation(item).get("status") == "completed" for item in traces
         ),
         "eligible_scenario_vintages": len(eligible_builds),
         "scenario_generation_success_pct": scenario_success_pct,

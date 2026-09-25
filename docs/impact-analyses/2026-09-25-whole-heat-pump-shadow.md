@@ -62,6 +62,8 @@ authoritative model. Candidate status and missing evidence remain explicit.
 Only fully bracketed events inside complete configured local days count toward
 the cycle requirements, and at least 95% of configured candidate vintages must
 be `ready`.
+Paired forecast errors and confidence intervals use only vintages issued on
+those same complete configured days.
 
 ## Rollback
 

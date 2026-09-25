@@ -197,11 +197,15 @@ def build_heat_pump_shadow_forecast(
         min(request.as_of_ms, training_cutoff_ms),
         coupled_slots,
     )
+    dhw_shadow_slots = tuple(
+        ForecastSlot(slot.slot, QuantileEnergy(slot.energy.p50_kwh), slot.quality)
+        for slot in dhw.slots
+    )
     dhw_shadow = LoadForecastComponent(
         DHW_KEY,
-        f"dhw-shadow-from-{dhw.model_version}",
+        f"dhw-p50-shadow-from-{dhw.model_version}",
         min(request.as_of_ms, dhw.training_cutoff_ms),
-        dhw.slots,
+        dhw_shadow_slots,
     )
     total_slots = tuple(
         ForecastSlot(
