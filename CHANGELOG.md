@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Add an isolated whole-heat-pump forecast shadow with bounded schema-7 trace
+  evidence and offline component evaluation. Production forecast and control
+  behavior remain unchanged.
+
 All notable changes to Battery Strategy are documented here.
 
 ## [0.2.0-rc.31] - 2026-09-21

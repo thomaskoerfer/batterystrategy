@@ -67,6 +67,14 @@ non-blocking filesystem lock is acquired before scenario generation and spans
 config-entry reloads, background tasks belong to the active entry lifecycle,
 and a revoked adapter cannot enqueue new work.
 
+Schema 7 adds an optional `forecast_shadows.heat_pump` block. It contains the
+evaluation-only DHW, space-heating and combined heat-pump candidate series plus
+causal model diagnostics. The candidate runs in the same post-publication,
+failure-contained task as the optimizer shadow, but the two experiments are
+orthogonal: the optimizer shadow continues to consume the authoritative
+forecast. A failed heat-pump candidate is recorded by status and exception type
+without invalidating either plan.
+
 The offline `scripts/battery_strategy_forecast_backtest.py` utility joins those
 vintages to finalized feature-store actuals by exact UTC slot key. It excludes
 the vintage's current partial slot, targets that have not ended, insufficiently
@@ -85,6 +93,16 @@ python3 scripts/battery_strategy_forecast_backtest.py \
 These metrics are evidence for a later reviewed model change, not an online
 reinforcement loop. The existing online calibration remains owned by the
 forecast application and is unchanged by this trace or evaluator.
+
+For schema-7 vintages the same utility additionally reports
+`shadow_heat_pump_total`, `shadow_load_component:heat_pump_dhw` and
+`shadow_load_component:heat_pump_space_heating`. Review them against their
+authoritative `load_component:*` counterparts by lead-time bucket. Collect at
+least seven complete local days, at least three complete heating runs and at
+least three DHW cycles before proposing promotion. Promotion requires lower
+combined heat-pump MAE and absolute bias without a material DHW regression;
+coverage and cold-start fallbacks are reported separately rather than hidden in
+the aggregate.
 
 The replacement optimizer shadow has a separate evaluator. It reports load/PV
 scenario CRPS and central-80% coverage, EV-event Brier score, shadow runtime and

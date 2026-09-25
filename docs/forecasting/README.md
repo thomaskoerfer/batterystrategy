@@ -148,6 +148,24 @@ the historical hot-water profile is deferred into later heating slots, which
 preserves the historically learned post-cycle buffer recovery without counting
 it twice. Other load components and the PV forecast remain independent.
 
+### Whole-heat-pump candidate shadow
+
+An owner-approved, temporary whole-heat-pump shadow evaluates a replacement
+space-heating model while retaining the production DHW cycle model. The
+candidate estimates space-heating state and electrical energy from causal
+component history, forecast outdoor temperature, target flow temperature,
+current heating state, active-run age and measured compressor input power. DHW
+occupancy suppresses simultaneous space heating and carries blocked demand into
+available following slots.
+
+The candidate is not part of the authoritative `LoadForecast`. Forecasting
+captures an immutable request, and evaluation executes it only after the
+authoritative plan has been published. Its output is never supplied to scenario
+generation, optimization, compilation, live control or actuation. Missing
+evidence produces explicit cold-start quality rather than modifying another
+load component. The shadow is removed or promoted after its documented
+observation gate.
+
 ## PV model
 
 PV output is constrained by configured plant and inverter capability and may use

@@ -19,6 +19,7 @@ from custom_components.battery_strategy.const import (
     CONF_HP_DHW_DIFFERENTIAL_ENTITY,
     CONF_HP_DHW_TARGET_ENTITY,
     CONF_HP_DHW_TEMP_ENTITY,
+    CONF_HP_HEATING_ACTIVE_ENTITY,
     CONF_HP_OUTDOOR_TEMP_ENTITY,
     CONF_LOAD_COMPONENT_PROFILE,
     LOAD_PROFILE_AIR_CONDITIONING,
@@ -224,6 +225,52 @@ class LoadComponentAdapterTests(unittest.TestCase):
         )
         self.assertEqual(dict(result.powers_w)["heat_pump_dhw"], 2500.0)
         self.assertEqual(dict(result.powers_w)["heat_pump_space_heating"], 0.0)
+
+    def test_space_heating_driver_includes_current_active_age(self):
+        now = dt.datetime(2026, 10, 20, 6, 30, tzinfo=dt.UTC)
+        data = {
+            CONF_LOAD_COMPONENT_PROFILE: LOAD_PROFILE_HEAT_PUMP,
+            CONF_COMPONENT_POWER_ENTITY: "sensor.hp_power",
+            CONF_HP_ACTIVITY_ENTITY: "sensor.hp_activity",
+            CONF_HP_OUTDOOR_TEMP_ENTITY: "sensor.oat",
+            CONF_HP_DHW_TEMP_ENTITY: "sensor.dhw",
+            CONF_HP_DHW_TARGET_ENTITY: "sensor.target",
+            CONF_HP_DHW_DIFFERENTIAL_ENTITY: "number.diff",
+            CONF_HP_HEATING_ACTIVE_ENTITY: "binary_sensor.heating",
+            CONF_DHW_ALLOWED_WINDOWS: "00:00-05:00,09:00-17:00",
+        }
+        entry = SimpleNamespace(
+            subentries={
+                "hp": SimpleNamespace(
+                    subentry_type=SUBENTRY_TYPE_LOAD_COMPONENT, data=data
+                )
+            }
+        )
+        hass = SimpleNamespace(
+            states=_States(
+                {
+                    "sensor.hp_power": _state(1600, "W"),
+                    "sensor.hp_activity": _state("heating"),
+                    "sensor.oat": _state(5.0),
+                    "sensor.dhw": _state(50.0),
+                    "sensor.target": _state(53.0),
+                    "number.diff": _state(9.0),
+                    "binary_sensor.heating": _state(
+                        "on", last_changed=now - dt.timedelta(minutes=22)
+                    ),
+                }
+            )
+        )
+
+        result = collect_load_components(hass, entry, now)
+
+        driver = next(
+            item
+            for item in result.drivers
+            if item.driver_key == "heat_pump_space_heating"
+        )
+        features = {item.feature_key: item.value for item in driver.features}
+        self.assertEqual(features["heating_active_age_s"], 22 * 60)
 
     def test_heat_pump_temperatures_are_normalized_to_celsius(self):
         data = {

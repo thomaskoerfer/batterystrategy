@@ -169,6 +169,14 @@ def _collect_heat_pump(hass, data, now, powers, features, drivers, specs) -> Non
         dhw_active_age_s = _active_state_age_s(
             hass, data.get(CONF_HP_ACTIVITY_ENTITY), now, 1.0
         )
+    heating_active = _binary(hass, data.get(CONF_HP_HEATING_ACTIVE_ENTITY))
+    heating_active_age_s = _active_state_age_s(
+        hass, data.get(CONF_HP_HEATING_ACTIVE_ENTITY), now, heating_active
+    )
+    if heating_active_age_s is None and "heating" in activity:
+        heating_active_age_s = _active_state_age_s(
+            hass, data.get(CONF_HP_ACTIVITY_ENTITY), now, 1.0
+        )
     shared = _available_features(("outdoor_temperature_c", oat))
     dhw_features = shared + _available_features(
         ("dhw_temperature_c", dhw_temp),
@@ -182,8 +190,9 @@ def _collect_heat_pump(hass, data, now, powers, features, drivers, specs) -> Non
     heating_features = shared + _available_features(
         (
             "heating_active_fraction",
-            _binary(hass, data.get(CONF_HP_HEATING_ACTIVE_ENTITY)),
+            heating_active,
         ),
+        ("heating_active_age_s", heating_active_age_s),
         (
             "target_flow_temperature_c",
             _temperature_c(hass, data.get(CONF_HP_TARGET_FLOW_TEMP_ENTITY)),

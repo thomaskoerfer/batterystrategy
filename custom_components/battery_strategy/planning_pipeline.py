@@ -26,6 +26,7 @@ from .forecast_calibration import (
 )
 from .forecast_evaluation import update_forecast_evaluation
 from .forecasting import FeatureStoreForecastNotReady
+from .forecasting.heat_pump_shadow import HeatPumpShadowRequest
 from .market_context import MarketContextConfig, MarketContextService
 from .models import StrategyOptions
 from .plan_presentation import (
@@ -89,6 +90,7 @@ class PlanningRunOutcome:
     forecast_bundle: ForecastDistributionBundle | None = None
     optimization_problem: OptimizationProblem | None = None
     scenario_request: ScenarioBuildRequest | None = None
+    heat_pump_shadow_request: HeatPumpShadowRequest | None = None
 
 
 # PV surplus anti-cycling thresholds
@@ -808,6 +810,7 @@ def run(
                 for item in publication.optimization_problem.market
             ),
         ),
+        forecast_result.heat_pump_shadow_request,
     )
 
 
