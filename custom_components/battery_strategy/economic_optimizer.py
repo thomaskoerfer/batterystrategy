@@ -619,8 +619,17 @@ class StochasticDynamicProgrammingOptimizer:
         )
         eta = math.sqrt(problem.constraints.round_trip_efficiency)
         max_charge = problem.constraints.max_charge_power_w / 1000.0 * SLOT_H
+        maximum_energy = (
+            problem.constraints.capacity_kwh * problem.constraints.max_soc_pct / 100.0
+        )
+        charge_headroom = max(0.0, (maximum_energy - start_energy) / eta)
+        required_charge = min(required_charge, max_charge, charge_headroom)
         p50_pv_charge = p50_surplus[0] if problem.policy.pv_charging_allowed else 0.0
-        first_charge = min(max_charge, max(required_charge, p50_pv_charge))
+        first_charge = min(
+            max_charge,
+            charge_headroom,
+            max(required_charge, p50_pv_charge),
+        )
         first_discharge = (
             0.0 if first_charge > 1e-9 else min(discharge_budget, p50_net[0])
         )

@@ -155,7 +155,7 @@ def test_unified_optimizer_uses_p50_as_probability_one_scenario():
 
 
 def test_unified_first_charge_respects_actual_battery_headroom():
-    candidate = problem([1.0, 60.0], loads=[0.0, 0.6], soc=99.5)
+    candidate = problem([1.0, 60.0], loads=[0.0, 0.6], pv=[0.6, 0.0], soc=99.5)
 
     result = UnifiedScenarioOptimizer().optimize(candidate)
 
@@ -168,6 +168,7 @@ def test_unified_first_charge_respects_actual_battery_headroom():
         / eta
     )
     assert result.decision.slot.required_charge_kwh <= headroom_input + 1e-9
+    assert result.decision.slot.planned_charge_kwh <= headroom_input + 1e-9
     assert (
         result.decision.slot.required_charge_kwh
         <= result.decision.slot.planned_charge_kwh
