@@ -10,6 +10,8 @@
   add an executable paired promotion gate with coverage and cycle evidence.
 - Constrain active heating continuation by shared-compressor DHW occupancy and
   exclude unconfigured or boundary-truncated events from promotion evidence.
+- Treat open heating runs as right-censored, reject zero-energy DHW capacity
+  evidence, and cap stochastic presentation charging by physical SoC headroom.
 
 All notable changes to Battery Strategy are documented here.
 

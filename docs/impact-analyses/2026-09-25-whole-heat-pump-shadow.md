@@ -27,8 +27,8 @@ versioned evaluation format, not a production-layer contract change.
 - Candidate calculation starts after authoritative plan persistence and cache
   publication.
 - Candidate exceptions are contained and recorded by type.
-- The existing optimizer shadow continues to consume only the authoritative
-  forecast, preventing attribution ambiguity.
+- No optimizer shadow runs in the cutover. The authoritative optimizer has
+  already completed before this forecast-only candidate executes.
 - No Home Assistant entity or Recorder attribute is added.
 
 ## Model boundary

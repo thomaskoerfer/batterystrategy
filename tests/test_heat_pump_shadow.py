@@ -196,8 +196,17 @@ def test_active_run_respects_shared_compressor_occupancy():
 
 
 def test_missing_dhw_active_power_is_explicitly_estimated():
-    request, history, context, weather, authoritative = _case(
+    request, _, context, weather, authoritative = _case(
         active=True, dhw=(0.01, 0.0, 0.0, 0.0)
+    )
+    history = tuple(
+        _history_slot(
+            request.as_of_ms - (96 - index) * SLOT_MS,
+            0.0,
+            dhw_kwh=0.0,
+            dhw_fraction=0.5,
+        )
+        for index in range(96)
     )
 
     result = build_heat_pump_shadow_forecast(
@@ -207,6 +216,39 @@ def test_missing_dhw_active_power_is_explicitly_estimated():
     heating = result.component("heat_pump_space_heating")
     assert QualityFlag.ESTIMATED in heating.slots[0].quality.flags
     assert result.diagnostics["missing_dhw_capacity_slots"] == 1
+
+
+def test_open_historical_run_is_right_censored_not_treated_as_completed():
+    request, _, _, weather, authoritative = _case(active=True)
+    history = tuple(
+        _history_slot(
+            request.as_of_ms - (96 - index) * SLOT_MS,
+            0.4 if index >= 94 else 0.0,
+        )
+        for index in range(96)
+    )
+    context = LoadForecastContext(
+        1800.0,
+        (
+            LoadDriverSnapshot("heat_pump_dhw", 0.0),
+            LoadDriverSnapshot(
+                "heat_pump_space_heating",
+                1600.0,
+                features=(
+                    _feature("outdoor_temperature_c", 5.0),
+                    _feature("target_flow_temperature_c", 32.0),
+                    _feature("heating_active_fraction", 1.0),
+                    _feature("heating_active_age_s", 30 * 60.0),
+                ),
+            ),
+        ),
+    )
+
+    result = build_heat_pump_shadow_forecast(
+        request, history, context, weather, authoritative
+    )
+
+    assert result.component("heat_pump_space_heating").slots[0].energy.p50_kwh > 0.2
 
 
 def test_shadow_training_cutoff_never_exceeds_generation_time():

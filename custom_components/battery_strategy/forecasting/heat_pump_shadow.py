@@ -266,7 +266,7 @@ def _heating_samples(
         )
         dhw_active_slot_kwh = (
             dhw.energy_kwh / dhw_occupancy
-            if dhw is not None and dhw_occupancy > 0.05
+            if dhw is not None and dhw.energy_kwh > 1e-9 and dhw_occupancy > 0.05
             else None
         )
         historically_available = max(0.0, 1.0 - dhw_occupancy)
@@ -371,7 +371,7 @@ def _distribution(neighbors):
 
 
 def _survival_probability(samples, elapsed_slots):
-    durations = []
+    completed_durations = []
     current = 0
     previous_start = None
     for sample in sorted(samples, key=lambda item: item.start_ms):
@@ -381,15 +381,28 @@ def _survival_probability(samples, elapsed_slots):
         if sample.energy_kwh >= MIN_ACTIVE_KWH:
             current = current + 1 if contiguous else 1
         elif current:
-            durations.append(current)
+            completed_durations.append(current)
             current = 0
         previous_start = sample.start_ms
-    if current:
-        durations.append(current)
-    if not durations:
+    censored_duration = current or None
+    if not completed_durations and censored_duration is None:
         return math.exp(-elapsed_slots / 4.0)
-    remaining = sum(1 for duration in durations if duration > elapsed_slots)
-    return remaining / len(durations)
+    if not completed_durations:
+        return math.exp(-max(0.0, elapsed_slots - censored_duration) / 4.0)
+    observations = tuple((duration, True) for duration in completed_durations)
+    if censored_duration is not None:
+        observations += ((censored_duration, False),)
+    survival = 1.0
+    for duration in sorted(set(completed_durations)):
+        if duration > elapsed_slots:
+            break
+        at_risk = sum(value >= duration for value, _ in observations)
+        events = sum(
+            value == duration and completed for value, completed in observations
+        )
+        if at_risk:
+            survival *= 1.0 - events / at_risk
+    return survival
 
 
 def _couple_with_dhw(

@@ -212,7 +212,7 @@ def test_stochastic_required_charge_remains_executable_when_pv_is_uncertain():
 
 
 def test_stochastic_first_charge_respects_actual_battery_headroom():
-    candidate = problem([1.0, 60.0], loads=[0.0, 0.6], soc=99.5)
+    candidate = problem([1.0, 60.0], loads=[0.0, 0.6], pv=[0.6, 0.0], soc=99.5)
     slots = tuple(item.slot for item in candidate.forecast.load.slots)
     scenarios = ScenarioBundle(
         "headroom",
@@ -244,6 +244,10 @@ def test_stochastic_first_charge_respects_actual_battery_headroom():
         / eta
     )
     assert plan.slots[0].required_charge_kwh <= headroom_input + 1e-9
+    assert plan.slots[0].planned_charge_kwh <= headroom_input + 1e-9
+    assert plan.slots[0].planned_charge_kwh == pytest.approx(
+        plan.slots[0].planned_grid_charge_kwh + plan.slots[0].planned_pv_charge_kwh
+    )
 
 
 def test_stochastic_optimizer_falls_back_exactly_without_scenarios():
