@@ -24,6 +24,10 @@ can never recreate executable intent.
 
 The optimizer is deterministic and side-effect free. It has no Home Assistant,
 history, persistence, filesystem, network or wall-clock dependency.
+Optimizer version identifiers denote economic semantics and are also release
+cohort keys for offline evaluation. A version change never selects authority;
+the current scenario optimizer remains evaluation-only until the documented
+gate and an explicit cutover.
 
 ## Scenario model
 

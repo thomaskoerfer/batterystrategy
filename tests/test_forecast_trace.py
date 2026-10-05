@@ -304,9 +304,46 @@ def test_post_publication_scenario_failure_is_contained_and_traced(tmp_path):
     path = next(tmp_path.rglob("*.json.gz"))
     payload = json.loads(gzip.decompress(path.read_bytes()))
     assert payload["shadow_evaluation"]["status"] == "invalid_input"
+    assert (
+        payload["shadow_evaluation"]["optimizer_version"]
+        == shadow_evaluator.UNIFIED_OPTIMIZER_VERSION
+    )
+    assert payload["shadow_evaluation"]["scenario_model_version"] == (
+        shadow_evaluator.SCENARIO_RELEASE_VERSION
+    )
     assert payload["shadow_evaluation"]["scenario_build"]["rejected_reasons"] == [
         ["invalid_timezone", 1]
     ]
+    assert payload["optimizer_plans"]["shadow"] is None
+
+
+def test_post_publication_scenario_exception_keeps_release_identity(
+    tmp_path, monkeypatch
+):
+    bundle = forecast_bundle(1_800_000_000_000)
+
+    def fail(_self, _request):
+        raise RuntimeError("builder failed")
+
+    monkeypatch.setattr(shadow_evaluator.ScenarioBuilder, "build", fail)
+
+    ForecastTraceScheduler(None, tmp_path)._write_if_available(
+        bundle,
+        trace_module.forecast_trace_bucket_ms(bundle),
+        scenario_request=scenario_request(bundle),
+    )
+
+    payload = json.loads(
+        gzip.decompress(next(tmp_path.rglob("*.json.gz")).read_bytes())
+    )
+    assert payload["shadow_evaluation"]["status"] == "scenario_builder_failed"
+    assert (
+        payload["shadow_evaluation"]["optimizer_version"]
+        == shadow_evaluator.UNIFIED_OPTIMIZER_VERSION
+    )
+    assert payload["shadow_evaluation"]["scenario_model_version"] == (
+        shadow_evaluator.SCENARIO_RELEASE_VERSION
+    )
     assert payload["optimizer_plans"]["shadow"] is None
 
 

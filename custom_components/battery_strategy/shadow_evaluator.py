@@ -12,14 +12,16 @@ from .contracts import (
     ScenarioBuildRequest,
     ScenarioBuildResult,
 )
-from .economic_optimizer import UnifiedScenarioOptimizer
-from .scenario_generation import ScenarioBuilder
+from .economic_optimizer import UNIFIED_OPTIMIZER_VERSION, UnifiedScenarioOptimizer
+from .scenario_generation import SCENARIO_RELEASE_VERSION, ScenarioBuilder
 
 
 @dataclass(frozen=True, slots=True)
 class ShadowEvaluation:
     status: str
     runtime_ms: float
+    optimizer_version: str
+    scenario_model_version: str
     problem: OptimizationProblem | None
     build_result: ScenarioBuildResult | None
     optimization_result: OptimizationResult | None
@@ -38,6 +40,11 @@ def evaluate_shadow(
         return _result("scenario_inputs_unavailable", started, optimization_problem)
     try:
         build_result = ScenarioBuilder().build(scenario_request)
+    except Exception as err:
+        return _result(
+            "scenario_builder_failed", started, optimization_problem, error=err
+        )
+    try:
         if optimization_problem is None:
             status = (
                 build_result.status.value
@@ -85,6 +92,8 @@ def _result(status, started, problem, **kwargs):
     return ShadowEvaluation(
         status=status,
         runtime_ms=round((time.perf_counter() - started) * 1000.0, 3),
+        optimizer_version=UNIFIED_OPTIMIZER_VERSION,
+        scenario_model_version=SCENARIO_RELEASE_VERSION,
         problem=problem,
         build_result=kwargs.get("build_result"),
         optimization_result=kwargs.get("optimization_result"),

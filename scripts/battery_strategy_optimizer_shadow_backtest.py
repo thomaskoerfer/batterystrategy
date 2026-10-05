@@ -33,9 +33,13 @@ from custom_components.battery_strategy.contracts import (
     SlotKey,
 )
 from custom_components.battery_strategy.economic_optimizer import (
+    UNIFIED_OPTIMIZER_VERSION,
     StochasticDynamicProgrammingOptimizer,
 )
 from custom_components.battery_strategy.forecasting.uncertainty import lead_bucket
+from custom_components.battery_strategy.scenario_generation import (
+    SCENARIO_RELEASE_VERSION,
+)
 
 SLOT_MS = 15 * 60 * 1000
 # HA updates every ten seconds. The first completed planning capture after a
@@ -57,6 +61,7 @@ INVALID_FLAGS = frozenset(
         "restart_gap",
     }
 )
+POLICY_EPSILON_KWH = 1e-9
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,6 +142,59 @@ def load_actuals(path: str | Path) -> dict[int, dict]:
         for item in payload.get("slots", ())
         if isinstance(item, dict) and "start_ms" in item
     }
+
+
+def optimizer_release_cohort(trace: dict) -> tuple[int, str, str] | None:
+    """Return the implementation cohort that produced one shadow vintage."""
+    evaluation = _optimizer_evaluation(trace)
+    decision = evaluation.get("decision") or {}
+    optimizer_version = evaluation.get("optimizer_version") or decision.get(
+        "optimizer_version"
+    )
+    if not optimizer_version:
+        shadow, _authoritative = _optimizer_plans(trace)
+        optimizer_version = (shadow or {}).get("optimizer_version")
+    scenario_version = (
+        evaluation.get("scenario_model_version")
+        or (evaluation.get("scenario_build") or {}).get("model_version")
+        or (trace.get("scenarios") or {}).get("model_version")
+    )
+    try:
+        schema_version = int(trace["schema_version"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not optimizer_version or not scenario_version:
+        return None
+    return schema_version, str(optimizer_version), str(scenario_version)
+
+
+def current_optimizer_release_cohort(
+    traces: list[dict],
+) -> tuple[int, str, str] | None:
+    """Find the newest trace schema for the checked-out optimizer/model pair."""
+    matching = [
+        trace
+        for trace in traces
+        if (cohort := optimizer_release_cohort(trace)) is not None
+        and cohort[1:]
+        == (
+            UNIFIED_OPTIMIZER_VERSION,
+            SCENARIO_RELEASE_VERSION,
+        )
+    ]
+    if not matching:
+        return None
+    newest = max(matching, key=lambda item: int(item.get("generated_at_ms", 0)))
+    return optimizer_release_cohort(newest)
+
+
+def select_optimizer_release_cohort(
+    traces: list[dict], cohort: tuple[int, str, str] | None
+) -> list[dict]:
+    """Keep traces produced by exactly one scenario/optimizer implementation."""
+    if cohort is None:
+        return []
+    return [item for item in traces if optimizer_release_cohort(item) == cohort]
 
 
 def score_scenarios(
@@ -435,16 +493,36 @@ def summarize(
         for item in gate_traces
         if _optimizer_evaluation(item).get("runtime_ms") is not None
     ]
-    eligible_builds = [
-        _optimizer_evaluation(item).get("scenario_build") or {}
-        for item in gate_traces
-        if (_optimizer_evaluation(item).get("scenario_build") or {}).get("eligible")
-    ]
+    eligible_builds = []
+    for item in gate_traces:
+        evaluation = _optimizer_evaluation(item)
+        scenario_build = evaluation.get("scenario_build") or {}
+        if scenario_build.get("eligible"):
+            eligible_builds.append(scenario_build)
+        elif evaluation.get("status") == "scenario_builder_failed":
+            # An unexpected builder failure occurred after the request passed the
+            # shadow boundary. Count it instead of inflating the success rate.
+            eligible_builds.append({"status": "scenario_builder_failed"})
     completed_builds = sum(
         item.get("status") == "completed" for item in eligible_builds
     )
     scenario_success_pct = (
         100.0 * completed_builds / len(eligible_builds) if eligible_builds else None
+    )
+    optimizer_evaluations = [
+        _optimizer_evaluation(item)
+        for item in gate_traces
+        if _optimizer_evaluation(item).get("status")
+        in {"completed", "completed_p50_fallback", "optimizer_failed"}
+    ]
+    completed_optimizer_evaluations = sum(
+        str(item.get("status", "")).startswith("completed")
+        for item in optimizer_evaluations
+    )
+    optimizer_success_pct = (
+        100.0 * completed_optimizer_evaluations / len(optimizer_evaluations)
+        if optimizer_evaluations
+        else None
     )
     paths = path_scores or []
     vintages_per_day = Counter(
@@ -499,6 +577,8 @@ def summarize(
         ),
         "eligible_scenario_vintages": len(eligible_builds),
         "scenario_generation_success_pct": scenario_success_pct,
+        "optimizer_evaluation_vintages": len(optimizer_evaluations),
+        "optimizer_success_pct": optimizer_success_pct,
         "scenario_metrics": scenario_metrics,
         "scenario_cohorts": cohorts,
         "ev_event_samples": len(ev),
@@ -608,6 +688,7 @@ def summarize(
         and len(eligible_decisions) >= 100
         and len(paths) >= 20
         and len(eligible_builds) >= 100
+        and len(optimizer_evaluations) >= 100
         and all_cohorts_mature
         and regret_high is not None
         and ev_evidence_enough
@@ -617,6 +698,7 @@ def summarize(
         or (runtimes and max(runtimes) > 5000.0)
         or (regret_high is not None and regret_high > 0.0)
         or (scenario_success_pct is not None and scenario_success_pct < 90.0)
+        or (optimizer_success_pct is not None and optimizer_success_pct < 99.0)
         or not path_gate_ok
         or not ev_gate_ok
         or any(
@@ -635,6 +717,7 @@ def summarize(
         "minimum_decision_vintages": 100,
         "minimum_complete_path_vintages": 20,
         "minimum_scenario_success_pct": 90.0,
+        "minimum_optimizer_success_pct": 99.0,
         "minimum_cohort_samples": 30,
         "minimum_observation_days": 7,
         "complete_observation_days": complete_observation_days,
@@ -872,7 +955,10 @@ def _policy_vector(slot) -> tuple[float, float]:
 
 
 def _serialized_policy(slot) -> tuple[float, float]:
-    return float(slot[7]), float(slot[4])
+    return tuple(
+        0.0 if abs(value) <= POLICY_EPSILON_KWH else value
+        for value in (float(slot[7]), float(slot[4]))
+    )
 
 
 def _policy_distance(left, right) -> float:
@@ -886,8 +972,7 @@ def _policy_direction(policy) -> int:
 def _constrained_objective(optimizer, problem, serialized_slot) -> float:
     if len(serialized_slot) < 9:
         return float("inf")
-    required_charge = float(serialized_slot[7])
-    discharge_budget = float(serialized_slot[4])
+    required_charge, discharge_budget = _serialized_policy(serialized_slot)
     try:
         _plan, diagnostics = optimizer.optimize_with_diagnostics(
             problem,
@@ -919,7 +1004,9 @@ def main() -> int:
         parser.error("--days must be positive")
     as_of_ms = _parse_as_of(args.as_of)
     start_ms = as_of_ms - int(timedelta(days=args.days).total_seconds() * 1000)
-    traces = load_traces(args.trace_dir, start_ms, as_of_ms)
+    available_traces = load_traces(args.trace_dir, start_ms, as_of_ms)
+    release_cohort = current_optimizer_release_cohort(available_traces)
+    traces = select_optimizer_release_cohort(available_traces, release_cohort)
     evaluation_vintages = hourly_boundary_vintages(traces)
     actuals = load_actuals(args.feature_store)
     report = summarize(
@@ -933,7 +1020,22 @@ def main() -> int:
         score_paths(evaluation_vintages, actuals, as_of_ms=as_of_ms),
         evaluation_traces=evaluation_vintages,
     )
-    report.update({"as_of_ms": as_of_ms, "window_days": args.days})
+    report.update(
+        {
+            "as_of_ms": as_of_ms,
+            "window_days": args.days,
+            "available_trace_vintages": len(available_traces),
+            "evaluation_cohort": (
+                {
+                    "schema_version": release_cohort[0],
+                    "optimizer_version": release_cohort[1],
+                    "scenario_model_version": release_cohort[2],
+                }
+                if release_cohort is not None
+                else None
+            ),
+        }
+    )
     rendered = json.dumps(report, indent=2, sort_keys=True)
     if args.json_out:
         Path(args.json_out).write_text(rendered + "\n", encoding="utf-8")

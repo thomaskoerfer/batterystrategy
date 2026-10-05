@@ -27,7 +27,7 @@ STOCHASTIC_MAX_RECOURSE_STATES = 600
 ECONOMIC_COST_TIE_EUR = 1e-9
 OPTIMIZER_VERSION = "economic-dp-v2"
 STOCHASTIC_OPTIMIZER_VERSION = "stochastic-two-stage-dp-v1"
-UNIFIED_OPTIMIZER_VERSION = "scenario-dp-v2"
+UNIFIED_OPTIMIZER_VERSION = "scenario-dp-v3"
 
 
 @dataclass(slots=True)
@@ -841,7 +841,7 @@ class StochasticDynamicProgrammingOptimizer:
                 best = candidate
         if best is None:
             raise ValueError("stochastic optimizer has no feasible first transition")
-        required_charge = best[1]
+        required_charge = 0.0 if best[1] <= ENERGY_EPSILON_KWH else best[1]
         discharge_budget = best[2] if policy_is_forced else 0.0
         if not policy_is_forced and required_charge <= 1e-9:
             discharge_budget = _commercial_discharge_envelope(
@@ -857,6 +857,9 @@ class StochasticDynamicProgrammingOptimizer:
                     for probability, future_values in recourse
                 ),
             )
+        discharge_budget = (
+            0.0 if discharge_budget <= ENERGY_EPSILON_KWH else discharge_budget
+        )
         selected = _evaluate_first_policy(
             problem,
             prices,

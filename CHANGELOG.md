@@ -2,9 +2,23 @@
 
 ## Unreleased
 
+## [0.2.0-rc.32] - 2026-10-05
+
+### Added
+
 - Add an isolated whole-heat-pump forecast shadow with bounded schema-7 trace
   evidence and offline component evaluation. Production forecast and control
   behavior remain unchanged.
+
+### Changed
+
+- Start a distinct `scenario-dp-v3` shadow evaluation cohort and prevent the
+  release gate from mixing decisions produced by different optimizer, scenario
+  or trace-schema versions.
+- Normalize sub-microwatt-hour policy noise to zero before shadow decisions and
+  perfect-foresight replay are validated.
+- Use one canonical Scenario Builder release identity and count builder and
+  optimizer exceptions in explicit release-gate success rates.
 - Keep the initial whole-heat-pump candidate P50-only until matured residuals
   support calibrated uncertainty, model only incremental DHW displacement, and
   add an executable paired promotion gate with coverage and cycle evidence.

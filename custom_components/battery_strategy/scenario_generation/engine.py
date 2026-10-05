@@ -31,6 +31,7 @@ from ..forecasting.uncertainty import (
 
 MODEL_VERSION = "weekly-joint-scenario-v4"
 REPAIR_POLICY_VERSION = "bounded-channel-repair-2pct-v2"
+SCENARIO_RELEASE_VERSION = f"{MODEL_VERSION}+{REPAIR_POLICY_VERSION}"
 _LOAD_INVALID = frozenset(
     {QualityFlag.MISSING_GRID, QualityFlag.MISSING_BATTERY, QualityFlag.RESTART_GAP}
 )
@@ -96,7 +97,7 @@ class ScenarioBuilder:
                 evidence.training_cutoff_ms,
                 request.settings.seed,
                 fingerprint,
-                f"{MODEL_VERSION}+{REPAIR_POLICY_VERSION}",
+                SCENARIO_RELEASE_VERSION,
                 candidate_diagnostics,
             )
 

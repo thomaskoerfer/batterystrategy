@@ -136,6 +136,25 @@ sample selection. Realized live cost and
 export remain owned by measured savings/command evaluation; a planning trace
 cannot reconstruct compiler and live-control intervention faithfully:
 
+The release gate always evaluates one homogeneous release cohort identified by
+trace schema, optimizer version and Scenario Builder model version. The target
+optimizer and scenario versions come from the evaluator's checked-out source;
+the Scenario Builder version includes its repair policy, and their newest
+observed trace schema completes the cohort key. Every trace records the intended
+optimizer and Scenario Builder versions even when either computation fails. An
+unexpected Scenario Builder exception also counts as an eligible failed vintage
+in the generation success rate. The report exposes the number of older
+available traces separately. A semantic optimizer or scenario-model change must therefore bump
+its version and starts a fresh observation window; historical decisions from a
+different implementation can never make the current release pass or fail.
+Optimizer attempts are measured separately and must achieve at least `99%`
+success across at least 100 hourly boundary vintages. Persisted optimizer
+exceptions therefore cannot be hidden by a sufficient number of successful
+decisions.
+Policy energies whose absolute value is at most `1e-9 kWh` are normalized to
+zero at the replay boundary so floating-point residue cannot turn an idle
+decision into an invalid charge or discharge.
+
 ```sh
 python3 scripts/battery_strategy_optimizer_shadow_backtest.py \
   --trace-dir PATH_TO_FORECAST_TRACE \

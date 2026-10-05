@@ -164,7 +164,14 @@ class ForecastTraceScheduler:
                             heat_pump_shadow_error = type(err).__name__
                             LOGGER.warning("Heat-pump forecast shadow failed: %s", err)
                     if evaluation.error is not None:
-                        LOGGER.warning("Shadow optimizer failed: %s", evaluation.error)
+                        component = (
+                            "scenario builder"
+                            if evaluation.status == "scenario_builder_failed"
+                            else "optimizer"
+                        )
+                        LOGGER.warning(
+                            "Shadow %s failed: %s", component, evaluation.error
+                        )
                     optimizer_diagnostics = dict(evaluation.optimizer_diagnostics)
                     if evaluation.optimization_result is not None:
                         optimizer_diagnostics["decision"] = _serialize_decision(
@@ -179,6 +186,10 @@ class ForecastTraceScheduler:
                         {
                             "status": evaluation.status,
                             "runtime_ms": evaluation.runtime_ms,
+                            "optimizer_version": evaluation.optimizer_version,
+                            "scenario_model_version": (
+                                evaluation.scenario_model_version
+                            ),
                             "scenario_build": (
                                 _serialize_build_diagnostics(evaluation.build_result)
                                 if evaluation.build_result is not None

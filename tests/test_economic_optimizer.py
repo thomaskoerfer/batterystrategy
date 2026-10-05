@@ -140,7 +140,7 @@ def test_unified_optimizer_separates_current_decision_from_projection():
     assert result.decision.slot.slot == candidate.market[0].slot
     assert result.projection.slots[0].slot == result.decision.slot.slot
     assert len(result.projection.slots) == 2
-    assert result.projection.optimizer_version == "scenario-dp-v2"
+    assert result.projection.optimizer_version == "scenario-dp-v3"
 
 
 def test_unified_optimizer_uses_p50_as_probability_one_scenario():
@@ -193,6 +193,42 @@ def test_unified_optimizer_does_not_apply_legacy_discharge_floor():
 
     assert result.decision is not None
     assert result.decision.slot.discharge_budget_kwh > 0.0
+
+
+def test_unified_optimizer_canonicalizes_policy_float_noise():
+    result = UnifiedScenarioOptimizer().optimize(
+        problem([50.0], loads=[0.0], pv=[0.0], soc=10.0)
+    )
+
+    assert result.decision is not None
+    assert result.decision.slot.required_charge_kwh == 0.0
+    assert result.decision.slot.discharge_budget_kwh == 0.0
+
+
+def test_stochastic_optimizer_canonicalizes_forced_policy_float_noise():
+    candidate = problem([50.0], loads=[0.0], pv=[0.0], soc=10.0)
+    slot = candidate.forecast.load.slots[0].slot
+    candidate = replace(
+        candidate,
+        scenarios=ScenarioBundle(
+            "paths",
+            "source",
+            candidate.as_of_ms,
+            candidate.as_of_ms,
+            "weekly-v1",
+            (ScenarioPath("path", 1.0, (ScenarioSlot(slot, 0.0, 0.0, 0.0),)),),
+        ),
+    )
+
+    plan, diagnostics = (
+        StochasticDynamicProgrammingOptimizer().optimize_with_diagnostics(
+            candidate,
+            required_first_policy=(5e-10, 0.0),
+        )
+    )
+
+    assert diagnostics["first_required_charge_kwh"] == 0.0
+    assert plan.slots[0].required_charge_kwh == 0.0
 
 
 def test_unified_optimizer_handles_realistic_48h_horizon():

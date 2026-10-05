@@ -44,6 +44,60 @@ def test_trace_loader_accepts_every_produced_optimizer_envelope(tmp_path):
     assert mod.load_traces(tmp_path, 0, 100) == payloads
 
 
+def test_release_cohort_keeps_only_checked_out_implementation(monkeypatch):
+    def trace(generated, optimizer, scenario, status="completed"):
+        return {
+            "schema_version": 7,
+            "generated_at_ms": generated,
+            "scenarios": {"model_version": scenario},
+            "shadow_evaluation": {
+                "status": status,
+                "optimizer_version": optimizer,
+                "scenario_model_version": scenario,
+                "decision": {"optimizer_version": optimizer},
+                "scenario_build": {"model_version": scenario},
+            },
+        }
+
+    old = trace(1, "scenario-dp-v2", "scenario-v1")
+    current = trace(2, "scenario-dp-v3", "scenario-v1")
+    failed_newer = trace(3, "scenario-dp-v4", "scenario-v2", "optimizer_failed")
+    monkeypatch.setattr(mod, "UNIFIED_OPTIMIZER_VERSION", "scenario-dp-v3")
+    monkeypatch.setattr(mod, "SCENARIO_RELEASE_VERSION", "scenario-v1+repair-v1")
+    current["shadow_evaluation"]["scenario_build"]["model_version"] = (
+        "scenario-v1+repair-v1"
+    )
+    current["shadow_evaluation"]["scenario_model_version"] = "scenario-v1+repair-v1"
+
+    cohort = mod.current_optimizer_release_cohort([old, current, failed_newer])
+
+    assert cohort == (7, "scenario-dp-v3", "scenario-v1+repair-v1")
+    assert mod.select_optimizer_release_cohort(
+        [old, current, failed_newer], cohort
+    ) == [current]
+    assert mod.current_optimizer_release_cohort([old, failed_newer]) is None
+
+
+def test_serialized_policy_normalizes_float_noise_to_zero():
+    slot = [0, "idle", 0.0, 0.0, -0.0, 50.0, 50.0, 2e-16, 0.0]
+
+    assert mod._serialized_policy(slot) == (0.0, 0.0)
+
+
+def test_constrained_replay_uses_normalized_policy(monkeypatch):
+    captured = {}
+
+    class Optimizer:
+        def optimize_with_diagnostics(self, _problem, *, required_first_policy):
+            captured["policy"] = required_first_policy
+            return None, {"expected_scenario_cost_eur": 0.0}
+
+    slot = [0, "idle", 0.0, 0.0, -0.0, 50.0, 50.0, 2e-16, 0.0]
+
+    assert mod._constrained_objective(Optimizer(), object(), slot) == 0.0
+    assert captured["policy"] == (0.0, 0.0)
+
+
 def test_scenario_scores_report_crps_coverage_and_ev_brier():
     trace = {
         "generated_at_ms": 0,
@@ -149,6 +203,48 @@ def test_scenario_success_rate_uses_pre_registered_evaluation_vintages():
 
     assert report["eligible_scenario_vintages"] == 1
     assert report["scenario_generation_success_pct"] == 100.0
+
+
+def test_scenario_builder_exception_counts_as_eligible_failure():
+    completed = {
+        "generated_at_ms": 0,
+        "shadow_evaluation": {
+            "status": "completed",
+            "runtime_ms": 1.0,
+            "scenario_build": {"eligible": True, "status": "completed"},
+        },
+    }
+    failed = {
+        "generated_at_ms": mod.SLOT_MS,
+        "shadow_evaluation": {
+            "status": "scenario_builder_failed",
+            "runtime_ms": 1.0,
+            "optimizer_version": "scenario-dp-v3",
+            "scenario_model_version": "scenario-v1+repair-v1",
+        },
+    }
+
+    report = mod.summarize([completed, failed], [], [])
+
+    assert report["eligible_scenario_vintages"] == 2
+    assert report["scenario_generation_success_pct"] == 50.0
+
+
+def test_optimizer_exception_reduces_release_success_rate():
+    completed = {
+        "generated_at_ms": 0,
+        "shadow_evaluation": {"status": "completed", "runtime_ms": 1.0},
+    }
+    failed = {
+        "generated_at_ms": mod.SLOT_MS,
+        "shadow_evaluation": {"status": "optimizer_failed", "runtime_ms": 1.0},
+    }
+
+    report = mod.summarize([completed, failed], [], [])
+
+    assert report["optimizer_evaluation_vintages"] == 2
+    assert report["optimizer_success_pct"] == 50.0
+    assert report["release_gate"]["minimum_optimizer_success_pct"] == 99.0
 
 
 def test_complete_path_scores_joint_shape_and_ev_timing():
