@@ -161,7 +161,7 @@ def optimizer_release_cohort(trace: dict) -> tuple[int, str, str] | None:
     )
     try:
         schema_version = int(trace["schema_version"])
-    except (KeyError, TypeError, ValueError):
+    except KeyError, TypeError, ValueError:
         return None
     if not optimizer_version or not scenario_version:
         return None
