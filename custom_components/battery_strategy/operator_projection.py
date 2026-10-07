@@ -59,6 +59,7 @@ def build_operator_projection(
     plan: StrategyPlan = data["plan"]  # type: ignore[assignment]
     directive = data["plan_to_live"]
     optimizer_attrs = data.get("optimizer_attrs") or {}
+    daily_costs = data.get("daily_cost_projection") or plan.daily_costs
     today = local_date.isoformat()
     tomorrow = (local_date + dt.timedelta(days=1)).isoformat()
 
@@ -114,12 +115,12 @@ def build_operator_projection(
         "grid_import_forecast_next_1h": plan.grid_import_forecast_next_1h_kwh,
         "grid_export_forecast_next_1h": plan.grid_export_forecast_next_1h_kwh,
         "virtual_soc_end_tomorrow": round(plan.virtual_soc_end_tomorrow_pct, 1),
-        "baseline_cost_today": _daily_cost(plan, today, "base_eur"),
-        "optimized_cost_today": _daily_cost(plan, today, "with_bat_eur"),
-        "estimated_savings_today": _daily_cost(plan, today, "saving_eur"),
-        "baseline_cost_tomorrow": _daily_cost(plan, tomorrow, "base_eur"),
-        "optimized_cost_tomorrow": _daily_cost(plan, tomorrow, "with_bat_eur"),
-        "estimated_savings_tomorrow": _daily_cost(plan, tomorrow, "saving_eur"),
+        "baseline_cost_today": _daily_cost(daily_costs, today, "base_eur"),
+        "optimized_cost_today": _daily_cost(daily_costs, today, "with_bat_eur"),
+        "estimated_savings_today": _daily_cost(daily_costs, today, "saving_eur"),
+        "baseline_cost_tomorrow": _daily_cost(daily_costs, tomorrow, "base_eur"),
+        "optimized_cost_tomorrow": _daily_cost(daily_costs, tomorrow, "with_bat_eur"),
+        "estimated_savings_tomorrow": _daily_cost(daily_costs, tomorrow, "saving_eur"),
         "estimated_savings_horizon": round(
             _raw_float(optimizer_attrs, "estimated_savings_horizon_eur"), 3
         ),
@@ -210,9 +211,11 @@ def _average_price(cost_eur: float, energy_kwh: float) -> float:
     return round(cost_eur / energy_kwh * 100.0, 1)
 
 
-def _daily_cost(plan: StrategyPlan, date: str, field: str) -> float:
-    value = plan.daily_costs.get(date)
-    return getattr(value, field) if value is not None else 0.0
+def _daily_cost(
+    daily_costs: Mapping[str, object], date: str, field: str
+) -> float | None:
+    value = daily_costs.get(date)
+    return getattr(value, field) if value is not None else None
 
 
 def _optimizer_discharge_budget_kwh(plan: StrategyPlan) -> float:

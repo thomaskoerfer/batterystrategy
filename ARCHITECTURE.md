@@ -74,6 +74,7 @@ measured savings, evaluation and diagnostics:
 - [live control](docs/live-control/README.md);
 - [actuation](docs/actuation/README.md);
 - [measured savings](docs/savings/README.md);
+- [daily economics presentation](docs/daily-economics/README.md);
 - [evaluation and diagnostics](docs/evaluation/README.md).
 
 Public documentation and committed agent guidance must describe normalized

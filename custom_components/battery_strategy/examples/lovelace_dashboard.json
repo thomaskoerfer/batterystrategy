@@ -374,7 +374,7 @@
           "entities": [
             {
               "type": "section",
-              "label": "Heute"
+              "label": "Heute (Ist + Restplan)"
             },
             "sensor.battery_strategy_baseline_cost_today",
             "sensor.battery_strategy_optimized_cost_today",

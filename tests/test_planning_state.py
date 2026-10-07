@@ -39,7 +39,15 @@ def test_store_round_trip_preserves_schema_11_keys_and_unknown_salvage(tmp_path)
         "virtual_last_power_w": 0.0,
         "virtual_trace": [],
         "last_known_soc_pct": 50.0,
-        "eex_cache": {},
+        "eex_cache": {
+            "proxy_days": {
+                "2027-01-16": {
+                    "fingerprint": "stable-vintage",
+                    "intervals": [[1_800_000_000.0, 0.3]],
+                }
+            },
+            "firm_price_days": {"2027-01-15": [[1_799_913_600.0, 0.25]]},
+        },
         "daily_savings": {},
         "actual_daily_savings": {},
         "savings_tracker": {

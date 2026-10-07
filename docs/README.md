@@ -14,7 +14,7 @@ describing how coding agents must work in that boundary.
 | Actuation | Hardware command adapter |
 
 Market context is an input adapter. Planning service and planning runtime
-orchestrate the five layers. Savings, evaluation and diagnostics are
+orchestrate the five layers. Daily economics, savings, evaluation and diagnostics are
 non-authoritative observers. These are supporting components, not additional
 production layers.
 
@@ -31,6 +31,7 @@ production layers.
 | Live control | [README](live-control/README.md) |
 | Actuation | [README](actuation/README.md) |
 | Measured savings | [README](savings/README.md) |
+| Daily economics presentation | [README](daily-economics/README.md) |
 | Evaluation and diagnostics | [README](evaluation/README.md) |
 
 The root [architecture](../ARCHITECTURE.md) defines the data flow. The

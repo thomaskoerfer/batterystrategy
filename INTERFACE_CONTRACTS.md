@@ -177,6 +177,20 @@ zero component contributions, preventing double counting. Missing component
 measurements remain in whole-house load and carry missing-component quality;
 they are never silently treated as measured zero.
 
+### Market context to planning
+
+Market context supplies a fixed executable decision horizon and a separate
+continuation horizon used only to value inventory at the executable boundary.
+Continuation slots cannot become battery actions, budgets or live directives.
+Commercial policy is derived from these rolling horizons and never from the
+calendar labels "today" or "tomorrow".
+
+An EEX-derived delivery-day curve is immutable for one information vintage.
+The vintage changes only when its normalized Base/Peak settlement fingerprint
+or the versioned proxy algorithm changes. A newly published firm retail slot
+still replaces the proxy for that slot immediately. This cache is market state,
+not forecast-learning state.
+
 ### Forecasting and market data to optimization
 
 `OptimizationProblem` is a complete optimizer input. Its
@@ -231,6 +245,14 @@ Published future profiles are canonical `PlanProjection` data. Actual
 history may be joined up to the observation time, but a live directive or live
 command must never rewrite future plan SoC, power or budget values. Live
 deviations become optimizer input at the next planning run instead.
+
+### Planning to daily economics presentation
+
+The operator-facing current-day cost projection is one full calendar day:
+finalized, EV-free actual slots through an explicit cutoff plus non-overlapping
+plan slots after that cutoff. The next-day projection is plan-only. These
+values are presentation outputs and cannot feed optimization, compilation or
+live control. Measured savings remain a separate actual-only ledger.
 
 ### Planning publication
 

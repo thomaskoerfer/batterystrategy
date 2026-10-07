@@ -19,6 +19,8 @@ documented impact analysis and explicit owner approval.
   afterward and flow only to bounded evaluation persistence.
 - Measured savings: `savings.py`; actual accounting is observational and must
   not influence planning or live control.
+- Daily economics: `daily_economics.py`; it combines finalized actuals and the
+  non-overlapping remaining plan for display only and cannot influence control.
 - Home Assistant planning boundary: `planning_adapter.py` captures normalized
   runtime inputs; `planning_runtime.py` freezes one run snapshot;
   `runtime_measurements.py` and `runtime_market_data.py` normalize captured
