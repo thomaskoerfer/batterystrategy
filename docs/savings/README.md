@@ -15,6 +15,11 @@ replaces it.
 Inputs are normalized battery counters, grid flow, battery power and prices
 supplied by adapters. Missing price data never advances the counter tracker.
 
+The dashboard's left-hand full-day cost forecast is not this ledger. It is a
+separate presentation calculation combining finalized EV-free actual slots and
+the remaining plan. The right-hand actual savings and energy values continue to
+come only from this measured ledger.
+
 ## Setup independence
 
 Accounting consumes normalized energy, power and price facts. It does not know

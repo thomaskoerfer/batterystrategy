@@ -21,6 +21,12 @@ The service contains no forecast model, market
 network access, measured-savings accounting, live meter following or hardware
 writes. It never reconstructs executable intent from presentation data.
 
+The optimizer receives only the executable decision horizon. A separate market
+continuation is consumed while constructing `CommercialPolicy` and is not
+passed to the optimizer as executable slots. Full-day operator costs are
+assembled later by the daily-economics presentation boundary from finalized
+actuals plus the non-overlapping remainder of this plan.
+
 The surrounding planning runtime combines the publication with diagnostics as
 an immutable `PlanningResult`. Only its `battery_plan` member may enter the plan
 compiler; the `StrategyPlan` and mapping projections exist for Home Assistant

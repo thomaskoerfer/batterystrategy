@@ -80,6 +80,7 @@ from .contracts import (
     SlotKey,
 )
 from .contracts.common import SLOT_MS
+from .daily_economics import build_daily_cost_projection
 from .feature_store import (
     CompressedFeatureStore,
     ExecutorFeatureStore,
@@ -535,6 +536,14 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             "weather_slot_count": len(self._weather),
             "weather_error": self._weather_error,
         }
+        data["daily_cost_projection"] = build_daily_cost_projection(
+            self._feature_history,
+            plan,
+            local_date=local_now.date(),
+            as_of_ms=now_ms,
+            timezone=self.hass.config.time_zone,
+            export_value_ct_per_kwh=options.feed_in_tariff_ct_per_kwh,
+        )
         data["operator_projection"] = build_operator_projection(
             data,
             local_date=local_now.date(),

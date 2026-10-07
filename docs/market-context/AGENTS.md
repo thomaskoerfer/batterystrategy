@@ -6,7 +6,9 @@ guidance before changing this component.
 ## Allowed
 
 Own provider access, bounded caching, price normalization, missing-day
-enrichment and commercial price context.
+enrichment, the non-executable continuation horizon and commercial price
+context. Keep delivery-day proxy state keyed by an explicit information
+fingerprint; never use calendar rollover itself as invalidation.
 
 ## Forbidden
 

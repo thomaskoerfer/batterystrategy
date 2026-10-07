@@ -81,6 +81,7 @@ class PlanningService:
         samples: list[dict],
         start_energy_kwh: float,
         forecast_bundle: ForecastDistributionBundle,
+        continuation_intervals: list[TariffInterval] | None = None,
         eex_days: dict | None = None,
         forecast_diagnostics: dict | None = None,
         scenario_result: ScenarioBuildResult | None = None,
@@ -89,6 +90,7 @@ class PlanningService:
         metadata = self._market_context.build_plan_metadata(
             intervals,
             samples,
+            continuation_intervals=continuation_intervals,
             eex_days=eex_days,
             forecast_diagnostics=forecast_diagnostics,
         )

@@ -370,8 +370,10 @@ def run(
     eex_days = market_context.get_eex_day_context(owner_state.market, local_now)
     now_floor = floor_to_quarter(local_now)
     horizon_slots = math.ceil(settings.planning_horizon_h / SLOT_H)
+    continuation_slots = SLOTS_PER_DAY
+    market_slots = horizon_slots + continuation_slots
     horizon_end = now_floor.astimezone(dt.UTC) + dt.timedelta(
-        minutes=15 * max(0, horizon_slots - 1)
+        minutes=15 * max(0, market_slots - 1)
     )
     horizon_dates = {
         (now_floor.date() + dt.timedelta(days=offset)).isoformat()
@@ -381,12 +383,17 @@ def run(
         )
     }
     intervals_all = runtime.tariffs.for_dates(horizon_dates)
-    intervals, tomorrow_price_source = market_context.build_rolling_horizon_prices(
-        intervals_all,
-        eex_days,
-        now_floor,
-        horizon_slots,
+    market_intervals, tomorrow_price_source = (
+        market_context.build_rolling_horizon_prices(
+            intervals_all,
+            eex_days,
+            now_floor,
+            market_slots,
+            state=owner_state.market,
+        )
     )
+    intervals = market_intervals[:horizon_slots]
+    continuation_intervals = market_intervals[horizon_slots:]
     now_ts_ms = int(now_ts * 1000)
     if soc is not None:
         start_e = clamp(
@@ -495,6 +502,7 @@ def run(
         intervals=intervals,
         samples=forecast_state.samples,
         start_energy_kwh=start_e,
+        continuation_intervals=continuation_intervals,
         eex_days=eex_days,
         forecast_bundle=forecast_bundle,
         forecast_diagnostics=forecast_diagnostics,

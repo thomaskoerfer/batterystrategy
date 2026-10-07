@@ -50,6 +50,7 @@ class MarketContextService:
         "https://api.eex-group.com/pub/customise-widget/filter-data-with-scope"
     )
     _EEX_TABLE_URL = "https://api.eex-group.com/pub/market-data/table-data"
+    _PROXY_MODEL_VERSION = "eex-retail-shape-v2"
 
     def __init__(self, config: MarketContextConfig) -> None:
         self._config = config
@@ -178,17 +179,19 @@ class MarketContextService:
     ) -> dict[str, dict]:
         """Return cached EEX day products, refreshing them when needed."""
         cache = state.eex_cache
+        previous_days = cache.get("days") if isinstance(cache.get("days"), dict) else {}
         fetched_at = float(cache.get("fetched_at_ts", 0.0) or 0.0)
-        if (
-            cache.get("days")
-            and (local_now.timestamp() - fetched_at) < self._config.eex_cache_ttl_s
-        ):
-            return cache["days"]
-
         target_dates = [
             (local_now.date() + dt.timedelta(days=offset)).isoformat()
             for offset in range(4)
         ]
+        if (
+            cache.get("days")
+            and all(day in previous_days for day in target_dates)
+            and (local_now.timestamp() - fetched_at) < self._config.eex_cache_ttl_s
+        ):
+            return cache["days"]
+
         result: dict[str, dict] = {day: {} for day in target_dates}
         try:
             base_rows = {
@@ -222,6 +225,21 @@ class MarketContextService:
         # Optional EEX enrichment must not invalidate otherwise usable prices.
         except Exception:
             pass
+
+        # An unavailable optional provider does not constitute a new market
+        # vintage. Retain the last known product for each requested delivery
+        # day until a successful response changes its fingerprint.
+        for delivery_date in target_dates:
+            previous = previous_days.get(delivery_date)
+            current = result[delivery_date]
+            if not isinstance(previous, dict):
+                continue
+            previous_complete = previous.get("base") and previous.get("peak")
+            current_complete = current.get("base") and current.get("peak")
+            if previous_complete and not current_complete:
+                result[delivery_date] = previous
+            elif not current:
+                result[delivery_date] = previous
 
         cache["fetched_at_ts"] = local_now.timestamp()
         cache["days"] = result
@@ -464,6 +482,97 @@ class MarketContextService:
             )
         return result
 
+    @staticmethod
+    def _serialize_intervals(intervals: list[TariffInterval]) -> list[list[float]]:
+        return [
+            [float(item.timestamp), float(item.price_eur_per_kwh)] for item in intervals
+        ]
+
+    def _deserialize_proxy_day(self, value: object) -> list[TariffInterval]:
+        if not isinstance(value, list):
+            return []
+        result = []
+        for item in value:
+            if not isinstance(item, list) or len(item) != 2:
+                return []
+            try:
+                starts_at = dt.datetime.fromtimestamp(
+                    float(item[0]), dt.UTC
+                ).astimezone(self._config.timezone)
+                price = float(item[1])
+            except (TypeError, ValueError, OverflowError):
+                return []
+            result.append(TariffInterval(starts_at, price, "eex_proxy"))
+        return result
+
+    def _proxy_fingerprint(self, eex_days: dict, target_date: dt.date) -> str | None:
+        context = (eex_days or {}).get(target_date.isoformat(), {})
+        base = context.get("base") or {}
+        peak = context.get("peak") or {}
+        if base.get("settl_ct_kwh") is None:
+            return None
+        payload = {
+            "model": self._PROXY_MODEL_VERSION,
+            "base_ct": base.get("settl_ct_kwh"),
+            "base_trade_date": base.get("trade_date"),
+            "peak_ct": peak.get("settl_ct_kwh"),
+            "peak_trade_date": peak.get("trade_date"),
+        }
+        return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+    def _remember_firm_days(
+        self, state: MarketState | None, intervals: list[TariffInterval]
+    ) -> list[TariffInterval]:
+        """Retain complete firm days as stable proxy-shape evidence."""
+        if state is None:
+            return intervals
+        archive = state.eex_cache.setdefault("firm_price_days", {})
+        by_date = self._intervals_by_date(intervals)
+        for day, items in by_date.items():
+            if len(items) >= self._config.proxy_min_full_day_slots:
+                archive[day.isoformat()] = self._serialize_intervals(items)
+        for key in sorted(archive)[: -max(1, self._config.proxy_recent_days * 3)]:
+            archive.pop(key, None)
+        remembered: dict[int, TariffInterval] = {}
+        for raw in archive.values():
+            for item in self._deserialize_proxy_day(raw):
+                remembered[int(item.timestamp)] = TariffInterval(
+                    item.starts_at, item.price_eur_per_kwh, "tibber"
+                )
+        remembered.update({int(item.timestamp): item for item in intervals})
+        return sorted(remembered.values(), key=lambda item: item.starts_at)
+
+    def _stable_proxy_day(
+        self,
+        *,
+        state: MarketState | None,
+        reference: list[TariffInterval],
+        eex_days: dict,
+        target_date: dt.date,
+    ) -> list[TariffInterval]:
+        fingerprint = self._proxy_fingerprint(eex_days, target_date)
+        if fingerprint is None or state is None:
+            return self.build_eex_proxy_day_prices(
+                reference, eex_days, target_date - dt.timedelta(days=1), target_date
+            )
+        cache = state.eex_cache.setdefault("proxy_days", {})
+        cached = cache.get(target_date.isoformat())
+        if isinstance(cached, dict) and cached.get("fingerprint") == fingerprint:
+            restored = self._deserialize_proxy_day(cached.get("intervals"))
+            if restored:
+                return restored
+        proxy = self.build_eex_proxy_day_prices(
+            reference, eex_days, target_date - dt.timedelta(days=1), target_date
+        )
+        if proxy:
+            cache[target_date.isoformat()] = {
+                "fingerprint": fingerprint,
+                "intervals": self._serialize_intervals(proxy),
+            }
+        for key in sorted(cache)[:-7]:
+            cache.pop(key, None)
+        return proxy
+
     def apply_eex_proxy_prices(
         self,
         intervals: list[TariffInterval] | tuple[TariffInterval, ...],
@@ -497,6 +606,8 @@ class MarketContextService:
         eex_days: dict,
         start: dt.datetime,
         horizon_slots: int,
+        *,
+        state: MarketState | None = None,
     ) -> tuple[list[TariffInterval], str]:
         """Return a fixed UTC-slot horizon, preserving every real tariff slot."""
         start_utc = start.astimezone(dt.UTC)
@@ -504,17 +615,20 @@ class MarketContextService:
             start_utc + dt.timedelta(minutes=15 * index)
             for index in range(horizon_slots)
         )
+        firm_reference = self._remember_firm_days(state, list(intervals))
         existing = {int(item.timestamp): item for item in intervals}
         dates = sorted(
             {target.astimezone(self._config.timezone).date() for target in targets}
         )
         proxy_by_timestamp: dict[int, TariffInterval] = {}
         proxy_by_local_slot: dict[tuple[dt.date, int, int], TariffInterval] = {}
-        reference = list(intervals)
+        reference = list(firm_reference)
         for target_date in dates:
-            prior_date = target_date - dt.timedelta(days=1)
-            proxy = self.build_eex_proxy_day_prices(
-                reference, eex_days, prior_date, target_date
+            proxy = self._stable_proxy_day(
+                state=state,
+                reference=reference,
+                eex_days=eex_days,
+                target_date=target_date,
             )
             proxy_by_timestamp.update({int(item.timestamp): item for item in proxy})
             proxy_by_local_slot.update(
@@ -563,6 +677,7 @@ class MarketContextService:
         intervals: list[TariffInterval],
         samples: list[dict],
         *,
+        continuation_intervals: list[TariffInterval] | None = None,
         eex_days: dict | None = None,
         forecast_diagnostics: dict | None = None,
     ) -> dict:
@@ -598,6 +713,8 @@ class MarketContextService:
             slot["price_ct"] for slot in slots if slot["date"] == tomorrow
         ]
         tomorrow_min_ct = min(tomorrow_prices) if tomorrow_prices else None
+        # Calendar-day rank is retained for operator diagnostics only. It must
+        # never participate in rolling commercial policy construction.
         tomorrow_min_rank = self._weekday_price_rank(
             samples, tomorrow_date, tomorrow_min_ct
         )
@@ -605,48 +722,21 @@ class MarketContextService:
         discharge_floor_ct = None
         cheap_anchor_ct = None
         cheap_anchor_rank = None
-        if (
-            tomorrow_min_ct is not None
-            and tomorrow_min_rank is not None
-            and tomorrow_min_rank <= self._config.terminal_rank_threshold
-        ):
-            cheapness = self._clamp(
-                (self._config.terminal_rank_threshold - tomorrow_min_rank)
-                / self._config.terminal_rank_threshold,
-                0.0,
-                1.0,
-            )
-            terminal_value_ct = self._clamp(
-                max(0.0, p_high - tomorrow_min_ct) * (0.5 + cheapness),
-                0.0,
-                self._config.terminal_value_cap_ct,
-            )
-            discharge_floor_ct = (
-                tomorrow_min_ct / self._config.round_trip_efficiency
-            ) + self._config.min_margin_ct_per_kwh
-            cheap_anchor_ct = tomorrow_min_ct
-            cheap_anchor_rank = tomorrow_min_rank
-
         horizon_min_slot = min(slots, key=lambda slot: slot["price_ct"])
         horizon_min_ct = float(horizon_min_slot["price_ct"])
         horizon_min_rank = horizon_min_slot.get("weekday_rank")
         if horizon_min_rank is not None:
             cheapness = self._clamp((0.5 - horizon_min_rank) / 0.5, 0.0, 1.0)
             if cheapness > 0.0:
-                tail_date = intervals[-1].starts_at.date() + dt.timedelta(days=1)
-                tail_reference_ct = (
-                    self._weekday_price_quantile(samples, tail_date, 0.8) or p_high
+                continuation_prices = sorted(
+                    item.price_eur_per_kwh * 100.0
+                    for item in (continuation_intervals or [])
                 )
-                tail_context = (eex_days or {}).get(tail_date.isoformat(), {})
-                tail_eex_values = [
-                    tail_context.get("base", {}).get("settl_ct_kwh"),
-                    tail_context.get("peak", {}).get("settl_ct_kwh"),
-                ]
-                tail_eex_values = [
-                    float(value) for value in tail_eex_values if value is not None
-                ]
-                if tail_eex_values:
-                    tail_reference_ct = max([tail_reference_ct, *tail_eex_values])
+                tail_reference_ct = (
+                    self._quantile(continuation_prices, 0.8)
+                    if continuation_prices
+                    else p_high
+                )
                 terminal_value_ct = max(
                     terminal_value_ct,
                     self._clamp(

@@ -79,7 +79,11 @@ from custom_components.battery_strategy.operator_projection import (
     build_operator_projection,
 )
 from custom_components.battery_strategy.plan_compiler import DeterministicPlanCompiler
-from custom_components.battery_strategy.plan_models import PlanPoint, StrategyPlan
+from custom_components.battery_strategy.plan_models import (
+    DailyCost,
+    PlanPoint,
+    StrategyPlan,
+)
 from custom_components.battery_strategy.planner import BackgroundPlanner
 from custom_components.battery_strategy.planning_runtime import HistoryRole
 from custom_components.battery_strategy.runtime_market_data import TariffInterval
@@ -1786,6 +1790,33 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertEqual(
             projection.value("estimated_savings_projected_continuation"), 0.358
         )
+
+    def test_daily_cost_entities_prefer_full_day_actual_plus_plan_projection(self):
+        day = dt.date(2027, 1, 15)
+        projection = operator_projection(
+            {
+                "plan": StrategyPlan(
+                    [],
+                    COMMAND_IDLE,
+                    0,
+                    "test",
+                    daily_costs={day.isoformat(): DailyCost(1.0, 0.8)},
+                ),
+                "daily_cost_projection": {
+                    day.isoformat(): DailyCost(2.0, 1.25),
+                    (day + dt.timedelta(days=1)).isoformat(): DailyCost(3.0, 2.0),
+                },
+                "optimizer_attrs": {"actual_savings_today_eur": 0.123},
+            },
+            day,
+        )
+
+        self.assertEqual(projection.value("baseline_cost_today"), 2.0)
+        self.assertEqual(projection.value("optimized_cost_today"), 1.25)
+        self.assertEqual(projection.value("estimated_savings_today"), 0.75)
+        self.assertEqual(projection.value("estimated_savings_tomorrow"), 1.0)
+        # The right-hand actual ledger remains measured-only.
+        self.assertEqual(projection.value("actual_savings_today"), 0.123)
 
     def _coordinator_for_strategy_enabled(self, strategy_enabled=True):
         coordinator = object.__new__(BatteryStrategyCoordinator)
