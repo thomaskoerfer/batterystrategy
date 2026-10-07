@@ -19,8 +19,10 @@ documented impact analysis and explicit owner approval.
   deterministic fallback. It publishes exactly one authoritative plan.
 - Measured savings: `savings.py`; actual accounting is observational and must
   not influence planning or live control.
-- Daily economics: `daily_economics.py`; it combines finalized actuals and the
-  non-overlapping remaining plan for display only and cannot influence control.
+- Daily economics: `daily_economics.py`; it combines observed EV-free grid cost,
+  authoritative direct-counter savings and the non-overlapping remaining plan
+  for display only and cannot influence control. Never derive a second actual
+  savings ledger from feature-store power integration.
 - Home Assistant planning boundary: `planning_adapter.py` captures normalized
   runtime inputs; `planning_runtime.py` freezes one run snapshot;
   `runtime_measurements.py` and `runtime_market_data.py` normalize captured

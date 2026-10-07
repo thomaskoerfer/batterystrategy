@@ -15,9 +15,11 @@ Base/Peak settlement inputs or the proxy algorithm version changes. Firm retail
 prices retain slot-level precedence.
 
 The existing Today cost entities change meaning from remaining-plan cost to a
-full end-of-day projection. They combine finalized EV-free actual slots through
-one cutoff with plan slots after that cutoff. Tomorrow remains a full plan-only
-day. Actual savings entities remain measured-only.
+full end-of-day projection. They combine observed EV-free grid cost and the
+authoritative direct-counter savings ledger through one cutoff with plan slots
+after that cutoff. Tomorrow remains a full plan-only day. Actual savings
+entities remain measured-only; feature-store power integration is not a second
+actual savings source.
 
 ## Contract impact
 

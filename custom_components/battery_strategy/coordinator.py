@@ -543,6 +543,9 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             as_of_ms=now_ms,
             timezone=self.hass.config.time_zone,
             export_value_ct_per_kwh=options.feed_in_tariff_ct_per_kwh,
+            actual_savings_today_eur=float(
+                self._optimizer_attrs.get("actual_savings_today_eur", 0.0)
+            ),
         )
         data["operator_projection"] = build_operator_projection(
             data,

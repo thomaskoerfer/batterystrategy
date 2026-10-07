@@ -82,9 +82,10 @@ def test_today_combines_finalized_ev_free_actual_with_remaining_plan():
         as_of_ms=slot.end_ms,
         timezone="Europe/Berlin",
         export_value_ct_per_kwh=0.0,
+        actual_savings_today_eur=0.08,
     )
 
-    # Actual baseline 0.25 kWh plus 95 planned quarter-hours.
+    # The direct-counter ledger owns the completed-slot saving (0.08 EUR).
     assert result[day.isoformat()].base_eur == 9.6
     # Actual grid excluding 0.50 kWh EV is 0.05 kWh, then planned grid.
     assert result[day.isoformat()].with_bat_eur == 4.77
@@ -122,6 +123,7 @@ def test_missing_actual_price_makes_today_unavailable():
         as_of_ms=slot.end_ms,
         timezone="Europe/Berlin",
         export_value_ct_per_kwh=0.0,
+        actual_savings_today_eur=0.0,
     )
 
     assert day.isoformat() not in result
@@ -146,6 +148,59 @@ def test_incomplete_dst_tomorrow_is_unavailable_instead_of_partial():
         ),
         timezone="Europe/Berlin",
         export_value_ct_per_kwh=0.0,
+        actual_savings_today_eur=0.0,
     )
 
     assert tomorrow.isoformat() not in result
+
+
+def test_today_uses_counter_ledger_when_feature_power_implies_other_savings():
+    day = dt.date(2026, 10, 7)
+    midnight = dt.datetime.combine(day, dt.time.min, tzinfo=ZONE)
+    slot = SlotKey(
+        int(midnight.timestamp() * 1000),
+        int((midnight + dt.timedelta(minutes=15)).timestamp() * 1000),
+    )
+    actual = HistoricalFeatureSlot(
+        slot=slot,
+        house_load_no_ev_kwh=0.6,
+        pv_generation_kwh=0.0,
+        grid_import_kwh=0.1,
+        grid_export_kwh=0.0,
+        battery_charge_kwh=0.0,
+        battery_discharge_kwh=0.5,
+        ev_charge_kwh=0.0,
+        price_ct_per_kwh=40.0,
+    )
+    points = tuple(
+        PlanPoint(
+            ts_ms=point.ts_ms,
+            date=point.date,
+            price_ct=point.price_ct,
+            load_fc_w=1000,
+            pv_fc_w=0,
+            grid_import_fc_w=1000,
+            grid_export_fc_w=0,
+            grid_net_fc_w=1000,
+            mode="idle",
+            power_w=0,
+            charge_fc_w=0,
+            discharge_fc_w=0,
+            soc_pct=50.0,
+        )
+        for point in _day_points(day) + _day_points(day + dt.timedelta(days=1))
+    )
+
+    result = build_daily_cost_projection(
+        (actual,),
+        StrategyPlan(points, "idle", 0, "test"),
+        local_date=day,
+        as_of_ms=slot.end_ms,
+        timezone="Europe/Berlin",
+        export_value_ct_per_kwh=0.0,
+        actual_savings_today_eur=0.123,
+    )
+
+    # No remaining battery activity: EoD savings must equal measured savings,
+    # not the 0.20 EUR inferred from the battery power sample above.
+    assert result[day.isoformat()].saving_eur == 0.123

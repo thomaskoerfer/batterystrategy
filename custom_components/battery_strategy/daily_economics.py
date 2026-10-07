@@ -1,4 +1,4 @@
-"""Full-day cost projections from finalized actuals and future plan slots.
+"""Full-day cost projections from measured actuals and future plan slots.
 
 This presentation boundary never influences optimization or live control. It
 publishes a day only when every physical local-time slot has exactly one source:
@@ -24,12 +24,15 @@ def build_daily_cost_projection(
     as_of_ms: int,
     timezone: str,
     export_value_ct_per_kwh: float,
+    actual_savings_today_eur: float,
 ) -> Mapping[str, DailyCost]:
     """Return complete calendar-day economics for today and tomorrow.
 
-    EV consumption is excluded from both the no-battery baseline and the
-    observed optimized grid position. A missing finalized slot or price makes
-    that calendar day unavailable instead of silently publishing a partial sum.
+    EV consumption is excluded from the observed optimized grid position. The
+    measured-savings ledger is authoritative for the completed day's battery
+    benefit; feature-store power integration is not a second savings ledger.
+    A missing finalized slot or price makes that calendar day unavailable
+    instead of silently publishing a partial sum.
     """
     zone = ZoneInfo(timezone)
     today = local_date.isoformat()
@@ -48,6 +51,7 @@ def build_daily_cost_projection(
         allow_actual=True,
         as_of_ms=as_of_ms,
         export_value_ct_per_kwh=export_value_ct_per_kwh,
+        actual_savings_eur=actual_savings_today_eur,
     )
     if today_cost is not None:
         result[today] = today_cost
@@ -60,6 +64,7 @@ def build_daily_cost_projection(
         allow_actual=False,
         as_of_ms=as_of_ms,
         export_value_ct_per_kwh=export_value_ct_per_kwh,
+        actual_savings_eur=0.0,
     )
     if tomorrow_cost is not None:
         result[tomorrow] = tomorrow_cost
@@ -94,6 +99,7 @@ def _complete_day_cost(
     allow_actual: bool,
     as_of_ms: int,
     export_value_ct_per_kwh: float,
+    actual_savings_eur: float,
 ) -> DailyCost | None:
     base_eur = 0.0
     with_bat_eur = 0.0
@@ -102,11 +108,14 @@ def _complete_day_cost(
         if actual is not None:
             if actual.price_ct_per_kwh is None:
                 return None
-            baseline_net_kwh = actual.house_load_no_ev_kwh - actual.pv_generation_kwh
             optimized_net_kwh = (
                 actual.grid_import_kwh - actual.grid_export_kwh - actual.ev_charge_kwh
             )
             price_ct = float(actual.price_ct_per_kwh)
+            # The direct battery energy counters own measured savings. Start
+            # both actual cost paths at observed grid cost and add the ledger
+            # benefit to the no-battery baseline once after all slots.
+            baseline_net_kwh = optimized_net_kwh
         else:
             point = plan_by_start.get(start_ms)
             # Past slots require finalized evidence; future slots require a plan.
@@ -120,6 +129,8 @@ def _complete_day_cost(
             price_ct = point.price_ct
         base_eur += _grid_cost(baseline_net_kwh, price_ct, export_value_ct_per_kwh)
         with_bat_eur += _grid_cost(optimized_net_kwh, price_ct, export_value_ct_per_kwh)
+    if allow_actual:
+        base_eur += float(actual_savings_eur)
     return DailyCost(round(base_eur, 3), round(with_bat_eur, 3))
 
 
