@@ -500,7 +500,7 @@ class MarketContextService:
                     float(item[0]), dt.UTC
                 ).astimezone(self._config.timezone)
                 price = float(item[1])
-            except (TypeError, ValueError, OverflowError):
+            except TypeError, ValueError, OverflowError:
                 return []
             result.append(TariffInterval(starts_at, price, "eex_proxy"))
         return result
