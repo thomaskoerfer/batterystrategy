@@ -16,11 +16,9 @@ from custom_components.battery_strategy.contracts import (
     EvForecast,
     EvForecastSlot,
     ForecastDistributionBundle,
-    ForecastRequest,
     ForecastSlot,
     LoadForecast,
     LoadForecastComponent,
-    LoadForecastContext,
     PvForecast,
     QualityFlag,
     QuantileEnergy,
@@ -33,10 +31,6 @@ from custom_components.battery_strategy.forecast_trace import (
     SLOT_MS,
     ForecastTraceScheduler,
     append_forecast_trace,
-)
-from custom_components.battery_strategy.forecasting.heat_pump_shadow import (
-    HeatPumpShadowForecast,
-    HeatPumpShadowRequest,
 )
 
 
@@ -135,28 +129,6 @@ def test_trace_preserves_contract_metadata_quantiles_and_components(tmp_path):
     assert payload["load"]["components"][0]["slots"][0][7] == ["missing_weather"]
     assert payload["pv"]["model_version"] == "pv-v2"
     assert payload["ev"]["model_version"] == "ev-v1"
-
-
-def test_trace_keeps_heat_pump_candidate_separate_from_authoritative_forecast(tmp_path):
-    bundle = forecast_bundle(1_800_000_000_000)
-    component = bundle.load.components[0]
-    shadow = HeatPumpShadowForecast(
-        generated_at_ms=bundle.load.generated_at_ms,
-        training_cutoff_ms=bundle.load.training_cutoff_ms,
-        model_version="whole-heat-pump-shadow-v1",
-        components=(replace(component, component_key="heat_pump_dhw"),),
-        total_slots=component.slots,
-        diagnostics={"status": "ready"},
-    )
-
-    path = append_forecast_trace(tmp_path, bundle, heat_pump_shadow=shadow)
-
-    payload = json.loads(gzip.decompress(path.read_bytes()))
-    assert payload["load"]["forecast_id"] == "load-id"
-    evaluation = payload["forecast_shadows"]["heat_pump"]
-    assert evaluation["non_authoritative"] is True
-    assert evaluation["status"] == "completed"
-    assert evaluation["forecast"]["model_version"] == "whole-heat-pump-shadow-v1"
 
 
 def test_trace_writes_only_one_vintage_per_quarter(tmp_path):
@@ -345,39 +317,6 @@ def test_post_publication_scenario_exception_keeps_release_identity(
         shadow_evaluator.SCENARIO_RELEASE_VERSION
     )
     assert payload["optimizer_plans"]["shadow"] is None
-
-
-def test_heat_pump_shadow_failure_is_contained_after_publication(tmp_path, monkeypatch):
-    bundle = forecast_bundle(1_800_000_000_000)
-    request = HeatPumpShadowRequest(
-        ForecastRequest(
-            bundle.load.generated_at_ms,
-            "UTC",
-            tuple(item.slot for item in bundle.load.slots),
-        ),
-        (),
-        LoadForecastContext(0.0),
-        (),
-        bundle.load,
-    )
-
-    def fail(_request):
-        raise RuntimeError("candidate failed")
-
-    monkeypatch.setattr(trace_module, "evaluate_heat_pump_shadow", fail)
-
-    ForecastTraceScheduler(None, tmp_path)._write_if_available(
-        bundle,
-        trace_module.forecast_trace_bucket_ms(bundle),
-        heat_pump_shadow_request=request,
-    )
-
-    payload = json.loads(
-        gzip.decompress(next(tmp_path.rglob("*.json.gz")).read_bytes())
-    )
-    assert payload["forecast_shadows"]["heat_pump"]["status"] == "failed"
-    assert payload["forecast_shadows"]["heat_pump"]["error_type"] == "RuntimeError"
-    assert payload["optimizer_plans"]["authoritative"] is None
 
 
 def test_reload_schedulers_share_single_flight_before_scenario_work(tmp_path):

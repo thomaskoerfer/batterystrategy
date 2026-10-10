@@ -148,11 +148,10 @@ the historical hot-water profile is deferred into later heating slots, which
 preserves the historically learned post-cycle buffer recovery without counting
 it twice. Other load components and the PV forecast remain independent.
 
-### Whole-heat-pump candidate shadow
+### Space-heating model
 
-An owner-approved, temporary whole-heat-pump shadow evaluates a replacement
-space-heating model while retaining the production DHW cycle model. The
-candidate estimates space-heating state and electrical energy from causal
+The production space-heating model retains the production DHW cycle model and
+estimates space-heating state and electrical energy from causal
 component history, forecast outdoor temperature, target flow temperature,
 current heating state, active-run age and measured compressor input power. DHW
 occupancy is inferred from forecast DHW energy and historically observed DHW
@@ -164,22 +163,14 @@ learned survival curve; an open run at the causal history boundary is treated as
 right-censored rather than as a completed duration. Continuation is still
 limited to compressor time not occupied by forecast DHW. Missing or zero-energy
 DHW active-power evidence is marked `estimated` rather than presented as a
-fully evidenced coupling.
+fully evidenced coupling. Missing history produces explicit cold-start quality.
 
-The initial candidate emits P50 only, including the retained production DHW
-point forecast. Production DHW quantiles are not relabelled as candidate
-uncertainty. Historical variation between neighboring actual slots is likewise
-not labelled as forecast uncertainty. P10/P90 remain absent until enough issued
-candidate vintages have matured to calibrate residuals by model version and
-lead-time class.
-
-The candidate is not part of the authoritative `LoadForecast`. Forecasting
-captures an immutable request, and evaluation executes it only after the
-authoritative plan has been published. Its output is never supplied to scenario
-generation, optimization, compilation, live control or actuation. Missing
-evidence produces explicit cold-start quality rather than modifying another
-load component. The shadow is removed or promoted after its documented
-observation gate.
+Space-heating P10/P90 are calibrated from matured residuals issued by this
+exact production point-model version. The total-load model version changes with
+the component composition, so its uncertainty also starts a separate causal
+calibration cohort. Until those cohorts mature, Scenario Builder uses its
+documented causal empirical-distribution fallback; it never relabels dispersion
+of historical actuals as calibrated forecast quantiles.
 
 ## PV model
 

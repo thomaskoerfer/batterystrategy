@@ -29,7 +29,6 @@ from .forecasting import (
     feature_store_forecast_readiness,
 )
 from .forecasting.ev import HistoricalEvForecaster
-from .forecasting.heat_pump_shadow import HeatPumpShadowRequest
 from .forecasting.uncertainty import EMPTY_CALIBRATION, ForecastResidualCalibration
 
 SLOT_H = 0.25
@@ -135,7 +134,6 @@ class ProductionForecastResult:
     bundle: ForecastDistributionBundle
     diagnostics: dict[str, object]
     scenario_request: ScenarioBuildRequest
-    heat_pump_shadow_request: HeatPumpShadowRequest | None = None
 
 
 class ProductionForecastModule:
@@ -244,23 +242,10 @@ class ProductionForecastModule:
             "scenario_model_version": None,
             "scenario_status": "post_publication_scheduled",
         }
-        heat_pump_shadow_request = (
-            HeatPumpShadowRequest(
-                request,
-                eligible[-90 * 96 :],
-                context,
-                weather,
-                bundle.load,
-            )
-            if {item.component_key for item in bundle.load.components}
-            >= {"heat_pump_dhw", "heat_pump_space_heating"}
-            else None
-        )
         return ProductionForecastResult(
             bundle,
             diagnostics,
             scenario_request,
-            heat_pump_shadow_request,
         )
 
 

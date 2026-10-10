@@ -29,6 +29,7 @@ from .cyclic_appliance import forecast_cyclic_appliance
 from .heat_pump import adjust_heat_pump_forecast
 from .history import ForecastHistorySample, ForecastTargetInput
 from .load import LoadForecastModelConfig, build_load_forecast
+from .space_heating import forecast_space_heating
 from .uncertainty import (
     EMPTY_CALIBRATION,
     TOTAL_LOAD_SERIES,
@@ -136,6 +137,7 @@ def build_component_load_forecast(
     ]
     component_energy: dict[str, tuple[float, ...]] = {}
     component_quality: dict[str, DataQuality] = {}
+    component_slot_quality: dict[str, tuple[DataQuality, ...]] = {}
     component_versions: dict[str, str] = {}
     for spec in specs:
         component_versions[spec.component_key] = (
@@ -205,7 +207,16 @@ def build_component_load_forecast(
             ),
         )
         component_energy["heat_pump_dhw"] = heat_pump.dhw_kwh
-        component_energy["heat_pump_space_heating"] = heat_pump.space_heating_kwh
+        space_heating = forecast_space_heating(
+            request,
+            eligible,
+            context,
+            weather,
+            heat_pump.dhw_kwh,
+        )
+        component_energy["heat_pump_space_heating"] = space_heating.energy_kwh
+        component_slot_quality["heat_pump_space_heating"] = space_heating.quality
+        component_versions["heat_pump_space_heating"] = space_heating.model_version
 
     for spec in specs:
         component_slots = tuple(
@@ -222,7 +233,9 @@ def build_component_load_forecast(
                         component_energy[spec.component_key][index] > 1e-9,
                     ),
                 ),
-                component_quality.get(spec.component_key, DataQuality()),
+                component_slot_quality.get(spec.component_key, ())[index]
+                if spec.component_key in component_slot_quality
+                else component_quality.get(spec.component_key, DataQuality()),
             )
             for index, (slot, target) in enumerate(
                 zip(request.slots, targets, strict=True)

@@ -49,6 +49,9 @@ def test_release_cohort_keeps_only_checked_out_implementation(monkeypatch):
         return {
             "schema_version": 7,
             "generated_at_ms": generated,
+            "load": {"model_version": "load-v1"},
+            "pv": {"model_version": "pv-v1"},
+            "ev": {"model_version": "ev-v1"},
             "scenarios": {"model_version": scenario},
             "shadow_evaluation": {
                 "status": status,
@@ -71,11 +74,45 @@ def test_release_cohort_keeps_only_checked_out_implementation(monkeypatch):
 
     cohort = mod.current_optimizer_release_cohort([old, current, failed_newer])
 
-    assert cohort == (7, "scenario-dp-v3", "scenario-v1+repair-v1")
+    assert cohort == (
+        7,
+        "scenario-dp-v3",
+        "scenario-v1+repair-v1",
+        "load-v1",
+        "pv-v1",
+        "ev-v1",
+    )
     assert mod.select_optimizer_release_cohort(
         [old, current, failed_newer], cohort
     ) == [current]
     assert mod.current_optimizer_release_cohort([old, failed_newer]) is None
+
+
+def test_release_cohort_does_not_mix_forecast_model_versions(monkeypatch):
+    monkeypatch.setattr(mod, "UNIFIED_OPTIMIZER_VERSION", "optimizer-v1")
+    monkeypatch.setattr(mod, "SCENARIO_RELEASE_VERSION", "scenario-v1")
+
+    def trace(generated, load_version):
+        return {
+            "schema_version": 7,
+            "generated_at_ms": generated,
+            "load": {"model_version": load_version},
+            "pv": {"model_version": "pv-v1"},
+            "ev": {"model_version": "ev-v1"},
+            "shadow_evaluation": {
+                "status": "completed",
+                "optimizer_version": "optimizer-v1",
+                "scenario_model_version": "scenario-v1",
+            },
+        }
+
+    old = trace(1, "load-old")
+    current = trace(2, "load-current")
+    cohort = mod.current_optimizer_release_cohort([old, current])
+
+    assert cohort is not None
+    assert cohort[3] == "load-current"
+    assert mod.select_optimizer_release_cohort([old, current], cohort) == [current]
 
 
 def test_serialized_policy_normalizes_float_noise_to_zero():

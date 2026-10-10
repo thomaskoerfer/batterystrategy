@@ -24,11 +24,6 @@ from .contracts import (
     ScenarioBuildRequest,
     ScenarioBundle,
 )
-from .forecasting.heat_pump_shadow import (
-    HeatPumpShadowForecast,
-    HeatPumpShadowRequest,
-    evaluate_heat_pump_shadow,
-)
 from .scenario_learning_ledger import append_scenario_learning_vintage
 from .shadow_evaluator import evaluate_shadow
 
@@ -62,7 +57,6 @@ class ForecastTraceScheduler:
         authoritative_plan: BatteryPlan | None = None,
         optimization_problem: OptimizationProblem | None = None,
         scenario_request: ScenarioBuildRequest | None = None,
-        heat_pump_shadow_request: HeatPumpShadowRequest | None = None,
     ) -> None:
         """Schedule one lifecycle-owned trace without blocking the caller."""
         if is_active is not None and not is_active():
@@ -85,7 +79,6 @@ class ForecastTraceScheduler:
                 authoritative_plan,
                 optimization_problem,
                 scenario_request,
-                heat_pump_shadow_request,
             )
             try:
                 entry.async_create_background_task(
@@ -111,7 +104,6 @@ class ForecastTraceScheduler:
         authoritative_plan: BatteryPlan | None = None,
         optimization_problem: OptimizationProblem | None = None,
         scenario_request: ScenarioBuildRequest | None = None,
-        heat_pump_shadow_request: HeatPumpShadowRequest | None = None,
     ) -> None:
         try:
             await self._hass.async_add_executor_job(
@@ -121,7 +113,6 @@ class ForecastTraceScheduler:
                 authoritative_plan,
                 optimization_problem,
                 scenario_request,
-                heat_pump_shadow_request,
             )
         except Exception as err:
             self._forget(bucket_ms)
@@ -134,7 +125,6 @@ class ForecastTraceScheduler:
         authoritative_plan: BatteryPlan | None = None,
         optimization_problem: OptimizationProblem | None = None,
         scenario_request: ScenarioBuildRequest | None = None,
-        heat_pump_shadow_request: HeatPumpShadowRequest | None = None,
     ) -> None:
         # This instance lock handles overlap within one config-entry lifetime.
         if not self._write_lock.acquire(blocking=False):
@@ -150,19 +140,6 @@ class ForecastTraceScheduler:
                     return
                 try:
                     evaluation = evaluate_shadow(scenario_request, optimization_problem)
-                    heat_pump_shadow = None
-                    heat_pump_shadow_status = "not_configured"
-                    heat_pump_shadow_error = None
-                    if heat_pump_shadow_request is not None:
-                        try:
-                            heat_pump_shadow = evaluate_heat_pump_shadow(
-                                heat_pump_shadow_request
-                            )
-                            heat_pump_shadow_status = "completed"
-                        except Exception as err:  # Evaluation never blocks planning.
-                            heat_pump_shadow_status = "failed"
-                            heat_pump_shadow_error = type(err).__name__
-                            LOGGER.warning("Heat-pump forecast shadow failed: %s", err)
                     if evaluation.error is not None:
                         component = (
                             "scenario builder"
@@ -201,9 +178,6 @@ class ForecastTraceScheduler:
                                 else {}
                             ),
                         },
-                        heat_pump_shadow,
-                        heat_pump_shadow_status,
-                        heat_pump_shadow_error,
                     )
                     if (
                         evaluation.build_result is not None
@@ -245,9 +219,6 @@ def append_forecast_trace(
     shadow_plan: BatteryPlan | None = None,
     optimization_problem: OptimizationProblem | None = None,
     shadow_evaluation: dict[str, object] | None = None,
-    heat_pump_shadow: HeatPumpShadowForecast | None = None,
-    heat_pump_shadow_status: str | None = None,
-    heat_pump_shadow_error: str | None = None,
 ) -> Path | None:
     """Persist one vintage while dropping work behind a surviving writer."""
     root = Path(root)
@@ -266,9 +237,6 @@ def append_forecast_trace(
                 shadow_plan,
                 optimization_problem,
                 shadow_evaluation,
-                heat_pump_shadow,
-                heat_pump_shadow_status,
-                heat_pump_shadow_error,
             )
         finally:
             fcntl.flock(lock_handle, fcntl.LOCK_UN)
@@ -281,9 +249,6 @@ def _append_forecast_trace_locked(
     shadow_plan: BatteryPlan | None,
     optimization_problem: OptimizationProblem | None,
     shadow_evaluation: dict[str, object] | None,
-    heat_pump_shadow: HeatPumpShadowForecast | None = None,
-    heat_pump_shadow_status: str | None = None,
-    heat_pump_shadow_error: str | None = None,
 ) -> Path | None:
     """Persist at most one immutable forecast vintage per UTC quarter-hour."""
     generated_at_ms = max(
@@ -363,13 +328,6 @@ def _append_forecast_trace_locked(
         },
         "optimization_problem": _serialize_problem(optimization_problem),
         "shadow_evaluation": shadow_evaluation,
-        "forecast_shadows": {
-            "heat_pump": _serialize_heat_pump_candidate(
-                heat_pump_shadow,
-                heat_pump_shadow_status,
-                heat_pump_shadow_error,
-            )
-        },
         "truncated": bool(
             len(bundle.load.slots) > FORECAST_TRACE_MAX_SLOTS
             or len(bundle.pv.slots) > FORECAST_TRACE_MAX_SLOTS
@@ -393,50 +351,6 @@ def _append_forecast_trace_locked(
     _remove_expired_days(root, generated_at.date())
     _enforce_size_limit(root)
     return target
-
-
-def _serialize_heat_pump_candidate(
-    forecast: HeatPumpShadowForecast | None,
-    status: str | None,
-    error: str | None,
-) -> dict[str, object] | None:
-    if forecast is None and status is None:
-        return None
-    return {
-        "non_authoritative": True,
-        "status": status or "completed",
-        "error_type": error,
-        "forecast": None if forecast is None else _serialize_heat_pump_shadow(forecast),
-    }
-
-
-def _serialize_heat_pump_shadow(forecast: HeatPumpShadowForecast) -> dict[str, object]:
-    return {
-        "generated_at_ms": forecast.generated_at_ms,
-        "training_cutoff_ms": forecast.training_cutoff_ms,
-        "model_version": forecast.model_version,
-        "total": {
-            "model_version": forecast.model_version,
-            "training_cutoff_ms": forecast.training_cutoff_ms,
-            "slots": [
-                _serialize_slot(item)
-                for item in forecast.total_slots[:FORECAST_TRACE_MAX_SLOTS]
-            ],
-        },
-        "components": [
-            {
-                "component_key": component.component_key,
-                "model_version": component.model_version,
-                "training_cutoff_ms": component.training_cutoff_ms,
-                "slots": [
-                    _serialize_slot(item)
-                    for item in component.slots[:FORECAST_TRACE_MAX_SLOTS]
-                ],
-            }
-            for component in forecast.components[:FORECAST_TRACE_MAX_COMPONENTS]
-        ],
-        "diagnostics": forecast.diagnostics,
-    }
 
 
 def forecast_trace_bucket_ms(bundle: ForecastDistributionBundle) -> int:

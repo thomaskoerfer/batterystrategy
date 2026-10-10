@@ -298,7 +298,6 @@ class PlanningPipelineAdapter:
                 outcome.result.battery_plan,
                 outcome.optimization_problem,
                 outcome.scenario_request,
-                outcome.heat_pump_shadow_request,
             )
             if outcome.forecast_bundle is not None
             else None
@@ -320,7 +319,6 @@ class PlanningPipelineAdapter:
             authoritative_plan,
             optimization_problem,
             scenario_request,
-            heat_pump_shadow_request,
         ) = pending
         self._forecast_trace_scheduler.schedule(
             self._entry,
@@ -329,7 +327,6 @@ class PlanningPipelineAdapter:
             authoritative_plan=authoritative_plan,
             optimization_problem=optimization_problem,
             scenario_request=scenario_request,
-            heat_pump_shadow_request=heat_pump_shadow_request,
         )
 
     def runtime_context(

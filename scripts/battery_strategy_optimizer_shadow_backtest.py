@@ -144,8 +144,10 @@ def load_actuals(path: str | Path) -> dict[int, dict]:
     }
 
 
-def optimizer_release_cohort(trace: dict) -> tuple[int, str, str] | None:
-    """Return the implementation cohort that produced one shadow vintage."""
+def optimizer_release_cohort(
+    trace: dict,
+) -> tuple[int, str, str, str, str, str] | None:
+    """Return the complete implementation cohort for one shadow vintage."""
     evaluation = _optimizer_evaluation(trace)
     decision = evaluation.get("decision") or {}
     optimizer_version = evaluation.get("optimizer_version") or decision.get(
@@ -163,20 +165,38 @@ def optimizer_release_cohort(trace: dict) -> tuple[int, str, str] | None:
         schema_version = int(trace["schema_version"])
     except KeyError, TypeError, ValueError:
         return None
-    if not optimizer_version or not scenario_version:
+    load_version = (trace.get("load") or {}).get("model_version")
+    pv_version = (trace.get("pv") or {}).get("model_version")
+    ev_version = (trace.get("ev") or {}).get("model_version")
+    if not all(
+        (
+            optimizer_version,
+            scenario_version,
+            load_version,
+            pv_version,
+            ev_version,
+        )
+    ):
         return None
-    return schema_version, str(optimizer_version), str(scenario_version)
+    return (
+        schema_version,
+        str(optimizer_version),
+        str(scenario_version),
+        str(load_version),
+        str(pv_version),
+        str(ev_version),
+    )
 
 
 def current_optimizer_release_cohort(
     traces: list[dict],
-) -> tuple[int, str, str] | None:
+) -> tuple[int, str, str, str, str, str] | None:
     """Find the newest trace schema for the checked-out optimizer/model pair."""
     matching = [
         trace
         for trace in traces
         if (cohort := optimizer_release_cohort(trace)) is not None
-        and cohort[1:]
+        and cohort[1:3]
         == (
             UNIFIED_OPTIMIZER_VERSION,
             SCENARIO_RELEASE_VERSION,
@@ -189,7 +209,8 @@ def current_optimizer_release_cohort(
 
 
 def select_optimizer_release_cohort(
-    traces: list[dict], cohort: tuple[int, str, str] | None
+    traces: list[dict],
+    cohort: tuple[int, str, str, str, str, str] | None,
 ) -> list[dict]:
     """Keep traces produced by exactly one scenario/optimizer implementation."""
     if cohort is None:
@@ -1030,6 +1051,9 @@ def main() -> int:
                     "schema_version": release_cohort[0],
                     "optimizer_version": release_cohort[1],
                     "scenario_model_version": release_cohort[2],
+                    "load_model_version": release_cohort[3],
+                    "pv_model_version": release_cohort[4],
+                    "ev_model_version": release_cohort[5],
                 }
                 if release_cohort is not None
                 else None

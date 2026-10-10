@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+## [0.2.0-rc.33] - 2026-10-10
+
+### Changed
+
+- Promote the evaluated space-heating model into the authoritative heat-pump
+  forecast while retaining the production domestic-hot-water cycle model.
+- Remove the temporary whole-heat-pump sidecar and feed the resulting complete
+  load/PV/EV forecast bundle into the existing scenario and optimizer shadow.
+- Isolate optimizer-shadow release evidence by the exact load, PV and EV model
+  versions as well as trace, optimizer and Scenario Builder versions.
+
+### Safety
+
+- Keep deterministic optimization, compilation, live control and actuation
+  unchanged. The stochastic optimizer remains post-publication and cannot
+  authorize a battery command.
+
 ## [0.2.0-rc.32] - 2026-10-05
 
 ### Added

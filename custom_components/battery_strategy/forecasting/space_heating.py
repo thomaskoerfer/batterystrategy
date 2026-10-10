@@ -1,9 +1,4 @@
-"""Non-authoritative whole-heat-pump forecast candidate.
-
-The candidate is deliberately isolated from forecast composition. It consumes the
-same immutable inputs as production forecasting and may only be persisted by the
-evaluation layer.
-"""
+"""Production space-heating forecast coupled to domestic hot water demand."""
 
 from __future__ import annotations
 
@@ -16,64 +11,28 @@ from zoneinfo import ZoneInfo
 from ..contracts import (
     DataQuality,
     ForecastRequest,
-    ForecastSlot,
     HistoricalFeatureSlot,
-    LoadForecast,
-    LoadForecastComponent,
     LoadForecastContext,
     QualityFlag,
-    QuantileEnergy,
     WeatherSlot,
 )
 
 SLOT_H = 0.25
 HEATING_KEY = "heat_pump_space_heating"
 DHW_KEY = "heat_pump_dhw"
-MODEL_VERSION = "whole-heat-pump-shadow-v2"
+MODEL_VERSION = "space-heating-v2"
 MAX_HISTORY_SLOTS = 90 * 96
 MAX_NEIGHBORS = 96
 MIN_ACTIVE_KWH = 0.025
 
 
 @dataclass(frozen=True, slots=True)
-class HeatPumpShadowForecast:
-    """Evaluation-only forecast for DHW and space-heating electricity."""
+class SpaceHeatingPointForecast:
+    """Point forecast and per-slot quality before residual calibration."""
 
-    generated_at_ms: int
-    training_cutoff_ms: int
-    model_version: str
-    components: tuple[LoadForecastComponent, ...]
-    total_slots: tuple[ForecastSlot, ...]
-    diagnostics: dict[str, object]
-    non_authoritative: bool = True
-
-    def component(self, key: str) -> LoadForecastComponent:
-        """Return one named heat-pump component."""
-        return next(item for item in self.components if item.component_key == key)
-
-
-@dataclass(frozen=True, slots=True)
-class HeatPumpShadowRequest:
-    """Immutable inputs captured with one authoritative forecast vintage."""
-
-    request: ForecastRequest
-    history: tuple[HistoricalFeatureSlot, ...]
-    context: LoadForecastContext
-    weather: tuple[WeatherSlot, ...]
-    authoritative_load: LoadForecast
-
-
-def evaluate_heat_pump_shadow(
-    candidate: HeatPumpShadowRequest,
-) -> HeatPumpShadowForecast:
-    """Evaluate a captured candidate after authoritative publication."""
-    return build_heat_pump_shadow_forecast(
-        candidate.request,
-        candidate.history,
-        candidate.context,
-        candidate.weather,
-        candidate.authoritative_load,
-    )
+    energy_kwh: tuple[float, ...]
+    quality: tuple[DataQuality, ...]
+    model_version: str = MODEL_VERSION
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,21 +48,15 @@ class _HeatingSample:
     weekend: bool
 
 
-def build_heat_pump_shadow_forecast(
+def forecast_space_heating(
     request: ForecastRequest,
     history: tuple[HistoricalFeatureSlot, ...],
     context: LoadForecastContext,
     weather: tuple[WeatherSlot, ...],
-    authoritative_load: LoadForecast,
-) -> HeatPumpShadowForecast:
-    """Build a whole-WP candidate without modifying authoritative output."""
-    dhw = _component(authoritative_load, DHW_KEY)
-    production_heating = _component(authoritative_load, HEATING_KEY)
-    if dhw is None or production_heating is None:
-        raise ValueError("whole heat-pump shadow requires both heat-pump components")
-
+    dhw_kwh: tuple[float, ...],
+) -> SpaceHeatingPointForecast:
+    """Forecast space-heating energy with shared-compressor DHW coupling."""
     eligible = tuple(item for item in history if item.slot.end_ms <= request.as_of_ms)
-    training_cutoff_ms = max((item.slot.end_ms for item in eligible), default=0)
     samples = _heating_samples(eligible, request.timezone)
     global_dhw_active_slot_kwh = _mean_present(
         sample.dhw_active_slot_kwh for sample in samples
@@ -124,12 +77,12 @@ def build_heat_pump_shadow_forecast(
     current_power_w = driver.power_w if driver is not None else 0.0
     weather_by_slot = {item.slot: item for item in weather}
     timezone = ZoneInfo(request.timezone)
-    raw_slots: list[ForecastSlot] = []
-    active_probabilities: list[float] = []
-    historical_dhw_occupancy: list[float] = []
-    dhw_active_slot_kwh: list[float | None] = []
-    heating_active_slot_kwh: list[float | None] = []
-    live_heating_kwh: list[float] = []
+    raw_energy = []
+    raw_quality = []
+    historical_dhw_occupancy = []
+    dhw_active_slot_kwh = []
+    heating_active_slot_kwh = []
+    live_heating_kwh = []
     for index, slot in enumerate(request.slots):
         local = dt.datetime.fromtimestamp(slot.start_ms / 1000.0, dt.UTC).astimezone(
             timezone
@@ -146,7 +99,7 @@ def build_heat_pump_shadow_forecast(
         neighbors = _nearest_samples(samples, local, target_oat, target_flow)
         (
             expected_kwh,
-            active_probability,
+            _active_probability,
             baseline_dhw_occupancy,
             active_dhw_kwh,
             active_heating_kwh,
@@ -158,78 +111,29 @@ def build_heat_pump_shadow_forecast(
             elapsed_slots = active_age_s / (SLOT_H * 3600.0) + index
             persistence = _survival_probability(samples, elapsed_slots)
             live_energy = current_power_w * SLOT_H / 1000.0 * persistence
-            active_probability = max(active_probability, persistence)
             active_heating_kwh = max(
                 active_heating_kwh or 0.0,
                 current_power_w * SLOT_H / 1000.0,
             )
-        sample_count = len(neighbors)
-        # This candidate has no matured residual vintages yet. Emitting historical
-        # value dispersion as calibrated forecast quantiles would overstate what
-        # is known, so uncertainty stays absent until offline calibration exists.
-        energy = QuantileEnergy(max(0.0, expected_kwh))
-        raw_slots.append(
-            ForecastSlot(
-                slot,
-                energy,
-                DataQuality()
-                if sample_count
-                else DataQuality(0.0, (QualityFlag.ESTIMATED,)),
-            )
+        raw_energy.append(max(0.0, expected_kwh))
+        raw_quality.append(
+            DataQuality() if neighbors else DataQuality(0.0, (QualityFlag.ESTIMATED,))
         )
-        active_probabilities.append(active_probability)
         historical_dhw_occupancy.append(baseline_dhw_occupancy)
         dhw_active_slot_kwh.append(active_dhw_kwh)
         heating_active_slot_kwh.append(active_heating_kwh)
         live_heating_kwh.append(live_energy)
 
-    coupled_slots, missing_dhw_capacity_slots = _couple_with_dhw(
-        tuple(raw_slots),
-        dhw.slots,
+    energy, quality = _couple_with_dhw(
+        tuple(raw_energy),
+        tuple(raw_quality),
+        dhw_kwh,
         tuple(historical_dhw_occupancy),
         tuple(dhw_active_slot_kwh),
         tuple(heating_active_slot_kwh),
         tuple(live_heating_kwh),
     )
-    heating = LoadForecastComponent(
-        HEATING_KEY,
-        "space-heating-shadow-v2",
-        min(request.as_of_ms, training_cutoff_ms),
-        coupled_slots,
-    )
-    dhw_shadow_slots = tuple(
-        ForecastSlot(slot.slot, QuantileEnergy(slot.energy.p50_kwh), slot.quality)
-        for slot in dhw.slots
-    )
-    dhw_shadow = LoadForecastComponent(
-        DHW_KEY,
-        f"dhw-p50-shadow-from-{dhw.model_version}",
-        min(request.as_of_ms, dhw.training_cutoff_ms),
-        dhw_shadow_slots,
-    )
-    total_slots = tuple(
-        ForecastSlot(
-            slot.slot,
-            _sum_energy(slot.energy, heating.slots[index].energy),
-            _combined_quality(slot.quality, heating.slots[index].quality),
-        )
-        for index, slot in enumerate(dhw_shadow.slots)
-    )
-    return HeatPumpShadowForecast(
-        generated_at_ms=request.as_of_ms,
-        training_cutoff_ms=min(request.as_of_ms, training_cutoff_ms),
-        model_version=MODEL_VERSION,
-        components=(dhw_shadow, heating),
-        total_slots=total_slots,
-        diagnostics={
-            "status": "ready" if samples else "cold_start",
-            "history_samples": len(samples),
-            "current_heating_active": current_active,
-            "current_active_age_s": round(active_age_s, 1),
-            "active_probability": [round(value, 4) for value in active_probabilities],
-            "missing_dhw_capacity_slots": missing_dhw_capacity_slots,
-        },
-    )
+    return SpaceHeatingPointForecast(energy, quality)
 
 
 def _heating_samples(
@@ -410,49 +314,47 @@ def _survival_probability(samples, elapsed_slots):
 
 
 def _couple_with_dhw(
-    heating_slots,
-    dhw_slots,
+    heating_kwh,
+    heating_quality,
+    dhw_kwh,
     historical_dhw_occupancy,
     dhw_active_slot_kwh,
     heating_active_slot_kwh,
     live_heating_kwh,
 ):
     result = []
+    quality_result = []
     deferred = 0.0
-    missing_dhw_capacity_slots = 0
-    reference_capacity = max(
-        (item.energy.p50_kwh for item in heating_slots),
-        default=0.0,
-    )
+    reference_capacity = max(heating_kwh, default=0.0)
     for (
         heating,
+        quality,
         dhw,
         baseline_occupancy,
         active_dhw_kwh,
         active_heating_kwh,
         live_kwh,
     ) in zip(
-        heating_slots,
-        dhw_slots,
+        heating_kwh,
+        heating_quality,
+        dhw_kwh,
         historical_dhw_occupancy,
         dhw_active_slot_kwh,
         heating_active_slot_kwh,
         live_heating_kwh,
         strict=True,
     ):
-        missing_dhw_capacity = active_dhw_kwh is None and dhw.energy.p50_kwh > 1e-9
-        if missing_dhw_capacity:
-            missing_dhw_capacity_slots += 1
+        missing_dhw_capacity = active_dhw_kwh is None and dhw > 1e-9
         predicted_occupancy = (
-            min(1.0, dhw.energy.p50_kwh / max(0.001, active_dhw_kwh))
+            min(1.0, dhw / max(0.001, active_dhw_kwh))
             if active_dhw_kwh is not None
-            else float(dhw.energy.p50_kwh > 1e-9)
+            else float(dhw > 1e-9)
         )
         incremental_occupancy = max(0.0, predicted_occupancy - baseline_occupancy)
         historically_available = max(1e-6, 1.0 - baseline_occupancy)
         displaced_fraction = min(1.0, incremental_occupancy / historically_available)
-        baseline_served = heating.energy.p50_kwh * (1.0 - displaced_fraction)
-        deferred += heating.energy.p50_kwh - baseline_served
+        baseline_served = heating * (1.0 - displaced_fraction)
+        deferred += heating - baseline_served
         live_served = live_kwh * (1.0 - predicted_occupancy)
         served = max(baseline_served, live_served)
         available_capacity = (
@@ -465,19 +367,13 @@ def _couple_with_dhw(
             recovery = min(deferred, max(0.0, available_capacity - served))
             served += recovery
             deferred -= recovery
-        quality = (
-            _quality_with_flag(heating.quality, QualityFlag.ESTIMATED)
+        result.append(served)
+        quality_result.append(
+            _quality_with_flag(quality, QualityFlag.ESTIMATED)
             if missing_dhw_capacity
-            else heating.quality
+            else quality
         )
-        result.append(
-            ForecastSlot(
-                heating.slot,
-                QuantileEnergy(served),
-                quality,
-            )
-        )
-    return tuple(result), missing_dhw_capacity_slots
+    return tuple(result), tuple(quality_result)
 
 
 def _mean_present(values):
@@ -487,28 +383,6 @@ def _mean_present(values):
 
 def _quality_with_flag(quality, flag):
     return DataQuality(quality.coverage, tuple(dict.fromkeys((*quality.flags, flag))))
-
-
-def _sum_energy(left, right):
-    if left.p10_kwh is None or right.p10_kwh is None:
-        return QuantileEnergy(left.p50_kwh + right.p50_kwh)
-    return QuantileEnergy(
-        left.p50_kwh + right.p50_kwh,
-        left.p10_kwh + right.p10_kwh,
-        left.p90_kwh + right.p90_kwh,
-        min(left.calibration_samples, right.calibration_samples),
-    )
-
-
-def _combined_quality(left, right):
-    return DataQuality(
-        min(left.coverage, right.coverage),
-        tuple(dict.fromkeys((*left.flags, *right.flags))),
-    )
-
-
-def _component(load, key):
-    return next((item for item in load.components if item.component_key == key), None)
 
 
 def _driver(context, key):

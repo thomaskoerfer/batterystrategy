@@ -67,14 +67,11 @@ non-blocking filesystem lock is acquired before scenario generation and spans
 config-entry reloads, background tasks belong to the active entry lifecycle,
 and a revoked adapter cannot enqueue new work.
 
-Schema 7 is the optimizer-shadow envelope and adds an optional
-`forecast_shadows.heat_pump` block. It contains the
-evaluation-only DHW, space-heating and combined heat-pump candidate series plus
-causal model diagnostics. The candidate runs in the same post-publication,
-failure-contained task as the optimizer shadow, but the two experiments are
-orthogonal: the optimizer shadow continues to consume the authoritative
-forecast. A failed heat-pump candidate is recorded by status and exception type
-without invalidating either plan.
+Schema 7 is the optimizer-shadow envelope. Historical RC32 traces may contain
+an optional `forecast_shadows.heat_pump` block from the completed heat-pump
+promotion experiment. Current traces omit that retired sidecar: the promoted
+heat-pump model is visible in the authoritative load components, and the
+optimizer shadow consumes that complete authoritative load/PV/EV bundle.
 
 Schema 8 is reserved for the later authoritative stochastic-optimizer cutover
 envelope. Offline readers distinguish historical envelopes by their payload
@@ -137,16 +134,18 @@ export remain owned by measured savings/command evaluation; a planning trace
 cannot reconstruct compiler and live-control intervention faithfully:
 
 The release gate always evaluates one homogeneous release cohort identified by
-trace schema, optimizer version and Scenario Builder model version. The target
-optimizer and scenario versions come from the evaluator's checked-out source;
-the Scenario Builder version includes its repair policy, and their newest
-observed trace schema completes the cohort key. Every trace records the intended
-optimizer and Scenario Builder versions even when either computation fails. An
+trace schema, optimizer version, Scenario Builder model version and the exact
+load, PV and EV model versions. The target optimizer and scenario versions come
+from the evaluator's checked-out source; the Scenario Builder version includes
+its repair policy, and the newest matching trace supplies the full forecast
+model identity. Every trace records the intended optimizer and Scenario Builder
+versions even when either computation fails. An
 unexpected Scenario Builder exception also counts as an eligible failed vintage
 in the generation success rate. The report exposes the number of older
 available traces separately. A semantic optimizer or scenario-model change must therefore bump
-its version and starts a fresh observation window; historical decisions from a
-different implementation can never make the current release pass or fail.
+its version and starts a fresh observation window. A promoted forecast model
+also starts a fresh window automatically; historical decisions from a different
+full-stack implementation can never make the current release pass or fail.
 Optimizer attempts are measured separately and must achieve at least `99%`
 success across at least 100 hourly boundary vintages. Persisted optimizer
 exceptions therefore cannot be hidden by a sufficient number of successful
