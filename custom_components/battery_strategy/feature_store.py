@@ -25,6 +25,7 @@ from .contracts.common import CONTRACT_SCHEMA_VERSION, SLOT_MS
 FEATURE_STORE_RETENTION_DAYS = 400
 FEATURE_STORE_BACKUP_SUFFIX = ".schema{version}.bak"
 MAX_CONTINUOUS_SAMPLE_GAP_MS = 120_000
+FEATURE_AGGREGATOR_CHECKPOINT_VERSION = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,6 +76,46 @@ class FeatureAggregator:
     def __init__(self) -> None:
         self._previous: FeatureObservation | None = None
         self._active: _Accumulator | None = None
+        self._resuming = False
+
+    @classmethod
+    def from_checkpoint(
+        cls, payload: dict | None, *, minimum_start_ms: int = 0
+    ) -> FeatureAggregator:
+        """Restore an incomplete slot without changing the finalized contract."""
+        aggregator = cls()
+        if not payload:
+            return aggregator
+        try:
+            if int(payload.get("version", 0)) != FEATURE_AGGREGATOR_CHECKPOINT_VERSION:
+                return aggregator
+            active_payload = payload["active"]
+            previous_payload = payload["previous"]
+            start_ms = int(active_payload["start_ms"])
+            previous = _deserialize_observation(previous_payload)
+            if (
+                start_ms < int(minimum_start_ms)
+                or _slot_start(previous.timestamp_ms) != start_ms
+            ):
+                return aggregator
+            active = _deserialize_accumulator(active_payload)
+        except KeyError, TypeError, ValueError:
+            return aggregator
+        aggregator._previous = previous
+        aggregator._active = active
+        aggregator._resuming = True
+        active.flags.add(QualityFlag.RESTART_GAP)
+        return aggregator
+
+    def checkpoint(self) -> dict | None:
+        """Return the current incomplete-slot state as JSON-compatible data."""
+        if self._previous is None or self._active is None:
+            return None
+        return {
+            "version": FEATURE_AGGREGATOR_CHECKPOINT_VERSION,
+            "previous": _serialize_observation(self._previous),
+            "active": _serialize_accumulator(self._active),
+        }
 
     def observe(
         self, observation: FeatureObservation
@@ -88,12 +129,16 @@ class FeatureAggregator:
         ):
             self._previous = observation
             self._active = _Accumulator(_slot_start(observation.timestamp_ms))
+            self._resuming = False
             if observation.timestamp_ms > self._active.start_ms:
                 self._active.flags.add(QualityFlag.RESTART_GAP)
             return ()
 
         previous = self._previous
         self._previous = observation
+        if self._resuming:
+            self._resuming = False
+            return self._advance(previous.timestamp_ms, observation.timestamp_ms, None)
         if self._active is None:
             self._active = _Accumulator(_slot_start(previous.timestamp_ms))
             self._active.flags.add(QualityFlag.RESTART_GAP)
@@ -236,6 +281,116 @@ class FeatureAggregator:
         if self._active is None:
             return 0.0
         return min(1.0, self._active.covered_ms / SLOT_MS)
+
+
+def _serialize_observation(observation: FeatureObservation) -> dict:
+    return {
+        "timestamp_ms": observation.timestamp_ms,
+        "grid_import_w": observation.grid_import_w,
+        "grid_export_w": observation.grid_export_w,
+        "pv_generation_w": observation.pv_generation_w,
+        "battery_power_w": observation.battery_power_w,
+        "ev_charge_w": observation.ev_charge_w,
+        "price_ct_per_kwh": observation.price_ct_per_kwh,
+        "quality_flags": [flag.value for flag in observation.quality_flags],
+        "load_components_w": [list(item) for item in observation.load_components_w],
+        "load_component_features": [
+            [key, [list(item) for item in features]]
+            for key, features in observation.load_component_features
+        ],
+    }
+
+
+def _deserialize_observation(payload: dict) -> FeatureObservation:
+    return FeatureObservation(
+        timestamp_ms=int(payload["timestamp_ms"]),
+        grid_import_w=float(payload["grid_import_w"]),
+        grid_export_w=float(payload["grid_export_w"]),
+        pv_generation_w=float(payload["pv_generation_w"]),
+        battery_power_w=float(payload["battery_power_w"]),
+        ev_charge_w=float(payload["ev_charge_w"]),
+        price_ct_per_kwh=(
+            None
+            if payload.get("price_ct_per_kwh") is None
+            else float(payload["price_ct_per_kwh"])
+        ),
+        quality_flags=tuple(QualityFlag(value) for value in payload["quality_flags"]),
+        load_components_w=tuple(
+            (str(key), float(value))
+            for key, value in payload.get("load_components_w", ())
+        ),
+        load_component_features=tuple(
+            (
+                str(key),
+                tuple((str(name), float(value)) for name, value in features),
+            )
+            for key, features in payload.get("load_component_features", ())
+        ),
+    )
+
+
+def _serialize_accumulator(accumulator: _Accumulator) -> dict:
+    return {
+        "start_ms": accumulator.start_ms,
+        "covered_ms": accumulator.covered_ms,
+        "house_load_no_ev_kwh": accumulator.house_load_no_ev_kwh,
+        "pv_generation_kwh": accumulator.pv_generation_kwh,
+        "grid_import_kwh": accumulator.grid_import_kwh,
+        "grid_export_kwh": accumulator.grid_export_kwh,
+        "battery_charge_kwh": accumulator.battery_charge_kwh,
+        "battery_discharge_kwh": accumulator.battery_discharge_kwh,
+        "ev_charge_kwh": accumulator.ev_charge_kwh,
+        "price_weighted_ct_ms": accumulator.price_weighted_ct_ms,
+        "price_covered_ms": accumulator.price_covered_ms,
+        "flags": [flag.value for flag in accumulator.flags],
+        "load_components_kwh": accumulator.load_components_kwh,
+        "load_component_features": {
+            component: {
+                feature: {
+                    "weighted_value_ms": value.weighted_value_ms,
+                    "covered_ms": value.covered_ms,
+                }
+                for feature, value in features.items()
+            }
+            for component, features in accumulator.load_component_features.items()
+        },
+    }
+
+
+def _deserialize_accumulator(payload: dict) -> _Accumulator:
+    covered_ms = int(payload["covered_ms"])
+    if not 0 <= covered_ms <= SLOT_MS:
+        raise ValueError("invalid active-slot coverage")
+    return _Accumulator(
+        start_ms=int(payload["start_ms"]),
+        covered_ms=covered_ms,
+        house_load_no_ev_kwh=float(payload["house_load_no_ev_kwh"]),
+        pv_generation_kwh=float(payload["pv_generation_kwh"]),
+        grid_import_kwh=float(payload["grid_import_kwh"]),
+        grid_export_kwh=float(payload["grid_export_kwh"]),
+        battery_charge_kwh=float(payload["battery_charge_kwh"]),
+        battery_discharge_kwh=float(payload["battery_discharge_kwh"]),
+        ev_charge_kwh=float(payload["ev_charge_kwh"]),
+        price_weighted_ct_ms=float(payload["price_weighted_ct_ms"]),
+        price_covered_ms=int(payload["price_covered_ms"]),
+        flags={QualityFlag(value) for value in payload.get("flags", ())},
+        load_components_kwh={
+            str(key): float(value)
+            for key, value in payload.get("load_components_kwh", {}).items()
+        },
+        load_component_features={
+            str(component): {
+                str(feature): _FeatureAccumulator(
+                    weighted_value_ms=float(value["weighted_value_ms"]),
+                    covered_ms=int(value["covered_ms"]),
+                )
+                for feature, value in features.items()
+            }
+            for component, features in payload.get(
+                "load_component_features", {}
+            ).items()
+        },
+    )
 
 
 class CompressedFeatureStore:

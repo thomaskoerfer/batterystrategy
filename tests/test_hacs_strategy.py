@@ -964,6 +964,19 @@ class HacsStrategyTests(unittest.TestCase):
         coordinator._planner = Planner()
         coordinator._compiler_runtime_store = None
 
+        class Aggregator:
+            @staticmethod
+            def checkpoint():
+                return {"active": "slot"}
+
+        class CheckpointStore:
+            @staticmethod
+            async def save(payload):
+                events.append(("checkpoint", payload))
+
+        coordinator._feature_aggregator = Aggregator()
+        coordinator._feature_checkpoint_store = CheckpointStore()
+
         async def zero_limits(*, blocking=False):
             events.append(("zero_limits", blocking))
             return True
@@ -972,7 +985,12 @@ class HacsStrategyTests(unittest.TestCase):
         self.assertTrue(asyncio.run(coordinator.async_prepare_unload()))
         self.assertEqual(
             events,
-            ["planner_closing", ("zero_limits", True), "planner_shutdown"],
+            [
+                "planner_closing",
+                ("checkpoint", {"active": "slot"}),
+                ("zero_limits", True),
+                "planner_shutdown",
+            ],
         )
 
     def test_disabled_reload_remains_hands_off(self):

@@ -70,12 +70,24 @@ async def async_setup_entry(
     last_known_soc_pct, last_optimizer_output = await hass.async_add_executor_job(
         planning_state_store.runtime_snapshot,
     )
-    from .feature_store import CompressedFeatureStore, ExecutorFeatureStore
+    from .feature_checkpoint import FeatureAggregatorCheckpointStore
+    from .feature_store import (
+        CompressedFeatureStore,
+        ExecutorFeatureStore,
+        FeatureAggregator,
+    )
 
     feature_store = CompressedFeatureStore(Path(hass.config.path(FEATURE_STORE_FILE)))
     await hass.async_add_executor_job(feature_store.initialize)
     feature_history = await hass.async_add_executor_job(
         feature_store.load, 0, 2**63 - 1
+    )
+    feature_checkpoint_store = FeatureAggregatorCheckpointStore(hass, entry.entry_id)
+    feature_checkpoint = await feature_checkpoint_store.load()
+    minimum_feature_start_ms = feature_history[-1].slot.end_ms if feature_history else 0
+    feature_aggregator = FeatureAggregator.from_checkpoint(
+        feature_checkpoint,
+        minimum_start_ms=minimum_feature_start_ms,
     )
     executor_feature_store = ExecutorFeatureStore(
         feature_store, hass.async_add_executor_job
@@ -90,6 +102,8 @@ async def async_setup_entry(
         last_optimizer_output=last_optimizer_output,
         feature_store=executor_feature_store,
         feature_history=feature_history,
+        feature_aggregator=feature_aggregator,
+        feature_checkpoint_store=feature_checkpoint_store,
         compiler_runtime_store=compiler_runtime_store,
         restored_compiler_runtime=restored_compiler_runtime,
         planning_state_store=planning_state_store,

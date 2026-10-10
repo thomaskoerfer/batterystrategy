@@ -43,6 +43,15 @@ Persisted schema changes require versioning, migration, rollback coverage and a
 non-destructive data-quality check. Raw fast sensor updates do not belong in the
 feature store.
 
+The incomplete current slot is a private runtime checkpoint, not a finalized
+feature fact. It is saved immediately before a graceful integration unload and
+periodically with coalesced writes. Setup resumes only a checkpoint that is not
+older than the newest finalized slot. The interval between the saved sample and
+the first new observation is explicitly marked as a restart gap and is never
+integrated from a stale measurement. This makes config-entry reloads independent
+of quarter-hour boundaries without changing downstream contracts or treating a
+process outage as measured energy.
+
 ## Current support
 
 The integration currently accepts signed grid power, separate import/export or

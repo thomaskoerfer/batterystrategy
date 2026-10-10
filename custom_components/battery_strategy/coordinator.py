@@ -81,6 +81,7 @@ from .contracts import (
 )
 from .contracts.common import SLOT_MS
 from .daily_economics import build_daily_cost_projection
+from .feature_checkpoint import FeatureAggregatorCheckpointStore
 from .feature_store import (
     CompressedFeatureStore,
     ExecutorFeatureStore,
@@ -130,6 +131,8 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         last_optimizer_output: dict | None = None,
         feature_store: ExecutorFeatureStore | None = None,
         feature_history=(),
+        feature_aggregator: FeatureAggregator | None = None,
+        feature_checkpoint_store: FeatureAggregatorCheckpointStore | None = None,
         compiler_runtime_store: CompilerRuntimeStore | None = None,
         restored_compiler_runtime: CompilerRuntimeSnapshot | None = None,
         planning_state_store: PlanningStateStore | None = None,
@@ -195,7 +198,8 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
             CompressedFeatureStore(Path(hass.config.path(FEATURE_STORE_FILE))),
             hass.async_add_executor_job,
         )
-        self._feature_aggregator = FeatureAggregator()
+        self._feature_aggregator = feature_aggregator or FeatureAggregator()
+        self._feature_checkpoint_store = feature_checkpoint_store
         self._load_components = LoadComponentCollection()
         self._weather = ()
         self._weather_error: str | None = None
@@ -371,6 +375,10 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
                     load_component_features=self._load_components.features,
                 )
             )
+            if self._feature_checkpoint_store is not None:
+                self._feature_checkpoint_store.schedule(
+                    self._feature_aggregator.checkpoint
+                )
         # Feature persistence is diagnostic and must not interrupt live control.
         except Exception as err:
             finalized_features = ()
@@ -1169,6 +1177,12 @@ class BatteryStrategyCoordinator(DataUpdateCoordinator):
         """Stop active output before a reload, then shut down the planner."""
         self._unloading = True
         self._planner.begin_shutdown()
+        checkpoint_store = getattr(self, "_feature_checkpoint_store", None)
+        if checkpoint_store is not None:
+            try:
+                await checkpoint_store.save(self._feature_aggregator.checkpoint())
+            except Exception:
+                LOGGER.exception("Could not persist active feature slot before unload")
         if self._strategy_was_enabled or bool(
             self.entry.options.get("strategy_enabled", False)
         ):

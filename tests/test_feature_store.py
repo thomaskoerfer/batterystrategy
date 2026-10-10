@@ -154,6 +154,61 @@ class FeatureAggregatorTests(unittest.TestCase):
         self.assertIn(QualityFlag.MISSING_PV, slot.quality.flags)
         self.assertIn(QualityFlag.MISSING_EV, slot.quality.flags)
 
+    def test_checkpoint_restores_mid_slot_without_reusing_a_stale_sample(self):
+        restored_source = FeatureAggregator()
+        for timestamp_ms in range(0, 7 * 60_000 + 1, 60_000):
+            sample = observation(
+                timestamp_ms,
+                load_components_w=(("heat_pump", 100.0),),
+                load_component_features=(
+                    ("heat_pump", (("outdoor_temperature_c", 10.0),)),
+                ),
+            )
+            restored_source.observe(sample)
+
+        restored = FeatureAggregator.from_checkpoint(restored_source.checkpoint())
+        restored_slot = ()
+        for timestamp_ms in range(8 * 60_000, SLOT_MS + 1, 60_000):
+            sample = observation(
+                timestamp_ms,
+                load_components_w=(("heat_pump", 100.0),),
+                load_component_features=(
+                    ("heat_pump", (("outdoor_temperature_c", 10.0),)),
+                ),
+            )
+            restored_slot = restored.observe(sample)
+
+        # Seven minutes were measured before unload, one minute is an explicit
+        # restart gap, and seven minutes were measured after setup.
+        self.assertAlmostEqual(restored_slot[0].grid_import_kwh, 0.5 * 14 / 60)
+        self.assertAlmostEqual(restored_slot[0].quality.coverage, 14 / 15)
+        self.assertAlmostEqual(
+            restored_slot[0].load_components[0].energy_kwh, 0.1 * 14 / 60
+        )
+        self.assertIn(QualityFlag.RESTART_GAP, restored_slot[0].quality.flags)
+
+    def test_checkpoint_preserves_early_energy_across_a_long_restart_gap(self):
+        aggregator = FeatureAggregator()
+        for timestamp_ms in range(0, 5 * 60_000 + 1, 60_000):
+            aggregator.observe(observation(timestamp_ms))
+        restored = FeatureAggregator.from_checkpoint(aggregator.checkpoint())
+
+        finalized = restored.observe(observation(SLOT_MS))
+
+        self.assertAlmostEqual(finalized[0].grid_import_kwh, 0.5 * 5 / 60)
+        self.assertAlmostEqual(finalized[0].quality.coverage, 5 / 15)
+        self.assertIn(QualityFlag.RESTART_GAP, finalized[0].quality.flags)
+
+    def test_checkpoint_older_than_finalized_history_is_ignored(self):
+        aggregator = FeatureAggregator()
+        aggregator.observe(observation(0))
+
+        restored = FeatureAggregator.from_checkpoint(
+            aggregator.checkpoint(), minimum_start_ms=SLOT_MS
+        )
+
+        self.assertIsNone(restored.checkpoint())
+
 
 class CompressedFeatureStoreTests(unittest.TestCase):
     def test_executor_adapter_implements_async_feature_store_contract(self):
