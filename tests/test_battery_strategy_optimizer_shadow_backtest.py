@@ -446,6 +446,15 @@ def test_release_gate_requires_complete_days_and_real_ev_sessions():
     assert report["matured_ev_sessions"] == 0
 
 
+def test_complete_day_window_excludes_current_partial_utc_day():
+    noon = 7 * mod.DAY_MS + 12 * 60 * 60 * 1000
+
+    start_ms, end_ms = mod.complete_utc_day_window(noon, 7)
+
+    assert start_ms == 0
+    assert end_ms == 7 * mod.DAY_MS - 1
+
+
 def test_regret_gate_excludes_decisions_from_incomplete_utc_days():
     traces = [
         {

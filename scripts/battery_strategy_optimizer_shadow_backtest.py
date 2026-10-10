@@ -10,7 +10,7 @@ import math
 import random
 from collections import Counter
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 
 from custom_components.battery_strategy.contracts import (
@@ -1013,6 +1013,12 @@ def _parse_as_of(value: str | None) -> int:
     return int(parsed.timestamp() * 1000)
 
 
+def complete_utc_day_window(as_of_ms: int, days: int) -> tuple[int, int]:
+    """Return an inclusive trace window containing only complete UTC days."""
+    end_exclusive_ms = as_of_ms // DAY_MS * DAY_MS
+    return end_exclusive_ms - days * DAY_MS, end_exclusive_ms - 1
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--trace-dir", default=DEFAULT_TRACE_DIRECTORY)
@@ -1024,8 +1030,8 @@ def main() -> int:
     if args.days < 1:
         parser.error("--days must be positive")
     as_of_ms = _parse_as_of(args.as_of)
-    start_ms = as_of_ms - int(timedelta(days=args.days).total_seconds() * 1000)
-    available_traces = load_traces(args.trace_dir, start_ms, as_of_ms)
+    start_ms, end_ms = complete_utc_day_window(as_of_ms, args.days)
+    available_traces = load_traces(args.trace_dir, start_ms, end_ms)
     release_cohort = current_optimizer_release_cohort(available_traces)
     traces = select_optimizer_release_cohort(available_traces, release_cohort)
     evaluation_vintages = hourly_boundary_vintages(traces)
@@ -1045,6 +1051,8 @@ def main() -> int:
         {
             "as_of_ms": as_of_ms,
             "window_days": args.days,
+            "window_start_ms": start_ms,
+            "window_end_ms": end_ms,
             "available_trace_vintages": len(available_traces),
             "evaluation_cohort": (
                 {

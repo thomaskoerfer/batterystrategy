@@ -85,6 +85,8 @@ remain usable by both optimizer evaluators.
 
 The offline `scripts/battery_strategy_forecast_backtest.py` utility joins those
 vintages to finalized feature-store actuals by exact UTC slot key. It excludes
+the current partial UTC day; `--days 7` therefore evaluates exactly the seven
+preceding complete UTC days rather than a rolling 168-hour window. It excludes
 the vintage's current partial slot, targets that have not ended, insufficiently
 covered actuals and relevant missing/reset/restart flags. It reports sample
 count, MAE, signed bias, RMSE, WAPE and energy totals separately for whole-house
@@ -158,6 +160,8 @@ decisions.
 Policy energies whose absolute value is at most `1e-9 kWh` are normalized to
 zero at the replay boundary so floating-point residue cannot turn an idle
 decision into an invalid charge or discharge.
+Like the forecast evaluator, `--days` selects preceding complete UTC days and
+never counts the current partial UTC day toward the release gate.
 
 ```sh
 python3 scripts/battery_strategy_optimizer_shadow_backtest.py \

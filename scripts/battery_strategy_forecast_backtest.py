@@ -16,6 +16,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 SLOT_MS = 15 * 60 * 1000
+DAY_MS = 24 * 60 * 60 * 1000
 SUPPORTED_TRACE_SCHEMAS = frozenset(range(1, 8))
 SUPPORTED_FEATURE_STORE_SCHEMAS = frozenset({1, 2, 3})
 DEFAULT_TRACE_DIRECTORY = "/config/battery_strategy_forecast_trace"
@@ -750,6 +751,12 @@ def _parse_as_of(value: str | None) -> int:
     return int(parsed.timestamp() * 1000)
 
 
+def complete_utc_day_window(as_of_ms: int, days: int) -> tuple[int, int]:
+    """Return an inclusive trace window containing only complete UTC days."""
+    end_exclusive_ms = as_of_ms // DAY_MS * DAY_MS
+    return end_exclusive_ms - days * DAY_MS, end_exclusive_ms - 1
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--trace-dir", default=DEFAULT_TRACE_DIRECTORY)
@@ -764,9 +771,9 @@ def main() -> int:
         parser.error("--days must be positive")
 
     as_of_ms = _parse_as_of(args.as_of)
-    start_ms = as_of_ms - int(timedelta(days=args.days).total_seconds() * 1000)
+    start_ms, end_ms = complete_utc_day_window(as_of_ms, args.days)
     observations = load_forecast_observations(
-        args.trace_dir, start_generated_ms=start_ms, end_generated_ms=as_of_ms
+        args.trace_dir, start_generated_ms=start_ms, end_generated_ms=end_ms
     )
     actuals = load_actuals(args.feature_store)
     residuals = compare_forecasts(observations, actuals, as_of_ms=as_of_ms)
@@ -780,6 +787,8 @@ def main() -> int:
         "non_authoritative": True,
         "as_of_ms": as_of_ms,
         "window_days": args.days,
+        "window_start_ms": start_ms,
+        "window_end_ms": end_ms,
         "forecast_vintages": len({item.generated_at_ms for item in observations}),
         "matured_comparisons": len(residuals),
         "metrics": rows,

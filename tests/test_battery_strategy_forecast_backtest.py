@@ -163,6 +163,15 @@ def test_space_heating_metrics_use_persisted_issuance_regime(tmp_path):
     assert rows[0]["mae_kwh"] == pytest.approx(0.1)
 
 
+def test_complete_day_window_excludes_current_partial_utc_day():
+    noon = 7 * mod.DAY_MS + 12 * 60 * 60 * 1000
+
+    start_ms, end_ms = mod.complete_utc_day_window(noon, 7)
+
+    assert start_ms == 0
+    assert end_ms == 7 * mod.DAY_MS - 1
+
+
 def test_evaluator_excludes_unfinished_missing_and_flagged_actuals(tmp_path):
     generated = 1_800_000_000_000
     first = (generated // mod.SLOT_MS + 1) * mod.SLOT_MS
