@@ -89,6 +89,7 @@ class PlanningRunOutcome:
     forecast_bundle: ForecastDistributionBundle | None = None
     optimization_problem: OptimizationProblem | None = None
     scenario_request: ScenarioBuildRequest | None = None
+    forecast_trace_context: dict[str, object] | None = None
 
 
 # PV surplus anti-cycling thresholds
@@ -816,6 +817,7 @@ def run(
                 for item in publication.optimization_problem.market
             ),
         ),
+        forecast_result.trace_context,
     )
 
 

@@ -57,6 +57,7 @@ class ForecastTraceScheduler:
         authoritative_plan: BatteryPlan | None = None,
         optimization_problem: OptimizationProblem | None = None,
         scenario_request: ScenarioBuildRequest | None = None,
+        forecast_trace_context: dict[str, object] | None = None,
     ) -> None:
         """Schedule one lifecycle-owned trace without blocking the caller."""
         if is_active is not None and not is_active():
@@ -79,6 +80,7 @@ class ForecastTraceScheduler:
                 authoritative_plan,
                 optimization_problem,
                 scenario_request,
+                forecast_trace_context,
             )
             try:
                 entry.async_create_background_task(
@@ -104,6 +106,7 @@ class ForecastTraceScheduler:
         authoritative_plan: BatteryPlan | None = None,
         optimization_problem: OptimizationProblem | None = None,
         scenario_request: ScenarioBuildRequest | None = None,
+        forecast_trace_context: dict[str, object] | None = None,
     ) -> None:
         try:
             await self._hass.async_add_executor_job(
@@ -113,6 +116,7 @@ class ForecastTraceScheduler:
                 authoritative_plan,
                 optimization_problem,
                 scenario_request,
+                forecast_trace_context,
             )
         except Exception as err:
             self._forget(bucket_ms)
@@ -125,6 +129,7 @@ class ForecastTraceScheduler:
         authoritative_plan: BatteryPlan | None = None,
         optimization_problem: OptimizationProblem | None = None,
         scenario_request: ScenarioBuildRequest | None = None,
+        forecast_trace_context: dict[str, object] | None = None,
     ) -> None:
         # This instance lock handles overlap within one config-entry lifetime.
         if not self._write_lock.acquire(blocking=False):
@@ -160,6 +165,7 @@ class ForecastTraceScheduler:
                         authoritative_plan,
                         evaluation.plan,
                         evaluation.problem,
+                        forecast_trace_context,
                         {
                             "status": evaluation.status,
                             "runtime_ms": evaluation.runtime_ms,
@@ -219,6 +225,7 @@ def append_forecast_trace(
     shadow_plan: BatteryPlan | None = None,
     optimization_problem: OptimizationProblem | None = None,
     shadow_evaluation: dict[str, object] | None = None,
+    forecast_trace_context: dict[str, object] | None = None,
 ) -> Path | None:
     """Persist one vintage while dropping work behind a surviving writer."""
     root = Path(root)
@@ -236,6 +243,7 @@ def append_forecast_trace(
                 authoritative_plan,
                 shadow_plan,
                 optimization_problem,
+                forecast_trace_context,
                 shadow_evaluation,
             )
         finally:
@@ -248,6 +256,7 @@ def _append_forecast_trace_locked(
     authoritative_plan: BatteryPlan | None,
     shadow_plan: BatteryPlan | None,
     optimization_problem: OptimizationProblem | None,
+    forecast_trace_context: dict[str, object] | None,
     shadow_evaluation: dict[str, object] | None,
 ) -> Path | None:
     """Persist at most one immutable forecast vintage per UTC quarter-hour."""
@@ -327,6 +336,9 @@ def _append_forecast_trace_locked(
             "shadow": _serialize_plan(shadow_plan),
         },
         "optimization_problem": _serialize_problem(optimization_problem),
+        "forecast_issuance_context": _serialize_forecast_issuance_context(
+            forecast_trace_context
+        ),
         "shadow_evaluation": shadow_evaluation,
         "truncated": bool(
             len(bundle.load.slots) > FORECAST_TRACE_MAX_SLOTS
@@ -351,6 +363,20 @@ def _append_forecast_trace_locked(
     _remove_expired_days(root, generated_at.date())
     _enforce_size_limit(root)
     return target
+
+
+def _serialize_forecast_issuance_context(
+    context: dict[str, object] | None,
+) -> dict[str, object]:
+    """Persist only bounded, setup-neutral facts needed by offline evaluation."""
+    context = context or {}
+    return {
+        "space_heating_active": (
+            bool(context["space_heating_active"])
+            if "space_heating_active" in context
+            else None
+        ),
+    }
 
 
 def forecast_trace_bucket_ms(bundle: ForecastDistributionBundle) -> int:

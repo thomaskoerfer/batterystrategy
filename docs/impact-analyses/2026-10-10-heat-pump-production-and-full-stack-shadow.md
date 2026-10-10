@@ -5,7 +5,7 @@ new heat-pump forecast, prepare a seven-day full-stack shadow and deploy the RC.
 
 ## Decision
 
-Promote the evaluated `space-heating-v2` point model into authoritative
+Promote the evaluated space-heating point model into authoritative
 forecast composition. Keep the established finite-cycle DHW model. Remove the
 temporary whole-heat-pump sidecar rather than retaining a runtime selector or
 compatibility facade.
@@ -46,7 +46,7 @@ while new cohorts mature.
 
 The evaluator selects one full implementation cohort by trace schema,
 optimizer version, Scenario Builder version and load/PV/EV model versions.
-Review begins after seven complete UTC days belonging to the RC33 cohort.
+Review begins after seven complete UTC days belonging to the RC34 cohort.
 
 Cutover requires all pre-registered optimizer-shadow gates in
 `docs/evaluation/README.md`, including trace coverage, scenario success,
@@ -70,3 +70,13 @@ The pre-cutover recovery point is commit `65942d7`. Operational rollback
 restores that integration version, validates Home Assistant configuration and
 performs one controlled Home Assistant restart. Forecast traces are
 non-authoritative and need not be deleted.
+
+## RC34 critic follow-up
+
+The post-deployment review found two release-evidence defects without changing
+any public contract. `space-heating-v3` no longer clips measured active heating
+to zero when historical active-power capacity is unavailable. Forecast traces
+also persist the normalized active/inactive heating state at issuance, and the
+offline evaluator reports authoritative heating error by that regime and lead
+time. Aggregate load quality now reflects the weakest slot-specific component
+quality. These fixes start a fresh exact-model observation cohort.

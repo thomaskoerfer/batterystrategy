@@ -208,3 +208,13 @@ def test_cold_start_is_explicit_and_zero():
     assert result.energy_kwh == (0.0, 0.0, 0.0, 0.0)
     assert all(item.coverage == 0.0 for item in result.quality)
     assert all(QualityFlag.ESTIMATED in item.flags for item in result.quality)
+
+
+def test_active_cold_start_preserves_measured_live_power():
+    request, _, context, weather, dhw = _case(active=True)
+
+    result = forecast_space_heating(request, (), context, weather, dhw)
+
+    assert result.energy_kwh[0] > 0.2
+    assert result.energy_kwh[-1] < result.energy_kwh[0]
+    assert all(QualityFlag.ESTIMATED in item.flags for item in result.quality)

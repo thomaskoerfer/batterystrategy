@@ -12,16 +12,19 @@ from custom_components.battery_strategy.const import (
     LOAD_PROFILE_HEAT_PUMP,
 )
 from custom_components.battery_strategy.contracts import (
+    DataQuality,
     ForecastRequest,
     HistoricalFeatureSlot,
     LoadComponentEnergy,
     LoadDriverSnapshot,
     LoadFeatureValue,
     LoadForecastContext,
+    QualityFlag,
     SlotKey,
     WeatherSlot,
 )
 from custom_components.battery_strategy.forecasting.components import (
+    _combined_quality,
     _component_power_w,
     build_component_load_forecast,
 )
@@ -50,6 +53,17 @@ def _history(count: int):
 
 
 class ComponentForecastTests(unittest.TestCase):
+    def test_total_quality_propagates_estimated_component_slot(self):
+        quality = _combined_quality(
+            (
+                DataQuality(),
+                DataQuality(0.0, (QualityFlag.ESTIMATED,)),
+            )
+        )
+
+        self.assertEqual(quality.coverage, 0.0)
+        self.assertEqual(quality.flags, (QualityFlag.ESTIMATED,))
+
     def test_production_composition_uses_active_space_heating_model(self):
         start = int(dt.datetime(2026, 10, 20, 6, 0, tzinfo=dt.UTC).timestamp() * 1000)
         history = tuple(
@@ -136,7 +150,7 @@ class ComponentForecastTests(unittest.TestCase):
             for item in forecast.components
             if item.component_key == "heat_pump_space_heating"
         )
-        self.assertIn("space-heating-v2", heating.model_version)
+        self.assertIn("space-heating-v3", heating.model_version)
         self.assertGreater(heating.slots[0].energy.p50_kwh, 0.2)
         self.assertAlmostEqual(
             forecast.slots[0].energy.p50_kwh,

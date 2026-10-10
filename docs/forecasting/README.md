@@ -150,7 +150,7 @@ it twice. Other load components and the PV forecast remain independent.
 
 ### Space-heating model
 
-The production space-heating model retains the production DHW cycle model and
+The production `space-heating-v3` model retains the production DHW cycle model and
 estimates space-heating state and electrical energy from causal
 component history, forecast outdoor temperature, target flow temperature,
 current heating state, active-run age and measured compressor input power. DHW
@@ -164,6 +164,9 @@ right-censored rather than as a completed duration. Continuation is still
 limited to compressor time not occupied by forecast DHW. Missing or zero-energy
 DHW active-power evidence is marked `estimated` rather than presented as a
 fully evidenced coupling. Missing history produces explicit cold-start quality.
+When space heating is already measured active, its live compressor power is
+preserved even without a historical active-power capacity estimate; the slot
+remains explicitly estimated until causal history exists.
 
 Space-heating P10/P90 are calibrated from matured residuals issued by this
 exact production point-model version. The total-load model version changes with

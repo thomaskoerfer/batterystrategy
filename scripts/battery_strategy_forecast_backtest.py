@@ -57,6 +57,7 @@ class ForecastObservation:
     calibration_samples: int
     forecast_coverage: float
     forecast_flags: tuple[str, ...]
+    issuance_regime: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,6 +74,7 @@ class Residual:
     p10_kwh: float | None
     p90_kwh: float | None
     forecast_coverage: float
+    issuance_regime: str | None = None
 
     @property
     def error_kwh(self) -> float:
@@ -134,11 +136,26 @@ def load_forecast_observations(
                 for component in payload["load"].get("components", []):
                     key = str(component.get("component_key") or "")
                     if key:
+                        heating_active = (
+                            payload.get("forecast_issuance_context") or {}
+                        ).get("space_heating_active")
+                        issuance_regime = (
+                            "active"
+                            if heating_active is True
+                            else "inactive"
+                            if heating_active is False
+                            else "unknown"
+                        )
                         observations.extend(
                             _series_observations(
                                 f"load_component:{key}",
                                 component,
                                 load_generated_at_ms,
+                                issuance_regime=(
+                                    issuance_regime
+                                    if key == "heat_pump_space_heating"
+                                    else None
+                                ),
                             )
                         )
                 heat_pump_shadow = (
@@ -263,6 +280,7 @@ def compare_forecasts(
                 p10_kwh=observation.p10_kwh,
                 p90_kwh=observation.p90_kwh,
                 forecast_coverage=observation.forecast_coverage,
+                issuance_regime=observation.issuance_regime,
             )
         )
     return residuals
@@ -320,6 +338,46 @@ def summarize(residuals: list[Residual]) -> list[dict[str, object]]:
                     sum(item.p90_kwh - item.p10_kwh for item in intervals)
                     / len(intervals)
                     if intervals
+                    else None
+                ),
+            }
+        )
+    return rows
+
+
+def summarize_space_heating_regimes(
+    residuals: list[Residual],
+) -> list[dict[str, object]]:
+    """Report authoritative heating error by issuance state and lead time."""
+    grouped: dict[tuple[str, str, str], list[Residual]] = defaultdict(list)
+    for item in residuals:
+        if item.series != "load_component:heat_pump_space_heating":
+            continue
+        grouped[
+            (
+                item.model_version,
+                item.lead_bucket,
+                item.issuance_regime or "unknown",
+            )
+        ].append(item)
+    rows: list[dict[str, object]] = []
+    for (model_version, lead_bucket, regime), items in sorted(grouped.items()):
+        errors = [item.error_kwh for item in items]
+        actual_kwh = sum(item.actual_kwh for item in items)
+        rows.append(
+            {
+                "model_version": model_version,
+                "lead_bucket": lead_bucket,
+                "issuance_regime": regime,
+                "samples": len(items),
+                "mae_kwh": sum(abs(value) for value in errors) / len(items),
+                "bias_kwh": sum(errors) / len(items),
+                "rmse_kwh": math.sqrt(
+                    sum(value * value for value in errors) / len(items)
+                ),
+                "wape_pct": (
+                    100.0 * sum(abs(value) for value in errors) / actual_kwh
+                    if actual_kwh > 1e-9
                     else None
                 ),
             }
@@ -550,7 +608,11 @@ def _mean_abs(values):
 
 
 def _series_observations(
-    series: str, payload: dict, generated_at_ms: int
+    series: str,
+    payload: dict,
+    generated_at_ms: int,
+    *,
+    issuance_regime: str | None = None,
 ) -> list[ForecastObservation]:
     model_version = str(payload.get("model_version") or "unknown")
     observations: list[ForecastObservation] = []
@@ -597,6 +659,7 @@ def _series_observations(
                 calibration_samples,
                 forecast_coverage,
                 forecast_flags,
+                issuance_regime,
             )
         )
     return observations
@@ -720,6 +783,7 @@ def main() -> int:
         "forecast_vintages": len({item.generated_at_ms for item in observations}),
         "matured_comparisons": len(residuals),
         "metrics": rows,
+        "space_heating_regime_metrics": summarize_space_heating_regimes(residuals),
         "heat_pump_shadow_gate": evaluate_heat_pump_gate(
             residuals,
             statuses,

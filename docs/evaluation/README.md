@@ -72,6 +72,11 @@ an optional `forecast_shadows.heat_pump` block from the completed heat-pump
 promotion experiment. Current traces omit that retired sidecar: the promoted
 heat-pump model is visible in the authoritative load components, and the
 optimizer shadow consumes that complete authoritative load/PV/EV bundle.
+Current traces also persist the bounded `forecast_issuance_context` with the
+normalized space-heating active state. The forecast evaluator reports
+`space_heating_regime_metrics` by active/inactive issuance state and lead-time
+bucket. Historical traces without the additive field remain `unknown` and
+cannot satisfy active/inactive evidence on their own.
 
 Schema 8 is reserved for the later authoritative stochastic-optimizer cutover
 envelope. Offline readers distinguish historical envelopes by their payload

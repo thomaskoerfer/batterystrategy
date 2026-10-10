@@ -267,9 +267,9 @@ def build_component_load_forecast(
                     > 1e-9,
                 ),
             ),
-            DataQuality(0.0, (QualityFlag.ESTIMATED,))
-            if any(quality.flags for quality in component_quality.values())
-            else DataQuality(),
+            _combined_quality(
+                tuple(component.slots[index].quality for component in components)
+            ),
         )
         for index, (slot, target) in enumerate(zip(request.slots, targets, strict=True))
     )
@@ -280,6 +280,14 @@ def build_component_load_forecast(
         uncertainty_model_version(_composite_model_version(specs, component_versions)),
         total_slots,
         tuple(components),
+    )
+
+
+def _combined_quality(qualities: tuple[DataQuality, ...]) -> DataQuality:
+    """Propagate the weakest component quality to the aggregate load slot."""
+    return DataQuality(
+        min((quality.coverage for quality in qualities), default=0.0),
+        tuple(dict.fromkeys(flag for quality in qualities for flag in quality.flags)),
     )
 
 

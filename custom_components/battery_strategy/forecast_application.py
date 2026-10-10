@@ -29,6 +29,7 @@ from .forecasting import (
     feature_store_forecast_readiness,
 )
 from .forecasting.ev import HistoricalEvForecaster
+from .forecasting.space_heating import space_heating_is_active
 from .forecasting.uncertainty import EMPTY_CALIBRATION, ForecastResidualCalibration
 
 SLOT_H = 0.25
@@ -134,6 +135,7 @@ class ProductionForecastResult:
     bundle: ForecastDistributionBundle
     diagnostics: dict[str, object]
     scenario_request: ScenarioBuildRequest
+    trace_context: dict[str, object]
 
 
 class ProductionForecastModule:
@@ -246,6 +248,9 @@ class ProductionForecastModule:
             bundle,
             diagnostics,
             scenario_request,
+            {
+                "space_heating_active": space_heating_is_active(context),
+            },
         )
 
 

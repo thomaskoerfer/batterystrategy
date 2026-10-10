@@ -20,7 +20,7 @@ from ..contracts import (
 SLOT_H = 0.25
 HEATING_KEY = "heat_pump_space_heating"
 DHW_KEY = "heat_pump_dhw"
-MODEL_VERSION = "space-heating-v2"
+MODEL_VERSION = "space-heating-v3"
 MAX_HISTORY_SLOTS = 90 * 96
 MAX_NEIGHBORS = 96
 MIN_ACTIVE_KWH = 0.025
@@ -65,14 +65,8 @@ def forecast_space_heating(
         sample.heating_active_slot_kwh for sample in samples
     )
     driver = _driver(context, HEATING_KEY)
-    current_active = bool(
-        driver is not None
-        and driver.quality.coverage > 0
-        and (
-            driver.power_w > 100.0
-            or (_driver_feature(driver, "heating_active_fraction") or 0.0) >= 0.5
-        )
-    )
+    current_active = space_heating_is_active(context)
+
     active_age_s = max(0.0, _driver_feature(driver, "heating_active_age_s") or 0.0)
     current_power_w = driver.power_w if driver is not None else 0.0
     weather_by_slot = {item.slot: item for item in weather}
@@ -134,6 +128,19 @@ def forecast_space_heating(
         tuple(live_heating_kwh),
     )
     return SpaceHeatingPointForecast(energy, quality)
+
+
+def space_heating_is_active(context: LoadForecastContext) -> bool:
+    """Return the normalized compressor state used by the heating model."""
+    driver = _driver(context, HEATING_KEY)
+    return bool(
+        driver is not None
+        and driver.quality.coverage > 0
+        and (
+            driver.power_w > 100.0
+            or (_driver_feature(driver, "heating_active_fraction") or 0.0) >= 0.5
+        )
+    )
 
 
 def _heating_samples(
@@ -360,7 +367,7 @@ def _couple_with_dhw(
         available_capacity = (
             active_heating_kwh * (1.0 - predicted_occupancy)
             if active_heating_kwh is not None
-            else reference_capacity
+            else max(reference_capacity, live_kwh)
         )
         served = min(served, available_capacity)
         if predicted_occupancy < 1e-9:

@@ -131,6 +131,24 @@ def test_trace_preserves_contract_metadata_quantiles_and_components(tmp_path):
     assert payload["ev"]["model_version"] == "ev-v1"
 
 
+def test_trace_persists_bounded_forecast_issuance_context(tmp_path):
+    generated_at_ms = int(
+        dt.datetime(2027, 1, 20, 10, 7, tzinfo=dt.UTC).timestamp() * 1000
+    )
+
+    path = append_forecast_trace(
+        tmp_path,
+        forecast_bundle(generated_at_ms),
+        forecast_trace_context={
+            "space_heating_active": True,
+            "setup_specific_detail": "must not be persisted",
+        },
+    )
+
+    payload = json.loads(gzip.decompress(path.read_bytes()))
+    assert payload["forecast_issuance_context"] == {"space_heating_active": True}
+
+
 def test_trace_writes_only_one_vintage_per_quarter(tmp_path):
     first_ms = int(dt.datetime(2027, 1, 20, 10, 2, tzinfo=dt.UTC).timestamp() * 1000)
     second_ms = first_ms + 5 * 60 * 1000

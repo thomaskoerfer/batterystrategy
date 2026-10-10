@@ -124,6 +124,45 @@ def test_evaluator_scores_matured_future_slots_by_series_and_lead(tmp_path):
     assert load["actual_kwh"] != 18.4
 
 
+def test_space_heating_metrics_use_persisted_issuance_regime(tmp_path):
+    generated = 1_800_000_000_000
+    slot = (generated // mod.SLOT_MS + 1) * mod.SLOT_MS
+    _write_trace(tmp_path, generated_at_ms=generated, slots=[(slot, 0.4, 0.0, 0.0)])
+    path = next(tmp_path.rglob("*.json.gz"))
+    payload = json.loads(gzip.decompress(path.read_bytes()))
+    payload["schema_version"] = 7
+    payload["forecast_issuance_context"] = {"space_heating_active": True}
+    payload["load"]["components"].append(
+        {
+            "component_key": "heat_pump_space_heating",
+            "model_version": "space-heating-v3",
+            "slots": [[slot, slot + mod.SLOT_MS, 0.3, None, None, 0, 1.0, []]],
+        }
+    )
+    path.write_bytes(gzip.compress(json.dumps(payload).encode()))
+    actual = _actual(slot, load=0.4, pv=0.0)
+    actual["load_components"].append(
+        {
+            "key": "heat_pump_space_heating",
+            "energy_kwh": 0.2,
+            "coverage": 1.0,
+            "flags": [],
+        }
+    )
+
+    residuals = mod.compare_forecasts(
+        mod.load_forecast_observations(tmp_path),
+        {slot: actual},
+        as_of_ms=slot + mod.SLOT_MS,
+    )
+    rows = mod.summarize_space_heating_regimes(residuals)
+
+    assert len(rows) == 1
+    assert rows[0]["issuance_regime"] == "active"
+    assert rows[0]["lead_bucket"] == "0-1h"
+    assert rows[0]["mae_kwh"] == pytest.approx(0.1)
+
+
 def test_evaluator_excludes_unfinished_missing_and_flagged_actuals(tmp_path):
     generated = 1_800_000_000_000
     first = (generated // mod.SLOT_MS + 1) * mod.SLOT_MS

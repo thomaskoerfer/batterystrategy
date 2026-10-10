@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## [0.2.0-rc.34] - 2026-10-10
+
+### Fixed
+
+- Preserve measured active space-heating demand during a forecast cold start
+  instead of clipping it to a missing historical capacity estimate.
+- Persist the bounded space-heating activity state at forecast issuance and
+  report authoritative heating error by active/inactive regime and lead time.
+- Propagate slot-specific component quality into aggregate load quality.
+
 ## [0.2.0-rc.33] - 2026-10-10
 
 ### Changed

@@ -298,6 +298,7 @@ class PlanningPipelineAdapter:
                 outcome.result.battery_plan,
                 outcome.optimization_problem,
                 outcome.scenario_request,
+                outcome.forecast_trace_context,
             )
             if outcome.forecast_bundle is not None
             else None
@@ -319,6 +320,7 @@ class PlanningPipelineAdapter:
             authoritative_plan,
             optimization_problem,
             scenario_request,
+            forecast_trace_context,
         ) = pending
         self._forecast_trace_scheduler.schedule(
             self._entry,
@@ -327,6 +329,7 @@ class PlanningPipelineAdapter:
             authoritative_plan=authoritative_plan,
             optimization_problem=optimization_problem,
             scenario_request=scenario_request,
+            forecast_trace_context=forecast_trace_context,
         )
 
     def runtime_context(
