@@ -781,7 +781,7 @@ def main() -> int:
     statuses = load_heat_pump_trace_statuses(
         args.trace_dir,
         start_generated_ms=start_ms,
-        end_generated_ms=as_of_ms,
+        end_generated_ms=end_ms,
     )
     report = {
         "non_authoritative": True,

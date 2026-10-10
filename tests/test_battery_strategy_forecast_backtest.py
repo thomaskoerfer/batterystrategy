@@ -172,6 +172,35 @@ def test_complete_day_window_excludes_current_partial_utc_day():
     assert end_ms == 7 * mod.DAY_MS - 1
 
 
+def test_main_applies_complete_day_window_to_all_trace_inputs(monkeypatch):
+    captured = {}
+
+    def load_observations(_path, *, start_generated_ms, end_generated_ms):
+        captured["observations"] = (start_generated_ms, end_generated_ms)
+        return []
+
+    def load_statuses(_path, *, start_generated_ms, end_generated_ms):
+        captured["statuses"] = (start_generated_ms, end_generated_ms)
+        return []
+
+    monkeypatch.setattr(mod, "load_forecast_observations", load_observations)
+    monkeypatch.setattr(mod, "load_heat_pump_trace_statuses", load_statuses)
+    monkeypatch.setattr(mod, "load_actuals", lambda _path: {})
+    monkeypatch.setattr(mod, "compare_forecasts", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(mod, "summarize", lambda _residuals: [])
+    monkeypatch.setattr(mod, "summarize_space_heating_regimes", lambda _items: [])
+    monkeypatch.setattr(mod, "evaluate_heat_pump_gate", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["forecast-backtest", "--days", "7", "--as-of", "1970-01-08T12:00:00Z"],
+    )
+
+    assert mod.main() == 0
+    assert captured["observations"] == (0, 7 * mod.DAY_MS - 1)
+    assert captured["statuses"] == captured["observations"]
+
+
 def test_evaluator_excludes_unfinished_missing_and_flagged_actuals(tmp_path):
     generated = 1_800_000_000_000
     first = (generated // mod.SLOT_MS + 1) * mod.SLOT_MS
