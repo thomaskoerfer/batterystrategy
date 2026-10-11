@@ -19,6 +19,7 @@ class FeatureAggregatorCheckpointStore:
             CHECKPOINT_STORE_VERSION,
             f"{DOMAIN}.feature_aggregator.{entry_id}",
         )
+        self._save_scheduled = False
 
     async def load(self) -> dict | None:
         """Load the last incomplete-slot checkpoint."""
@@ -27,9 +28,18 @@ class FeatureAggregatorCheckpointStore:
 
     def schedule(self, data_func) -> None:
         """Coalesce routine writes while keeping crash loss bounded."""
-        self._store.async_delay_save(data_func, CHECKPOINT_SAVE_DELAY_S)
+        if self._save_scheduled:
+            return
+        self._save_scheduled = True
+
+        def _latest_payload():
+            self._save_scheduled = False
+            return data_func()
+
+        self._store.async_delay_save(_latest_payload, CHECKPOINT_SAVE_DELAY_S)
 
     async def save(self, payload: dict | None) -> None:
         """Persist an exact hand-off point before a graceful unload."""
         if payload is not None:
             await self._store.async_save(payload)
+        self._save_scheduled = False
