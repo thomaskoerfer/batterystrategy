@@ -237,10 +237,6 @@ class HacsStrategyTests(unittest.TestCase):
             pv_slot_biases=(1.0,) * 96,
             current_weather_factor=weather_factor,
             current_pv_w=current_pv_w,
-            tomorrow_date=(
-                intervals[0]["dt"].date() + dt.timedelta(days=1)
-            ).isoformat(),
-            tomorrow_energy_kwh=None,
             pv_capacity_kwp=settings.pv_capacity_kwp,
             pv_inverter_kw=settings.pv_inverter_kw,
         )

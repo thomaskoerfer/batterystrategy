@@ -26,6 +26,7 @@ from custom_components.battery_strategy.contracts import (
 from custom_components.battery_strategy.forecasting.components import (
     _combined_quality,
     _component_power_w,
+    _composite_model_version,
     build_component_load_forecast,
 )
 from custom_components.battery_strategy.forecasting.history import ForecastTargetInput
@@ -53,6 +54,19 @@ def _history(count: int):
 
 
 class ComponentForecastTests(unittest.TestCase):
+    def test_total_load_version_includes_residual_point_model(self):
+        specs = (LoadComponentSpec("air_conditioning", LOAD_PROFILE_AIR_CONDITIONING),)
+        component_versions = {"air_conditioning": "air-conditioning-v1"}
+
+        previous = _composite_model_version(
+            specs, component_versions, residual_model_version="residual-load-v1"
+        )
+        current = _composite_model_version(
+            specs, component_versions, residual_model_version="residual-load-v2"
+        )
+
+        self.assertNotEqual(current, previous)
+
     def test_total_quality_propagates_estimated_component_slot(self):
         quality = _combined_quality(
             (

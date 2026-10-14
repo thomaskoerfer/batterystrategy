@@ -74,6 +74,15 @@ Each component owns its features, warm-up gate, model version and quality.
 Missing component data remains in total household load and is never silently
 treated as zero or subtracted twice.
 
+The residual general-house model combines robust historical quarter-hour
+profiles with a recent two-hour trend. That trend is nowcast context, not a
+day-ahead level correction: its 15 percent weight at the issue time fades
+linearly to zero over six hours while the historical profile takes over. This
+keeps nearby slots responsive without allowing one new measurement to move an
+entire forecast day, especially across midnight. The changed point model has a
+new version so its residual calibration starts from matching evidence rather
+than reusing errors issued by the previous horizon-wide trend model.
+
 Current profiles support heat-pump domestic-hot-water and space-heating context,
 a shared-meter multi-zone air-conditioning context and a generic metered load.
 Additional profiles must use stable semantic feature keys rather than entity
@@ -180,7 +189,10 @@ of historical actuals as calibrated forecast quantiles.
 PV output is constrained by configured plant and inverter capability and may use
 weather and learned slot bias. Historical plant changes belong to explicit
 backtest preparation; operational forecasting must not accumulate permanent
-one-household correction branches.
+one-household correction branches. The production model does not consume a
+provider-relative `tomorrow` energy total. Daily semantics belong to reporting;
+forecast inputs stay on the shared absolute slot grid so midnight cannot change
+which delivery day an otherwise identical input describes.
 
 ## Setup independence
 

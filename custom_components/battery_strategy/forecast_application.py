@@ -5,7 +5,6 @@ from __future__ import annotations
 import datetime as dt
 import time
 from dataclasses import dataclass
-from zoneinfo import ZoneInfo
 
 from .component_config import LoadComponentSpec
 from .contracts import (
@@ -122,7 +121,6 @@ class ProductionForecastConfig:
     pv_slot_biases: tuple[float, ...]
     current_weather_factor: float
     current_pv_w: float | None
-    tomorrow_energy_kwh: float | None
     current_ev_charge_w: float = 0.0
     ev_active_threshold_w: float = 300.0
     uncertainty: ForecastResidualCalibration = EMPTY_CALIBRATION
@@ -161,12 +159,6 @@ class ProductionForecastModule:
         if not readiness.ready:
             raise FeatureStoreForecastNotReady(readiness.reason or "not_ready")
 
-        tomorrow_date = (
-            dt.datetime.fromtimestamp(request.slots[0].start_ms / 1000.0, dt.UTC)
-            .astimezone(ZoneInfo(request.timezone))
-            .date()
-            + dt.timedelta(days=1)
-        ).isoformat()
         model_config = ForecastModelConfig(
             timezone=request.timezone,
             load_bias=float(config.load_bias),
@@ -179,8 +171,6 @@ class ProductionForecastModule:
                 if config.current_pv_w is None
                 else max(0.0, float(config.current_pv_w))
             ),
-            tomorrow_date=tomorrow_date,
-            tomorrow_energy_kwh=config.tomorrow_energy_kwh,
             pv_capacity_kwp=plant.generator_kwp,
             pv_inverter_kw=plant.inverter_kw,
         )

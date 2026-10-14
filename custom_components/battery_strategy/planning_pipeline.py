@@ -272,7 +272,6 @@ def run(
     settings = settings.with_min_soc_pct(soc_min_pct)
     hp_w = observations.heat_pump_power_w
     pv_raw_kwh = observations.pv_next_hour_kwh
-    pv_tomorrow_kwh = observations.pv_tomorrow_kwh
     cloud = observations.cloud_cover_pct
     rad = observations.shortwave_radiation_w_m2
 
@@ -438,7 +437,6 @@ def run(
         pv_slot_biases=tuple(forecast_state.pv_bias_slots),
         current_weather_factor=weather_factor,
         current_pv_w=max(0.0, pv_w),
-        tomorrow_energy_kwh=pv_tomorrow_kwh,
         current_ev_charge_w=max(0.0, wallbox_w),
         ev_active_threshold_w=settings.ev_active_threshold_w,
         uncertainty=calibration_from_state(forecast_state),

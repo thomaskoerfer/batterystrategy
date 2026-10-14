@@ -114,7 +114,6 @@ def _forecast(
                 pv_slot_biases=(1.0,) * 96,
                 current_weather_factor=0.8,
                 current_pv_w=None,
-                tomorrow_energy_kwh=None,
                 uncertainty=uncertainty or ForecastResidualCalibration({}),
             ),
             (LoadComponentSpec("air_conditioning", LOAD_PROFILE_AIR_CONDITIONING),),

@@ -22,8 +22,6 @@ class ForecastModelConfig:
     pv_slot_biases: tuple[float, ...]
     current_weather_factor: float
     current_pv_w: float | None
-    tomorrow_date: str
-    tomorrow_energy_kwh: float | None
     pv_capacity_kwp: float
     pv_inverter_kw: float
 
@@ -41,8 +39,6 @@ class ForecastModelConfig:
             self.pv_slot_biases,
             self.current_weather_factor,
             self.current_pv_w,
-            self.tomorrow_date,
-            self.tomorrow_energy_kwh,
             self.pv_capacity_kwp,
             self.pv_inverter_kw,
         )

@@ -39,6 +39,8 @@ from .uncertainty import (
     uncertainty_model_version,
 )
 
+RESIDUAL_LOAD_MODEL_VERSION = "residual-load-v2"
+
 SLOT_H = 0.25
 MIN_COMPONENT_HISTORY_SLOTS = 7 * 96
 _LOAD_INVALID_FLAGS = frozenset(
@@ -124,13 +126,13 @@ def build_component_load_forecast(
         config,
         calibration,
         component_series("general_house_load"),
-        "residual-load-v1",
+        RESIDUAL_LOAD_MODEL_VERSION,
     )
     weather_by_slot = {item.slot: item for item in weather}
     components = [
         LoadForecastComponent(
             "general_house_load",
-            uncertainty_model_version("residual-load-v1"),
+            uncertainty_model_version(RESIDUAL_LOAD_MODEL_VERSION),
             residual.training_cutoff_ms,
             residual.slots,
         )
@@ -256,7 +258,11 @@ def build_component_load_forecast(
                 sum(component.slots[index].energy.p50_kwh for component in components),
                 calibration.residuals_for(
                     TOTAL_LOAD_SERIES,
-                    _composite_model_version(specs, component_versions),
+                    _composite_model_version(
+                        specs,
+                        component_versions,
+                        residual_model_version=RESIDUAL_LOAD_MODEL_VERSION,
+                    ),
                     request.as_of_ms,
                     slot.start_ms,
                     target.local_start.weekday() >= 5,
@@ -277,7 +283,13 @@ def build_component_load_forecast(
         f"component-{request.as_of_ms}",
         request.as_of_ms,
         residual.training_cutoff_ms,
-        uncertainty_model_version(_composite_model_version(specs, component_versions)),
+        uncertainty_model_version(
+            _composite_model_version(
+                specs,
+                component_versions,
+                residual_model_version=RESIDUAL_LOAD_MODEL_VERSION,
+            )
+        ),
         total_slots,
         tuple(components),
     )
@@ -291,16 +303,21 @@ def _combined_quality(qualities: tuple[DataQuality, ...]) -> DataQuality:
     )
 
 
-def _composite_model_version(specs, component_versions) -> str:
+def _composite_model_version(
+    specs, component_versions, *, residual_model_version: str
+) -> str:
     base = (
         "component-load-v5"
         if any(spec.profile == LOAD_PROFILE_HEAT_PUMP for spec in specs)
         else "component-load-v1"
     )
     composition = "|".join(
-        sorted(
-            f"{spec.component_key}:{spec.profile}:{component_versions[spec.component_key]}"
-            for spec in specs
+        (
+            f"general_house_load:{residual_model_version}",
+            *sorted(
+                f"{spec.component_key}:{spec.profile}:{component_versions[spec.component_key]}"
+                for spec in specs
+            ),
         )
     )
     signature = hashlib.sha256(composition.encode()).hexdigest()[:10]

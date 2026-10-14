@@ -414,7 +414,6 @@ class PlanningPipelineAdapter:
             ),
             heat_pump_power_w=0.0,
             pv_next_hour_kwh=0.0,
-            pv_tomorrow_kwh=None,
             cloud_cover_pct=_non_negative_float(cloud_cover),
             shortwave_radiation_w_m2=_non_negative_float(radiation),
         )

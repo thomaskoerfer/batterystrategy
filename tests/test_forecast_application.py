@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 from custom_components.battery_strategy import planning_pipeline
 from custom_components.battery_strategy.contracts import (
     DataQuality,
+    ForecastRequest,
     HistoricalFeatureSlot,
     LoadForecastContext,
     PvPlant,
@@ -21,8 +22,12 @@ from custom_components.battery_strategy.contracts import (
 )
 from custom_components.battery_strategy.forecasting import (
     FeatureStoreForecastNotReady,
+    ForecastHistorySample,
     ForecastModelConfig,
+    ForecastTargetInput,
+    LoadForecastModelConfig,
     build_feature_store_forecast,
+    build_load_forecast,
     weather_targets,
 )
 from custom_components.battery_strategy.planning_state import (
@@ -35,6 +40,72 @@ from tests.planning_runtime_helpers import runtime_snapshot, settings_from_value
 
 
 class ForecastProductionTests(unittest.TestCase):
+    def _recent_trend_forecast(self, now, target, recent_load_w):
+        history = []
+        for days_ago in range(1, 15):
+            timestamp = target - dt.timedelta(days=days_ago)
+            history.append(
+                ForecastHistorySample(timestamp.timestamp(), 400.0, 0.0, 400.0, 0.0)
+            )
+        recent = ForecastHistorySample(
+            now.timestamp(), recent_load_w, 0.0, recent_load_w, 0.0
+        )
+        start_ms = int(target.timestamp() * 1000)
+        forecast = build_load_forecast(
+            ForecastRequest(
+                int(now.timestamp() * 1000),
+                "Europe/Berlin",
+                (SlotKey(start_ms, start_ms + 15 * 60 * 1000),),
+            ),
+            (*history, recent),
+            (ForecastTargetInput(target, 1.0),),
+            LoadForecastContext(0.0),
+            LoadForecastModelConfig("Europe/Berlin", 1.0, (1.0,) * 96),
+        )
+        return forecast.slots[0].energy.p50_kwh
+
+    def test_recent_load_trend_preserves_issue_weight_and_fades_linearly(self):
+        timezone = ZoneInfo("Europe/Berlin")
+        now = dt.datetime(2026, 10, 13, 10, 0, tzinfo=timezone)
+
+        gaps = []
+        for horizon_h in (0.0, 3.0, 6.0):
+            target = now + dt.timedelta(hours=horizon_h)
+            high = self._recent_trend_forecast(now, target, 1200.0)
+            low = self._recent_trend_forecast(now, target, 200.0)
+            gaps.append(high - low)
+
+        self.assertAlmostEqual(gaps[0], 0.0375)
+        self.assertAlmostEqual(gaps[1], gaps[0] / 2.0)
+        self.assertAlmostEqual(gaps[2], 0.0)
+
+    def test_recent_load_trend_does_not_move_same_day_across_midnight(self):
+        timezone = ZoneInfo("Europe/Berlin")
+        target = dt.datetime(2026, 10, 14, 12, 0, tzinfo=timezone)
+        before_midnight = dt.datetime(2026, 10, 13, 23, 45, tzinfo=timezone)
+        after_midnight = dt.datetime(2026, 10, 14, 0, 0, tzinfo=timezone)
+
+        self.assertAlmostEqual(
+            self._recent_trend_forecast(before_midnight, target, 1200.0),
+            self._recent_trend_forecast(after_midnight, target, 200.0),
+        )
+
+    def test_recent_load_trend_uses_elapsed_time_across_dst(self):
+        timezone = ZoneInfo("Europe/Berlin")
+        before_fallback = dt.datetime(2026, 10, 25, 0, 30, tzinfo=timezone)
+        target = dt.datetime(2026, 10, 25, 6, 0, tzinfo=timezone)
+
+        self.assertGreater(
+            (
+                target.astimezone(dt.UTC) - before_fallback.astimezone(dt.UTC)
+            ).total_seconds(),
+            6 * 3600,
+        )
+        self.assertAlmostEqual(
+            self._recent_trend_forecast(before_fallback, target, 1200.0),
+            self._recent_trend_forecast(before_fallback, target, 200.0),
+        )
+
     def test_forecasting_package_has_no_runtime_or_actuator_dependency(self):
         package_dir = (
             Path(__file__).parents[1]
@@ -127,7 +198,6 @@ class ForecastProductionTests(unittest.TestCase):
                 pv_slot_biases=(1.0,) * 96,
                 current_weather_factor=0.8,
                 current_pv_w=600.0,
-                tomorrow_energy_kwh=None,
             ),
         )
         return result.bundle, result.diagnostics
@@ -169,8 +239,6 @@ class ForecastProductionTests(unittest.TestCase):
             pv_slot_biases=(1.0,) * 96,
             current_weather_factor=0.8,
             current_pv_w=600.0,
-            tomorrow_date=(self.start.date() + dt.timedelta(days=1)).isoformat(),
-            tomorrow_energy_kwh=None,
             pv_capacity_kwp=2.3,
             pv_inverter_kw=2.0,
         )

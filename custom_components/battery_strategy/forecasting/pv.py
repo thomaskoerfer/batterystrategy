@@ -28,8 +28,6 @@ class PvForecastModelConfig:
     pv_slot_biases: tuple[float, ...]
     current_weather_factor: float
     current_pv_w: float | None
-    tomorrow_date: str
-    tomorrow_energy_kwh: float | None
     pv_capacity_kwp: float
     pv_inverter_kw: float
 
@@ -86,22 +84,11 @@ def build_pv_forecast(
                 pv_w = max(pv_w, pv_w * (1.0 - blend) + persistence * blend)
             anchored.append((pv_w, target))
         preliminary = anchored
-    scale = _tomorrow_scale(preliminary, config)
     slots = tuple(
         ForecastSlot(
             slot_key,
             calibrated_quantile_energy(
-                max(
-                    0.0,
-                    pv_w
-                    * (
-                        scale
-                        if target.local_start.date().isoformat() == config.tomorrow_date
-                        else 1.0
-                    ),
-                )
-                * SLOT_H
-                / 1000.0,
+                max(0.0, pv_w) * SLOT_H / 1000.0,
                 calibration.residuals_for(
                     PV_SERIES,
                     model_version,
@@ -154,21 +141,6 @@ def _forecast_pv_w(
     return min(
         max(0.0, pv_w * weather_factor * _clamp(slot_bias, 0.6, 1.5)),
         max(0.0, inverter_kw * 1000.0),
-    )
-
-
-def _tomorrow_scale(preliminary, config) -> float:
-    if config.tomorrow_energy_kwh is None or config.tomorrow_energy_kwh <= 0.0:
-        return 1.0
-    forecast_kwh = sum(
-        max(0.0, pv_w) * SLOT_H / 1000.0
-        for pv_w, target in preliminary
-        if target.local_start.date().isoformat() == config.tomorrow_date
-    )
-    return (
-        1.0
-        if forecast_kwh <= 0.05
-        else _clamp(config.tomorrow_energy_kwh / forecast_kwh, 0.25, 4.0)
     )
 
 

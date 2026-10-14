@@ -25,6 +25,8 @@ from .uncertainty import (
 )
 
 SLOT_H = 0.25
+RECENT_TREND_WEIGHT = 0.15
+RECENT_TREND_HORIZON_H = 6.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,7 +48,7 @@ def build_load_forecast(
     config: LoadForecastModelConfig,
     calibration: ForecastResidualCalibration = EMPTY_CALIBRATION,
     series_key: str = TOTAL_LOAD_SERIES,
-    point_model_version: str = "slot-profile-load-v1",
+    point_model_version: str = "slot-profile-load-v2",
 ) -> LoadForecast:
     """Forecast EV-free load without importing PV configuration or logic."""
     if len(request.slots) != len(targets):
@@ -136,8 +138,18 @@ def _forecast_load_w(
     base_weekday = _median(same_weekday[-20:], base_all)
     base_weektype = _median(same_weektype[-30:], base_all)
     trend = sum(recent) / len(recent) if recent else base_all
-    load_w = 0.45 * base_weekday + 0.25 * base_weektype + 0.15 * base_all + 0.15 * trend
-    horizon_h = max(0.0, (target - now_local).total_seconds() / 3600.0)
+    horizon_h = max(
+        0.0,
+        (target.astimezone(dt.UTC) - now_local.astimezone(dt.UTC)).total_seconds()
+        / 3600.0,
+    )
+    historical_w = (0.45 * base_weekday + 0.25 * base_weektype + 0.15 * base_all) / (
+        1.0 - RECENT_TREND_WEIGHT
+    )
+    trend_weight = RECENT_TREND_WEIGHT * max(
+        0.0, 1.0 - horizon_h / RECENT_TREND_HORIZON_H
+    )
+    load_w = (1.0 - trend_weight) * historical_w + trend_weight * trend
     if horizon_h <= 6.0:
         load_w += 0.22 * max(0.0, heat_pump_w - 500.0) * math.exp(-horizon_h / 1.5)
     return max(0.0, load_w * _clamp(load_bias, 0.6, 1.6) * _clamp(slot_bias, 0.7, 1.4))

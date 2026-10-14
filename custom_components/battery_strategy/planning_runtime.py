@@ -108,7 +108,6 @@ class PlanningObservations:
     ev_charge_w: float
     heat_pump_power_w: float
     pv_next_hour_kwh: float
-    pv_tomorrow_kwh: float | None
     cloud_cover_pct: float
     shortwave_radiation_w_m2: float
 
@@ -126,7 +125,6 @@ class PlanningObservations:
             self.ev_charge_w,
             self.heat_pump_power_w,
             self.pv_next_hour_kwh,
-            self.pv_tomorrow_kwh,
             self.cloud_cover_pct,
             self.shortwave_radiation_w_m2,
         )
