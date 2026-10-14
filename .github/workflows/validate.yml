@@ -1,7 +1,11 @@
 name: Validate
 
 on:
+  # Release tags are validated by release.yml. Restrict this workflow to
+  # branches so operational recovery tags do not create false HACS failures.
   push:
+    branches:
+      - "**"
   pull_request:
   workflow_dispatch:
   schedule:
