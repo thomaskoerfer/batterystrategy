@@ -36,6 +36,16 @@ live coordinator only schedules that observational write in the executor.
 Public diagnostics redact configured entities, locations, credentials, device
 identifiers and provider payloads.
 
+## Execution safety
+
+Production is a collection source, not an evaluation runner. Copy immutable
+snapshots of the forecast trace and feature store to a development workstation,
+then run every multi-day forecast, optimizer, shadow or perfect-foresight
+evaluation locally with explicit CPU and memory limits. Never execute those
+historical evaluators on the Home Assistant host or inside a production
+container. Use the source revision matching the deployed trace cohort and keep
+the copied snapshot read-only for reproducibility.
+
 `scenario_learning_ledger.py` records at most one hourly scenario vintage plus
 EV active/inactive boundaries. It retains 400 days under a 128 MiB cap and
 contains forecast quantiles, candidate evidence, generated paths, current
