@@ -173,6 +173,31 @@ decision into an invalid charge or discharge.
 Like the forecast evaluator, `--days` selects preceding complete UTC days and
 never counts the current partial UTC day toward the release gate.
 
+Scenario Builder releases can also be replayed from local immutable artifacts
+with `scripts/battery_strategy_scenario_replay.py`. The compact feature store
+owns the single 400-day copy of separate EV-free load, PV, EV and named-load
+component history. Forecast traces add only bounded replay metadata: the
+original Scenario Builder settings, market grid, limits and relevant matured
+residual cohorts. They never duplicate the complete feature history per
+vintage.
+
+Traces written before replay metadata existed remain usable through the stored
+P10/P50/P90 marginals and are labelled `quantile_fallback` in replay output.
+They support immediate comparative evaluation but are not interchangeable with
+replays reconstructed from traces carrying the recorded residual metadata.
+Even those replays are labelled `reconstructed_from_feature_store`, because a
+later additive feature-history enrichment may legitimately change historical
+component evidence. Run the utility only on an immutable workstation copy of
+both artifacts, never on Home Assistant:
+
+```sh
+python3 scripts/battery_strategy_scenario_replay.py \
+  --trace-dir PATH_TO_LOCAL_TRACE_COPY \
+  --feature-store PATH_TO_LOCAL_FEATURE_STORE_COPY \
+  --timezone HA_TIMEZONE \
+  --output PATH_TO_REBUILT_SCENARIOS.jsonl.gz
+```
+
 ```sh
 python3 scripts/battery_strategy_optimizer_shadow_backtest.py \
   --trace-dir PATH_TO_FORECAST_TRACE \

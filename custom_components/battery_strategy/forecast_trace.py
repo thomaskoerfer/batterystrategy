@@ -14,6 +14,7 @@ import time
 import uuid
 from collections.abc import Callable
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .contracts import (
     BatteryPlan,
@@ -23,6 +24,11 @@ from .contracts import (
     OptimizationProblem,
     ScenarioBuildRequest,
     ScenarioBundle,
+)
+from .forecasting.uncertainty import (
+    PV_SERIES,
+    TOTAL_LOAD_SERIES,
+    select_residual_cohort,
 )
 from .scenario_learning_ledger import append_scenario_learning_vintage
 from .shadow_evaluator import evaluate_shadow
@@ -165,6 +171,7 @@ class ForecastTraceScheduler:
                         authoritative_plan,
                         evaluation.plan,
                         evaluation.problem,
+                        scenario_request,
                         forecast_trace_context,
                         {
                             "status": evaluation.status,
@@ -224,6 +231,7 @@ def append_forecast_trace(
     authoritative_plan: BatteryPlan | None = None,
     shadow_plan: BatteryPlan | None = None,
     optimization_problem: OptimizationProblem | None = None,
+    scenario_request: ScenarioBuildRequest | None = None,
     shadow_evaluation: dict[str, object] | None = None,
     forecast_trace_context: dict[str, object] | None = None,
 ) -> Path | None:
@@ -243,6 +251,7 @@ def append_forecast_trace(
                 authoritative_plan,
                 shadow_plan,
                 optimization_problem,
+                scenario_request,
                 forecast_trace_context,
                 shadow_evaluation,
             )
@@ -256,6 +265,7 @@ def _append_forecast_trace_locked(
     authoritative_plan: BatteryPlan | None,
     shadow_plan: BatteryPlan | None,
     optimization_problem: OptimizationProblem | None,
+    scenario_request: ScenarioBuildRequest | None,
     forecast_trace_context: dict[str, object] | None,
     shadow_evaluation: dict[str, object] | None,
 ) -> Path | None:
@@ -336,6 +346,7 @@ def _append_forecast_trace_locked(
             "shadow": _serialize_plan(shadow_plan),
         },
         "optimization_problem": _serialize_problem(optimization_problem),
+        "scenario_replay": _serialize_scenario_replay(scenario_request),
         "forecast_issuance_context": _serialize_forecast_issuance_context(
             forecast_trace_context
         ),
@@ -363,6 +374,79 @@ def _append_forecast_trace_locked(
     _remove_expired_days(root, generated_at.date())
     _enforce_size_limit(root)
     return target
+
+
+def _serialize_scenario_replay(
+    request: ScenarioBuildRequest | None,
+) -> dict[str, object] | None:
+    """Persist bounded evidence needed to rebuild paths with feature history."""
+    if request is None:
+        return None
+    evidence = request.evidence
+    residuals = _selected_replay_residuals(request)
+    return {
+        "history_source": "feature_store",
+        "evidence": {
+            "evidence_id": evidence.evidence_id,
+            "captured_at_ms": evidence.captured_at_ms,
+            "training_cutoff_ms": evidence.training_cutoff_ms,
+            "timezone": evidence.timezone,
+            "pv_slot_cap_kwh": evidence.pv_slot_cap_kwh,
+            "ev_active_threshold_kwh": evidence.ev_active_threshold_kwh,
+            "residual_cohorts": residuals,
+        },
+        "settings": {
+            "minimum_paths": request.settings.minimum_paths,
+            "maximum_paths": request.settings.maximum_paths,
+            "maximum_repair_fraction": request.settings.maximum_repair_fraction,
+            "seed": request.settings.seed,
+        },
+        "market": [
+            [
+                item.slot.start_ms,
+                item.slot.end_ms,
+                item.import_price_ct_per_kwh,
+                item.export_price_ct_per_kwh,
+                item.source,
+            ]
+            for item in request.market
+        ],
+    }
+
+
+def _selected_replay_residuals(request: ScenarioBuildRequest) -> list[list[object]]:
+    forecast = request.forecast
+    generated_at_ms = max(
+        forecast.load.generated_at_ms,
+        forecast.pv.generated_at_ms,
+        forecast.ev.generated_at_ms,
+    )
+    try:
+        zone = ZoneInfo(request.evidence.timezone)
+    except ZoneInfoNotFoundError:
+        return []
+    cohorts = {item.key: item.values_kwh for item in request.evidence.residual_cohorts}
+    selected = {}
+    for load_slot, pv_slot in zip(forecast.load.slots, forecast.pv.slots, strict=True):
+        local = dt.datetime.fromtimestamp(
+            load_slot.slot.start_ms / 1000.0, dt.UTC
+        ).astimezone(zone)
+        for series, version, energy in (
+            (TOTAL_LOAD_SERIES, forecast.load.model_version, load_slot.energy),
+            (PV_SERIES, forecast.pv.model_version, pv_slot.energy),
+        ):
+            key, values = select_residual_cohort(
+                cohorts,
+                series,
+                version,
+                generated_at_ms,
+                load_slot.slot.start_ms,
+                local.weekday() >= 5,
+                energy.p50_kwh > 1e-9,
+            )
+            if key is not None:
+                selected[key] = values
+    return [[key, list(values)] for key, values in sorted(selected.items())]
 
 
 def _serialize_forecast_issuance_context(

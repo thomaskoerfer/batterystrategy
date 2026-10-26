@@ -22,6 +22,7 @@ from custom_components.battery_strategy.contracts import (
     PvForecast,
     QualityFlag,
     QuantileEnergy,
+    ResidualCohort,
     ScenarioBuildRequest,
     ScenarioEvidenceSnapshot,
     SlotKey,
@@ -129,6 +130,45 @@ def test_trace_preserves_contract_metadata_quantiles_and_components(tmp_path):
     assert payload["load"]["components"][0]["slots"][0][7] == ["missing_weather"]
     assert payload["pv"]["model_version"] == "pv-v2"
     assert payload["ev"]["model_version"] == "ev-v1"
+
+
+def test_trace_persists_bounded_scenario_replay_evidence(tmp_path):
+    generated_at_ms = int(
+        dt.datetime(2027, 1, 20, 10, 7, tzinfo=dt.UTC).timestamp() * 1000
+    )
+    bundle = forecast_bundle(generated_at_ms)
+    request = scenario_request(bundle)
+    request = replace(
+        request,
+        evidence=replace(
+            request.evidence,
+            residual_cohorts=(
+                ResidualCohort(
+                    "@total_load\x1fload-v2\x1f0\x1f*\x1f*",
+                    tuple(float(index) / 100 for index in range(12)),
+                ),
+                ResidualCohort(
+                    "component:dishwasher\x1fdishwasher-v1\x1f0\x1f*\x1f*",
+                    tuple(float(index) / 100 for index in range(12)),
+                ),
+            ),
+        ),
+    )
+
+    path = append_forecast_trace(tmp_path, bundle, scenario_request=request)
+
+    payload = json.loads(gzip.decompress(path.read_bytes()))
+    replay = payload["scenario_replay"]
+    assert replay["history_source"] == "feature_store"
+    assert replay["evidence"]["training_cutoff_ms"] == generated_at_ms
+    assert replay["evidence"]["pv_slot_cap_kwh"] == 0.5
+    assert replay["evidence"]["residual_cohorts"] == [
+        [
+            "@total_load\x1fload-v2\x1f0\x1f*\x1f*",
+            [float(index) / 100 for index in range(12)],
+        ]
+    ]
+    assert "history" not in replay["evidence"]
 
 
 def test_trace_persists_bounded_forecast_issuance_context(tmp_path):

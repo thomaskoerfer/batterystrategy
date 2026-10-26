@@ -47,6 +47,29 @@ def cohort_key(
     )
 
 
+def select_residual_cohort(
+    cohorts: dict[str, tuple[float, ...]],
+    series_key: str,
+    model_version: str,
+    generated_at_ms: int,
+    target_start_ms: int,
+    is_weekend: bool,
+    predicted_active: bool,
+) -> tuple[str | None, tuple[float, ...]]:
+    """Return the exact mature cohort consumed by forecast/scenario logic."""
+    bucket = lead_bucket(generated_at_ms, target_start_ms)
+    keys = (
+        cohort_key(series_key, model_version, bucket, is_weekend, predicted_active),
+        cohort_key(series_key, model_version, bucket, None, predicted_active),
+        cohort_key(series_key, model_version, bucket),
+    )
+    for key in keys:
+        values = cohorts.get(key, ())
+        if len(values) >= MIN_CALIBRATION_SAMPLES:
+            return key, values
+    return None, ()
+
+
 @dataclass(frozen=True, slots=True)
 class ForecastResidualCalibration:
     """Immutable lookup over forecast-owned matured residual cohorts."""
@@ -82,17 +105,15 @@ class ForecastResidualCalibration:
         predicted_active: bool,
     ) -> tuple[float, ...]:
         """Prefer the narrowest mature cohort, then broaden deterministically."""
-        bucket = lead_bucket(generated_at_ms, target_start_ms)
-        keys = (
-            cohort_key(series_key, model_version, bucket, is_weekend, predicted_active),
-            cohort_key(series_key, model_version, bucket, None, predicted_active),
-            cohort_key(series_key, model_version, bucket),
-        )
-        for key in keys:
-            values = self.cohorts.get(key, ())
-            if len(values) >= MIN_CALIBRATION_SAMPLES:
-                return values
-        return ()
+        return select_residual_cohort(
+            self.cohorts,
+            series_key,
+            model_version,
+            generated_at_ms,
+            target_start_ms,
+            is_weekend,
+            predicted_active,
+        )[1]
 
 
 EMPTY_CALIBRATION = ForecastResidualCalibration({})

@@ -25,11 +25,10 @@ from ..contracts import (
 from ..forecasting.uncertainty import (
     PV_SERIES,
     TOTAL_LOAD_SERIES,
-    cohort_key,
-    lead_bucket,
+    select_residual_cohort,
 )
 
-MODEL_VERSION = "weekly-joint-scenario-v4"
+MODEL_VERSION = "weekly-channel-isolated-scenario-v5"
 REPAIR_POLICY_VERSION = "bounded-channel-repair-2pct-v2"
 SCENARIO_RELEASE_VERSION = f"{MODEL_VERSION}+{REPAIR_POLICY_VERSION}"
 _LOAD_INVALID = frozenset(
@@ -45,11 +44,19 @@ class _Candidate:
     slots: tuple[HistoricalFeatureSlot, ...]
     load_template: tuple[float, ...]
     pv_template: tuple[float, ...]
-    ev_template: tuple[float, ...]
+    ev_template: tuple[float, ...] | None
     price_template: tuple[float, ...]
     repaired_slots: int
+    weight_repaired_slots: int
     excluded_components: int
     component_distance: float
+
+
+@dataclass(frozen=True, slots=True)
+class _EvDonor:
+    weeks_ago: int
+    template: tuple[float, ...]
+    repaired_slots: int
 
 
 class ScenarioBuilder:
@@ -130,6 +137,8 @@ class ScenarioBuilder:
         )
         active_now = forecast.ev.slots[0].active_probability >= 0.5
         candidates = []
+        ev_donors = []
+        fingerprint_rows = []
         overlapping_paths = 0
         for weeks_ago in range(1, 54):
             shifted_starts = tuple(
@@ -146,25 +155,35 @@ class ScenarioBuilder:
             raw = tuple(
                 by_local.get(_shifted_key(local, weeks_ago)) for local in targets
             )
+            fingerprint_rows.append(raw)
             overlapping_paths += 1
-            candidate = _prepare_candidate(
+            ev_donor = _prepare_ev_donor(
                 weeks_ago,
                 raw,
                 request.settings.maximum_repair_fraction,
                 active_now,
                 evidence.ev_active_threshold_kwh,
+            )
+            if ev_donor is not None:
+                ev_donors.append(ev_donor)
+            candidate = _prepare_candidate(
+                weeks_ago,
+                raw,
+                request.settings.maximum_repair_fraction,
+                ev_donor,
                 forecast.load.components,
                 bool(request.market),
                 reasons,
             )
             if candidate is not None:
                 candidates.append(candidate)
+        fingerprint = _fingerprint(request, tuple(fingerprint_rows))
         eligible = overlapping_paths >= request.settings.minimum_paths
         candidates.sort(key=lambda item: (item.component_distance, item.weeks_ago))
         all_candidates = tuple(candidates)
         candidates = candidates[: request.settings.maximum_paths]
         raw_weights = [
-            max(1e-9, 1.0 - item.repaired_slots / max(1, len(item.slots)))
+            max(1e-9, 1.0 - item.weight_repaired_slots / max(1, len(item.slots)))
             / (1.0 + item.component_distance)
             for item in candidates
         ]
@@ -187,7 +206,7 @@ class ScenarioBuilder:
                 item.excluded_components,
                 max(
                     1e-9,
-                    1.0 - item.repaired_slots / max(1, len(item.slots)),
+                    1.0 - item.weight_repaired_slots / max(1, len(item.slots)),
                 )
                 / (1.0 + item.component_distance),
                 probability_by_week.get(item.weeks_ago, 0.0),
@@ -207,6 +226,35 @@ class ScenarioBuilder:
                     sum(item.excluded_components for item in candidates),
                 ),
             )
+
+        ev_templates, resolved_ev_repairs = _resolve_ev_templates(
+            candidates, ev_donors, marginal_sources
+        )
+        resolved_ev_repairs_by_week = {
+            candidate.weeks_ago: resolved_ev_repairs[index]
+            for index, candidate in enumerate(candidates)
+        }
+        candidate_diagnostics = tuple(
+            ScenarioCandidateDiagnostic(
+                item.weeks_ago,
+                item.component_distance,
+                (
+                    item.weight_repaired_slots
+                    + resolved_ev_repairs_by_week[item.weeks_ago]
+                    if item.weeks_ago in selected_weeks
+                    else item.repaired_slots
+                ),
+                item.excluded_components,
+                max(
+                    1e-9,
+                    1.0 - item.weight_repaired_slots / max(1, len(item.slots)),
+                )
+                / (1.0 + item.component_distance),
+                probability_by_week.get(item.weeks_ago, 0.0),
+                item.weeks_ago in selected_weeks,
+            )
+            for item in all_candidates
+        )
 
         cohort_map = {item.key: item.values_kwh for item in evidence.residual_cohorts}
         marginal_evidence = []
@@ -241,9 +289,7 @@ class ScenarioBuilder:
             marginal_evidence.append((load_residuals, pv_residuals, load_mode, pv_mode))
         ev_active_paths = []
         for slot_index, ev_slot in enumerate(forecast.ev.slots):
-            historical_values = tuple(
-                item.ev_template[slot_index] for item in candidates
-            )
+            historical_values = tuple(template[slot_index] for template in ev_templates)
             active = _weighted_active_tail(
                 historical_values,
                 probabilities,
@@ -293,14 +339,13 @@ class ScenarioBuilder:
                     ev = 0.0
                 else:
                     active_values = tuple(
-                        candidates[item].ev_template[slot_index]
-                        for item in active_indexes
+                        ev_templates[item][slot_index] for item in active_indexes
                     )
                     ev = max(
                         evidence.ev_active_threshold_kwh,
                         _marginal_value(
                             ev_slot.energy,
-                            _rank(candidate.ev_template[slot_index], active_values),
+                            _rank(ev_templates[index][slot_index], active_values),
                         ),
                     )
                 import_price, export_price, price_is_firm = _scenario_price(
@@ -339,7 +384,10 @@ class ScenarioBuilder:
             diagnostics(
                 len(paths),
                 len(candidates),
-                sum(item.repaired_slots for item in candidates),
+                sum(
+                    item.weight_repaired_slots + resolved_ev_repairs[index]
+                    for index, item in enumerate(candidates)
+                ),
                 sum(item.excluded_components for item in candidates),
             ),
         )
@@ -349,8 +397,7 @@ def _prepare_candidate(
     weeks_ago: int,
     raw: tuple[HistoricalFeatureSlot | None, ...],
     maximum_repair_fraction: float,
-    active_now: bool,
-    ev_active_threshold_kwh: float,
+    ev_donor: _EvDonor | None,
     forecast_components,
     prices_required: bool,
     reasons: Counter[str],
@@ -359,9 +406,6 @@ def _prepare_candidate(
         reasons["missing_slot"] += 1
         return None
     slots = tuple(item for item in raw if item is not None)
-    if active_now and slots[0].ev_charge_kwh < ev_active_threshold_kwh:
-        reasons["ev_state_mismatch"] += 1
-        return None
     max_repairs = math.floor(len(slots) * maximum_repair_fraction)
     load_values, load_repairs = _repair_continuous(
         tuple(item.house_load_no_ev_kwh for item in slots),
@@ -381,23 +425,16 @@ def _prepare_candidate(
         )
     else:
         price_values, price_repairs = tuple(0.0 for _ in slots), frozenset()
-    ev_values, ev_repairs = _repair_ev(
-        tuple(item.ev_charge_kwh for item in slots),
-        tuple(_valid(item, _EV_INVALID) for item in slots),
-        max_repairs,
-        ev_active_threshold_kwh,
-    )
-    if ev_values is None:
-        reasons["invalid_ev_boundary"] += 1
-        return None
     if (
         load_values is None
         or pv_values is None
         or price_values is None
-        or len(load_repairs | pv_repairs | price_repairs | ev_repairs) > max_repairs
+        or len(load_repairs | pv_repairs | price_repairs) > max_repairs
     ):
         reasons["repair_limit"] += 1
         return None
+    ev_values = ev_donor.template if ev_donor is not None else None
+    ev_repaired_slots = ev_donor.repaired_slots if ev_donor is not None else 0
     component_distance, excluded = _component_distance(
         slots,
         forecast_components,
@@ -409,10 +446,76 @@ def _prepare_candidate(
         pv_values,
         ev_values,
         price_values,
-        len(load_repairs | pv_repairs | price_repairs | ev_repairs),
+        len(load_repairs | pv_repairs | price_repairs) + ev_repaired_slots,
+        len(load_repairs | pv_repairs | price_repairs),
         excluded,
         component_distance,
     )
+
+
+def _prepare_ev_donor(
+    weeks_ago: int,
+    raw: tuple[HistoricalFeatureSlot | None, ...],
+    maximum_repair_fraction: float,
+    active_now: bool,
+    ev_active_threshold_kwh: float,
+) -> _EvDonor | None:
+    """Prepare EV evidence independently of load, PV and price quality."""
+    if not raw or any(item is None for item in raw):
+        return None
+    slots = tuple(item for item in raw if item is not None)
+    if active_now and slots[0].ev_charge_kwh < ev_active_threshold_kwh:
+        return None
+    max_repairs = math.floor(len(slots) * maximum_repair_fraction)
+    values, repairs = _repair_ev(
+        tuple(item.ev_charge_kwh for item in slots),
+        tuple(_valid(item, _EV_INVALID) for item in slots),
+        max_repairs,
+        ev_active_threshold_kwh,
+    )
+    if values is None:
+        return None
+    return _EvDonor(weeks_ago, values, len(repairs))
+
+
+def _resolve_ev_templates(
+    candidates: list[_Candidate],
+    donors: list[_EvDonor],
+    marginal_sources: Counter[str],
+) -> tuple[tuple[tuple[float, ...], ...], tuple[int, ...]]:
+    """Fill only the EV channel without changing load/PV path admission."""
+    if not donors:
+        marginal_sources["ev:forecast_only"] += len(candidates)
+        slot_count = len(candidates[0].slots)
+        return (
+            tuple((0.0,) * slot_count for _item in candidates),
+            tuple(0 for _item in candidates),
+        )
+
+    resolved = []
+    repaired_slots = []
+    for candidate in candidates:
+        if candidate.ev_template is not None:
+            resolved.append(candidate.ev_template)
+            repaired_slots.append(
+                candidate.repaired_slots - candidate.weight_repaired_slots
+            )
+            marginal_sources["ev:historical_same_path"] += 1
+            continue
+        donor = min(
+            donors,
+            key=lambda item: (
+                abs(item.weeks_ago - candidate.weeks_ago),
+                item.weeks_ago,
+            ),
+        )
+        resolved.append(donor.template)
+        repaired_slots.append(donor.repaired_slots)
+        marginal_sources["ev:historical_donor"] += 1
+    repaired_count = sum(repaired_slots)
+    if repaired_count:
+        marginal_sources["ev:repaired_slot"] += repaired_count
+    return tuple(resolved), tuple(repaired_slots)
 
 
 def _repair_continuous(values, valid, max_repairs):
@@ -504,16 +607,9 @@ def _valid(item: HistoricalFeatureSlot, invalid_flags: frozenset[QualityFlag]) -
 
 
 def _residuals(cohorts, series, version, generated, target, weekend, active):
-    bucket = lead_bucket(generated, target)
-    for key in (
-        cohort_key(series, version, bucket, weekend, active),
-        cohort_key(series, version, bucket, None, active),
-        cohort_key(series, version, bucket),
-    ):
-        values = cohorts.get(key, ())
-        if len(values) >= 12:
-            return values
-    return ()
+    return select_residual_cohort(
+        cohorts, series, version, generated, target, weekend, active
+    )[1]
 
 
 def _marginal_value(energy, probability):
@@ -621,7 +717,10 @@ def _quantile(values: tuple[float, ...], probability: float) -> float:
     return ordered[lower] * (1.0 - fraction) + ordered[upper] * fraction
 
 
-def _fingerprint(request: ScenarioBuildRequest) -> str:
+def _fingerprint(
+    request: ScenarioBuildRequest,
+    candidate_rows: tuple[tuple[HistoricalFeatureSlot | None, ...], ...] = (),
+) -> str:
     payload = (
         request.forecast.load.forecast_id,
         request.forecast.pv.forecast_id,
@@ -643,10 +742,73 @@ def _fingerprint(request: ScenarioBuildRequest) -> str:
             )
             for item in request.market
         ),
+        tuple(
+            tuple(_historical_fingerprint_value(item) for item in row)
+            for row in candidate_rows
+        ),
+        _selected_residual_fingerprint(request),
         MODEL_VERSION,
         REPAIR_POLICY_VERSION,
     )
     return hashlib.sha256(json.dumps(payload).encode()).hexdigest()[:16]
+
+
+def _selected_residual_fingerprint(request: ScenarioBuildRequest):
+    forecast = request.forecast
+    generated_at = max(
+        forecast.load.generated_at_ms,
+        forecast.pv.generated_at_ms,
+        forecast.ev.generated_at_ms,
+    )
+    try:
+        zone = ZoneInfo(request.evidence.timezone)
+    except ZoneInfoNotFoundError:
+        return ()
+    cohorts = {item.key: item.values_kwh for item in request.evidence.residual_cohorts}
+    selected = {}
+    for load_slot, pv_slot in zip(forecast.load.slots, forecast.pv.slots, strict=True):
+        local = dt.datetime.fromtimestamp(
+            load_slot.slot.start_ms / 1000.0, dt.UTC
+        ).astimezone(zone)
+        for series, version, energy in (
+            (TOTAL_LOAD_SERIES, forecast.load.model_version, load_slot.energy),
+            (PV_SERIES, forecast.pv.model_version, pv_slot.energy),
+        ):
+            key, values = select_residual_cohort(
+                cohorts,
+                series,
+                version,
+                generated_at,
+                load_slot.slot.start_ms,
+                local.weekday() >= 5,
+                energy.p50_kwh > 1e-9,
+            )
+            if key is not None:
+                selected[key] = values
+    return tuple(sorted(selected.items()))
+
+
+def _historical_fingerprint_value(item: HistoricalFeatureSlot | None):
+    if item is None:
+        return None
+    return (
+        item.slot.start_ms,
+        item.house_load_no_ev_kwh,
+        item.pv_generation_kwh,
+        item.ev_charge_kwh,
+        item.price_ct_per_kwh,
+        item.quality.coverage,
+        tuple(flag.value for flag in item.quality.flags),
+        tuple(
+            (
+                component.component_key,
+                component.energy_kwh,
+                component.quality.coverage,
+                tuple(flag.value for flag in component.quality.flags),
+            )
+            for component in item.load_components
+        ),
+    )
 
 
 def _shifted_key(local: dt.datetime, weeks_ago: int) -> tuple[str, int, int, int]:

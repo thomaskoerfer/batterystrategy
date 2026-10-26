@@ -10,3 +10,7 @@ state, Home Assistant objects, persistence services, live state or actuators.
 Any change to request/result semantics requires an impact analysis and explicit
 owner approval. Preserve deterministic replay and structured diagnostics for
 every repair, fallback and rejected path.
+
+EV-free house load, PV generation and EV charging are independent evidence
+channels. An EV-only quality or boundary failure must not reject or reweight an
+otherwise valid load/PV candidate; fallback remains local to the EV channel.

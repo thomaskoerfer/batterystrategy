@@ -8,6 +8,10 @@ scenario-builder impact analysis before changing this component.
 Own causal evidence selection, temporal and cross-series dependence, bounded
 path repair, marginal rank mapping, scenario weighting and diagnostics.
 
+Keep EV-free house load, PV generation and EV charging as distinct evidence
+channels. Invalid EV evidence may degrade only EV; it must not reject, reweight
+or consume the repair budget of an otherwise valid load/PV path.
+
 ## Forbidden
 
 Do not forecast marginal P50/P10/P90 values, read Home Assistant or persistence,

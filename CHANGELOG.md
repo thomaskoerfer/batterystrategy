@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Changed
+
+- Isolate sparse EV-history failures inside the EV scenario channel so missing
+  or state-incompatible EV evidence no longer discards valid house-load/PV
+  paths or changes their weights and repair limits.
+- Start a fresh Scenario Builder model cohort for the channel-isolated path
+  implementation; public forecast and scenario contracts remain unchanged.
+- Persist bounded Scenario Builder replay metadata without duplicating feature
+  history, and add a local-only replay utility for new and legacy traces.
+
 ## [0.2.0-rc.34] - 2026-10-10
 
 ### Fixed
