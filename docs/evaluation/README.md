@@ -205,6 +205,63 @@ python3 scripts/battery_strategy_optimizer_shadow_backtest.py \
   --days 7
 ```
 
+### Closed-loop rolling comparison
+
+`scripts/battery_strategy_rolling_backtest.py` compares the established
+deterministic optimizer and candidate unified scenario optimizer over the
+longest contiguous quality-valid boundary-vintage interval. Physical limits,
+EV policy and source/discharge permissions must remain constant in that
+interval. The window is selected by continuity, never by savings. No gap is
+filled, and neither simulated battery is reset at midnight or at the next
+planning refresh.
+
+Each optimizer receives the historical forecast, historical market curve and
+captured commercial assumptions, but its own simulated SoC. The candidate
+uses reconstructed scenarios, including its ordinary P50 path if scenario
+evidence is insufficient. Every first-slot permission goes through the
+production compiler and pure live controller. A ten-second ideal battery plant
+integrates command energy, measured budget progress, physical power/SoC bounds
+and symmetric efficiencies whose product is the configured RTE. Exogenous
+load, PV and EV are held constant at their observed quarter-hour means. EV is
+never folded into the house-load forecast.
+
+An independent continuous-energy mixed-integer perfect-foresight solver uses
+the observed full interval, physical limits and EV exclusions. Binary battery
+direction prevents simultaneous charge/discharge. Import and export may both
+occur during one quarter-hour when a charge finishes within that slot; a
+physical charge-duration envelope bounds that mixture, including at negative
+prices, instead of permitting fictitious grid-import/export arbitrage.
+This ideal reference ignores controller timing
+and therefore is not a realizable live policy. The solver dependency is
+workstation-only, in `requirements-evaluation.txt`, not integration requirements.
+
+Report cash cost, charged/discharged energy, losses, PV export and final stored
+energy separately. The last recorded terminal price values every strategy's
+change in DC inventory identically; the reported economic objective also
+includes the same recorded discharge margin. EV's fixed no-battery grid cost
+may be subtracted from every strategy for presentation; it cannot change a
+paired difference or remove the physical EV competition for PV. Perfect
+foresight is a lower-cost bound only for the same inventory/throughput objective,
+not for cash bill alone with unmatched final inventories.
+
+This is a conditional optimizer/dispatch backtest, not an exact hardware twin:
+historical forecast outputs and commercial assumptions (including the recorded
+inventory floor) are frozen, intra-slot peaks and manual-switch history are not
+available, and counterfactual mid-slot replans are not reconstructed. Report
+these limitations with the result; do not turn it into a release-gate pass or
+claim measured savings. Persist source hashes, the selected interval, scenario
+fidelity and every simulated slot outside the immutable input snapshot.
+
+```sh
+python3 -m pip install -r requirements-evaluation.txt
+PYTHONPATH=. python3 scripts/battery_strategy_rolling_backtest.py \
+  --trace-dir LOCAL_IMMUTABLE_TRACE_COPY \
+  --feature-store LOCAL_IMMUTABLE_FEATURE_COPY \
+  --timezone INSTALLATION_TIMEZONE \
+  --start-ms WINDOW_START_UTC_MS --end-ms WINDOW_END_UTC_MS \
+  --as-of-ms SNAPSHOT_CAPTURE_UTC_MS --output-dir NEW_LOCAL_RESULT_DIRECTORY
+```
+
 This report replaces the former RC26 observation gate. RC26 is retained only as
 a rollback reference and is not executed as a second shadow.
 

@@ -14,6 +14,13 @@ Do not influence forecasts, plans or commands; do not retrain inside a fixed
 evaluation window; do not acquire an actuator reference. Never store unbounded
 attributes or expose private configuration in diagnostics.
 
+Workstation-only rolling backtests may call the pure compiler and live controller
+to simulate execution. They must never obtain an actuator or HA service object,
+read counterfactual future observations into optimizer inputs, silently bridge
+data gaps, or reset SoC between planning slots. State assumptions about intra-slot
+resolution and compare final inventory explicitly. Perfect-foresight inputs must
+remain isolated from both rolling strategies.
+
 Forecast-vintage capture may serialize only an already-produced immutable
 `ForecastDistributionBundle`, a post-publication `ScenarioBuildResult` and
 their optimizer results. Keep it outside Recorder, bounded by time, size and frequency, and

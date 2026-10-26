@@ -1,0 +1,2 @@
+# Optional workstation-only closed-loop perfect-foresight solver.
+scipy==1.18.1

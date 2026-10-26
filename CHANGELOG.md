@@ -4,6 +4,9 @@
 
 ### Changed
 
+- Add a workstation-only rolling battery replay with separate simulated SoC,
+  production compiler/live-rule execution, explicit EV allocation, inventory
+  valuation and an independent mixed-integer perfect-foresight reference.
 - Isolate sparse EV-history failures inside the EV scenario channel so missing
   or state-incompatible EV evidence no longer discards valid house-load/PV
   paths or changes their weights and repair limits.

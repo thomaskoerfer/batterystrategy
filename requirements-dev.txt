@@ -1,3 +1,4 @@
 homeassistant==2026.7.4
+-r requirements-evaluation.txt
 pytest==8.4.2
 ruff==0.16.5
