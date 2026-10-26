@@ -21,6 +21,7 @@ from custom_components.battery_strategy.contracts import (
     ForecastDistributionBundle,
     ForecastSlot,
     LoadForecast,
+    LoadForecastComponent,
     MarketSlot,
     OptimizationProblem,
     OptimizationResult,
@@ -332,6 +333,46 @@ def test_stochastic_optimizer_uses_coherent_ev_paths_and_common_first_action():
     assert p50.slots[0].planned_charge_kwh == 0.0
     assert stochastic.slots[0].planned_grid_charge_kwh > 0.0
     assert stochastic.optimizer_version.startswith("stochastic-")
+
+
+def test_stochastic_optimizer_preserves_component_grid_in_p50_recourse():
+    candidate = problem([10.0, 30.0, 50.0], loads=[0.1, 0.2, 0.3], soc=40.0)
+    load = candidate.forecast.load
+    component = LoadForecastComponent(
+        "base_load",
+        "base-v1",
+        load.training_cutoff_ms,
+        load.slots,
+    )
+    scenarios = ScenarioBundle(
+        "component-path",
+        "source",
+        candidate.as_of_ms,
+        candidate.as_of_ms,
+        "weekly-v1",
+        (
+            ScenarioPath(
+                "path",
+                1.0,
+                tuple(
+                    ScenarioSlot(slot.slot, slot.energy.p50_kwh, 0.0, 0.0)
+                    for slot in load.slots
+                ),
+            ),
+        ),
+    )
+    candidate = replace(
+        candidate,
+        forecast=replace(
+            candidate.forecast,
+            load=replace(load, components=(component,)),
+        ),
+        scenarios=scenarios,
+    )
+
+    plan = StochasticDynamicProgrammingOptimizer().optimize(candidate)
+
+    assert len(plan.slots) == 3
 
 
 def test_stochastic_required_charge_remains_executable_when_pv_is_uncertain():

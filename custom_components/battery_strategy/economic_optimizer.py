@@ -671,7 +671,12 @@ class StochasticDynamicProgrammingOptimizer:
             tail_forecast = replace(
                 problem.forecast,
                 load=replace(
-                    problem.forecast.load, slots=problem.forecast.load.slots[1:]
+                    problem.forecast.load,
+                    slots=problem.forecast.load.slots[1:],
+                    components=tuple(
+                        replace(component, slots=component.slots[1:])
+                        for component in problem.forecast.load.components
+                    ),
                 ),
                 pv=replace(problem.forecast.pv, slots=problem.forecast.pv.slots[1:]),
                 ev=replace(problem.forecast.ev, slots=problem.forecast.ev.slots[1:]),
