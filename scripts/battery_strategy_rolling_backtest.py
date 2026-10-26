@@ -610,6 +610,7 @@ def main():
             + result["discharge_kwh"] * margin / 100
             - (result["end_energy_kwh"] - initial) * value / 100
             for name, result in report["strategies"].items()
+            if name != "perfect_foresight"
         }
         for value in sorted(
             {0.0, terminal, float(window[-1]["optimization_problem"]["market"][0][1])}
