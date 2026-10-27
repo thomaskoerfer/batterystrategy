@@ -84,6 +84,16 @@ def test_budget_exhaustion_stops_discharge_without_creating_export():
     assert flows["export_kwh"] == 0
 
 
+@pytest.mark.parametrize("house", [0.0, 0.0001])
+def test_zero_or_sub_watt_demand_stays_idle_with_available_discharge_budget(house):
+    plan = plan_with_budget()
+    flows, _ = replay.dispatch_slot(
+        plan, observation(house=house), 4.8, EvInteractionPolicy(), idle_state()
+    )
+    assert flows["charge_kwh"] == 0
+    assert flows["discharge_kwh"] == 0
+
+
 def test_pv_follow_is_allowed_even_with_zero_budget_and_no_grid_charge():
     plan = plan_with_budget(budget=0)
     plan = replace(plan, slots=(replace(plan.slots[0], grid_charge_allowed=False),))

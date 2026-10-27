@@ -142,7 +142,10 @@ def dispatch_slot(plan, actual, energy_kwh, ev_policy, live_state, *, tick_ms=10
     ev_w = float(actual["ev_charge_kwh"]) * 4000
     policy = LivePolicy(
         **asdict(ev_policy),
-        min_command_power_w=0,
+        # The live controller rounds emitted power to integer watts. A zero threshold
+        # would turn a legitimate zero-load decision into an invalid active 0 W
+        # command after rounding. This is not the unknown historical user deadband.
+        min_command_power_w=1.0,
         max_charge_power_w=constraints.max_charge_power_w,
         max_discharge_power_w=constraints.max_discharge_power_w,
         automatic_discharge_mode=AutomaticDischargeMode.PRICE_SENSITIVE,
@@ -537,6 +540,7 @@ def main():
         "evaluator_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "tick_ms": args.tick_ms,
         "control_mode": "price_sensitive",
+        "command_quantization_floor_w": 1.0,
         "optimizer_versions": {
             "production": OPTIMIZER_VERSION,
             "shadow": UNIFIED_OPTIMIZER_VERSION,
@@ -624,6 +628,7 @@ def main():
         "Normal P50 fallbacks remain in the closed-loop candidate; scenario success and fallback counts are reported rather than selectively deleting weak slots.",
         "Rolling forecasts retain their original planning horizon beyond the scoring cutoff; the terminal scalar approximates that unobserved continuation for scoring only.",
         "Control is enabled and price-sensitive for both strategies; no historical control-switch state is inferred.",
+        "A 1 W command-quantization floor is assumed, not the historical operator deadband.",
         "Perfect foresight is an ideal continuous-energy bound, without controller timing; residual inventory and margin are valued identically.",
         "EV stays separate and present physically; its fixed no-battery baseline cost is subtracted identically, not modeled as extra house demand.",
     ]

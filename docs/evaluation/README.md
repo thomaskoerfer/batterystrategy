@@ -225,6 +225,10 @@ and symmetric efficiencies whose product is the configured RTE. Exogenous
 load, PV and EV are held constant at their observed quarter-hour means. EV is
 never folded into the house-load forecast.
 
+The plant assumes a 1 W floor matching the controller's integer-watt output.
+It does not infer an unrecorded historical operator deadband; that
+assumption is reported with the other dispatch limitations.
+
 An independent continuous-energy mixed-integer perfect-foresight solver uses
 the observed full interval, physical limits and EV exclusions. Binary battery
 direction prevents simultaneous charge/discharge. Import and export may both
