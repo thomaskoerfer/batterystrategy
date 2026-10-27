@@ -248,6 +248,12 @@ paired difference or remove the physical EV competition for PV. Perfect
 foresight is a lower-cost bound only for the same inventory/throughput objective,
 not for cash bill alone with unmatched final inventories.
 
+For decision diagnostics, `perfect_foresight(..., end_energy_kwh=...)` can instead
+fix final DC inventory to the rolling strategy's actual simulated endpoint.
+This conditional reference isolates avoidable scheduling cost without an
+arbitrary final-inventory price. It does not judge whether that endpoint was
+itself optimal. Keep it distinct from the unconstrained perfect-foresight bound.
+
 This is a conditional optimizer/dispatch backtest, not an exact hardware twin:
 historical forecast outputs and commercial assumptions (including the recorded
 inventory floor) are frozen, intra-slot peaks and manual-switch history are not

@@ -227,6 +227,26 @@ def test_perfect_foresight_respects_each_charge_source_permission(
     assert rows[0]["discharge_kwh"] < 1e-9
 
 
+def test_perfect_foresight_can_match_final_inventory_without_liquidation_credit():
+    pytest.importorskip("scipy")
+    trace = trace_at(0)
+    rows, _ = replay.perfect_foresight(
+        [trace], {0: observation()}, 1, 0, end_energy_kwh=1
+    )
+    assert rows[-1]["end_energy_kwh"] == pytest.approx(1)
+    assert rows[0]["discharge_kwh"] == pytest.approx(0)
+    assert rows[0]["charge_kwh"] == pytest.approx(0)
+    assert rows[0]["grid_import_kwh"] == pytest.approx(0.5)
+
+
+def test_perfect_foresight_rejects_invalid_fixed_final_inventory():
+    pytest.importorskip("scipy")
+    with pytest.raises(ValueError, match="outside battery bounds"):
+        replay.perfect_foresight(
+            [trace_at(0)], {0: observation()}, 1, 0, end_energy_kwh=7
+        )
+
+
 def test_perfect_foresight_can_charge_grid_when_pv_charge_is_disabled_without_surplus():
     pytest.importorskip("scipy")
     trace = trace_at(0)

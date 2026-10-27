@@ -303,7 +303,9 @@ def run_strategy(
     return rows, dict(status)
 
 
-def perfect_foresight(traces, actuals, initial_energy, terminal_ct):
+def perfect_foresight(
+    traces, actuals, initial_energy, terminal_ct, *, end_energy_kwh=None
+):
     """Independent continuous-energy MILP: ideal full-information economic bound."""
     import numpy as np
     import scipy
@@ -395,6 +397,16 @@ def perfect_foresight(traces, actuals, initial_energy, terminal_ct):
             upper[x] = 0  # Battery export is forbidden; only PV can be exported.
         # The ideal bound ignores scheduler latency, hysteresis and start thresholds.
     objective[6 * (n - 1) + 4] = -terminal_ct / 100
+    if end_energy_kwh is not None:
+        minimum = limits.capacity_kwh * limits.min_soc_pct / 100
+        maximum = limits.capacity_kwh * limits.max_soc_pct / 100
+        if (
+            not math.isfinite(end_energy_kwh)
+            or not minimum <= end_energy_kwh <= maximum
+        ):
+            raise ValueError("fixed final inventory is outside battery bounds")
+        lower[6 * (n - 1) + 4] = end_energy_kwh
+        upper[6 * (n - 1) + 4] = end_energy_kwh
     solved = milp(
         objective,
         integrality=integrality,
